@@ -1,0 +1,18 @@
+{
+  "idf.portWin": "COM4",
+  "idf.enableCCache": true,
+  "idf.espIdfPath": "${workspaceFolder}/../../esp-adf/esp-idf",
+  "idf.espIdfPathWin": "${workspaceFolder}/../../esp-adf/esp-idf",
+  "idf.toolsPath": "${workspaceFolder}/../../esp-idf/tools",
+  "idf.pythonInstallPath": "${workspaceFolder}/../../esp-idf/tools/python_env/idf5.3_py3.12_env/Scripts/python.exe",
+  "idf.customExtraVars": {
+    "ADF_PATH": "${workspaceFolder}/../../esp-adf"
+  },
+  "idf.flashType": "UART",
+  "files.associations": {
+    "periph_button.h": "c",
+    "set": "c",
+    "system_error": "c",
+    "stat.h": "c"
+  }
+}
