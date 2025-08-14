@@ -55,6 +55,8 @@
 
 #include "play_sdcard.h"
 #include "music_files.h"
+#include "wifi_manager.h"
+#include "http_server.h"
 
 static const char *TAG = "PLAY_SDCARD";
 
@@ -353,6 +355,16 @@ void audio_control_task(void *pvParameters)
     // Use the passthrough approach to fix decoder output issue
     audio_stream_init_with_passthrough(&stream);
 
+    ESP_LOGI(TAG, "audio_control: Initialize HTTP server");
+    // Initialize HTTP server for remote control
+    esp_err_t http_ret = http_server_init(stream, control_queue);
+    if (http_ret == ESP_OK) {
+        ESP_LOGI(TAG, "HTTP server initialized successfully");
+        ESP_LOGI(TAG, "Access the API documentation at http://<device-ip>/");
+    } else {
+        ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
+    }
+
     ESP_LOGI(TAG, "audio_control: start listener");
 
     // Listen to all track pipelines and output pipeline
@@ -371,11 +383,53 @@ void audio_control_task(void *pvParameters)
 
             switch (msg.type) {
                 case AUDIO_ACTION_START:
-
                     ESP_LOGI(TAG, "Processing START action...");
                     audio_control_start(stream);
                     audio_started = true;
                     break;
+
+                case AUDIO_ACTION_START_TRACK: {
+                    ESP_LOGI(TAG, "Processing START_TRACK action for track %d", msg.data.start_track.track_index);
+                    int track = msg.data.start_track.track_index;
+                    if (track >= 0 && track < MAX_TRACKS) {
+                        // Stop track if already playing
+                        audio_pipeline_stop(stream->tracks[track].pipeline);
+                        audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
+                        audio_pipeline_reset_ringbuffer(stream->tracks[track].pipeline);
+                        audio_pipeline_reset_elements(stream->tracks[track].pipeline);
+                        
+                        // Set new file path
+                        audio_element_set_uri(stream->tracks[track].fatfs_e, msg.data.start_track.file_path);
+                        
+                        // Start the track
+                        audio_pipeline_run(stream->tracks[track].pipeline);
+                        ESP_LOGI(TAG, "Started track %d with file: %s", track, msg.data.start_track.file_path);
+                    }
+                    break;
+                }
+
+                case AUDIO_ACTION_STOP_TRACK: {
+                    ESP_LOGI(TAG, "Processing STOP_TRACK action for track %d", msg.data.stop_track.track_index);
+                    int track = msg.data.stop_track.track_index;
+                    if (track >= 0 && track < MAX_TRACKS) {
+                        audio_pipeline_stop(stream->tracks[track].pipeline);
+                        audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
+                        audio_pipeline_terminate(stream->tracks[track].pipeline);
+                        ESP_LOGI(TAG, "Stopped track %d", track);
+                    }
+                    break;
+                }
+
+                case AUDIO_ACTION_SET_GAIN: {
+                    ESP_LOGI(TAG, "Processing SET_GAIN action for track %d", msg.data.set_gain.track_index);
+                    int track = msg.data.set_gain.track_index;
+                    if (track >= 0 && track < MAX_TRACKS) {
+                        float gain[2] = {0.0f, msg.data.set_gain.gain_db};
+                        downmix_set_gain_info(stream->downmix_e, gain, track);
+                        ESP_LOGI(TAG, "Set track %d gain to %.1f dB", track, msg.data.set_gain.gain_db);
+                    }
+                    break;
+                }
 
                 case AUDIO_ACTION_NEXT_TRACK:
                     ESP_LOGI(TAG, "Processing NEXT_TRACK action...");
@@ -569,6 +623,27 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
     
+    ESP_LOGI(TAG, "[ 1.5 ] Initialize WiFi manager");
+    // Initialize WiFi manager - this will attempt to connect using stored credentials
+    ret = wifi_manager_init();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi connected successfully");
+        char ip_str[16];
+        if (wifi_manager_get_ip_string(ip_str, sizeof(ip_str)) == ESP_OK) {
+            ESP_LOGI(TAG, "IP Address: %s", ip_str);
+        }
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "No WiFi credentials found in NVS. WiFi not connected.");
+        ESP_LOGI(TAG, "To configure WiFi, use wifi_manager_add_network() or store credentials in NVS:");
+        ESP_LOGI(TAG, "  - namespace: '%s'", WIFI_NVS_NAMESPACE);
+        ESP_LOGI(TAG, "  - SSID prefix: '%s' (e.g., %s0, %s1, ...)", WIFI_NVS_SSID_PREFIX, WIFI_NVS_SSID_PREFIX, WIFI_NVS_SSID_PREFIX);
+        ESP_LOGI(TAG, "  - Password prefix: '%s' (e.g., %s0, %s1, ...)", WIFI_NVS_PASSWORD_PREFIX, WIFI_NVS_PASSWORD_PREFIX, WIFI_NVS_PASSWORD_PREFIX);
+        ESP_LOGI(TAG, "  - Network count key: '%s'", WIFI_NVS_COUNT_KEY);
+    } else {
+        ESP_LOGW(TAG, "WiFi initialization failed: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Continuing without network connectivity");
+    }
+    
     // Initialize peripherals management
     esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
     esp_periph_set_handle_t set = esp_periph_set_init(&periph_cfg);
@@ -619,7 +694,7 @@ void app_main(void)
     ESP_LOGI(TAG, "[ 6 ] Send START message to audio control task");
     audio_control_msg_t start_msg = {
         .type = AUDIO_ACTION_START,
-        .data = NULL
+        .data = {}  // Zero-initialize the union
     };
     if (xQueueSend(audio_control_queue, &start_msg, portMAX_DELAY) != pdPASS) {
         ESP_LOGE(TAG, "Failed to send START message to audio control task");

@@ -63,14 +63,36 @@ typedef struct
 typedef enum {
     AUDIO_ACTION_START,
     AUDIO_ACTION_NEXT_TRACK,
-    AUDIO_ACTION_PLAY_PAUSE
+    AUDIO_ACTION_PLAY_PAUSE,
+    AUDIO_ACTION_START_TRACK,  // Start a specific track with file
+    AUDIO_ACTION_STOP_TRACK,   // Stop a specific track
+    AUDIO_ACTION_SET_GAIN      // Set gain for a track
     // Add other audio control actions as needed
 } audio_action_type_t;
 
+// Data structures for specific actions
+typedef struct {
+    int track_index;
+    char file_path[256];
+} track_start_data_t;
+
+typedef struct {
+    int track_index;
+} track_stop_data_t;
+
+typedef struct {
+    int track_index;
+    float gain_db;
+} track_gain_data_t;
+
 typedef struct {
     audio_action_type_t type;
-    void *data; // usually a str or struct based on the action
-
+    union {
+        track_start_data_t start_track;
+        track_stop_data_t stop_track;
+        track_gain_data_t set_gain;
+        void *generic_data;
+    } data;
 } audio_control_msg_t;
 
 // Debug function declarations
