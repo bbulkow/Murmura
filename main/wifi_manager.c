@@ -659,7 +659,7 @@ esp_err_t wifi_manager_init(void)
             esp_wifi_scan_get_ap_num(&ap_count);
             
             if (ap_count > 0) {
-                s_scan_results = malloc(ap_count * sizeof(wifi_ap_record_t));
+                s_scan_results = heap_caps_malloc(ap_count * sizeof(wifi_ap_record_t), MALLOC_CAP_SPIRAM);
                 if (s_scan_results) {
                     s_scan_count = ap_count;
                     esp_wifi_scan_get_ap_records(&s_scan_count, s_scan_results);

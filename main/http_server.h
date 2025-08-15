@@ -6,12 +6,12 @@
 
 // HTTP Server configuration
 #define HTTP_SERVER_PORT 80
-#define HTTP_MAX_URI_LEN 256
-#define HTTP_MAX_RESP_SIZE 4096
+#define HTTP_MAX_URI_LEN 128 // 256
+#define HTTP_MAX_RESP_SIZE 2048 // 4096
 
 // JSON response buffer sizes
-#define JSON_BUFFER_SIZE 2048
-#define MAX_FILE_PATH_LEN 256
+#define JSON_BUFFER_SIZE 1024 // 2048
+#define MAX_FILE_PATH_LEN 64 // 256
 
 // Loop status structure for tracking
 typedef struct {

@@ -117,7 +117,8 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
              (strncmp(ent->d_name + lenstr - sizeof(MP3_SUFFIX) + 1 , MP3_SUFFIX, sizeof(MP3_SUFFIX) -1) == 0 ) ) {
             ESP_LOGI(TAG, "[ MFG ] Found MP3: %s", ent->d_name);
             if (filename) free(filename);
-            filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
+            filename = heap_caps_malloc(lenstr + sizeof(PATH_PREFIX) + 2, MALLOC_CAP_SPIRAM);
+            // filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
             sprintf(filename, "%s/%s", PATH_PREFIX, ent->d_name);
             *filetype_o = FILETYPE_MP3;
         }
@@ -126,7 +127,8 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
              (strncmp(ent->d_name + lenstr - sizeof(WAV_SUFFIX) + 1 , WAV_SUFFIX, sizeof(WAV_SUFFIX) -1) == 0 ) ) {
             ESP_LOGI(TAG, "[ MFG ] Found WAV: %s", ent->d_name);
             if (filename) free(filename);
-            filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
+            filename = heap_caps_malloc(lenstr + sizeof(PATH_PREFIX) + 2, MALLOC_CAP_SPIRAM);
+            // filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
             sprintf(filename, "%s/%s", PATH_PREFIX, ent->d_name);
             *filetype_o = FILETYPE_WAV;
         }
@@ -164,7 +166,8 @@ esp_err_t music_filenames_get(char ***file_array_o) {
     }
     n_files++; // let's put a null at the end
 
-    char **files = malloc(n_files * sizeof(void *));
+    char **files = heap_caps_malloc(n_files * sizeof(void *), MALLOC_CAP_SPIRAM);
+    // char **files = malloc(n_files * sizeof(void *));
     if (files == NULL) return(ESP_FAIL);
     rewinddir(dir);
 

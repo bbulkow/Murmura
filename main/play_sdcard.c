@@ -624,6 +624,27 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     
     ESP_LOGI(TAG, "[ 1.5 ] Initialize WiFi manager");
+    
+    // Check if WiFi networks are already stored to avoid unnecessary NVS writes
+    wifiman_config_t existing_config;
+    esp_err_t read_ret = wifi_manager_read_credentials(&existing_config);
+    
+    if (read_ret != ESP_OK || existing_config.network_count == 0) {
+        // No networks stored yet, add them for the first time
+        ESP_LOGI(TAG, "No WiFi networks found in NVS, adding initial networks...");
+        wifi_manager_add_network("medea", "!medea4u");
+        // wifi_manager_add_network("YourOfficeWiFi", "YourOfficePassword");
+        // wifi_manager_add_network("YourMobileHotspot", "YourHotspotPassword");
+        ESP_LOGI(TAG, "WiFi networks stored in NVS");
+    } else {
+        ESP_LOGI(TAG, "Found %d existing WiFi networks in NVS, skipping add", existing_config.network_count);
+        // List existing networks for debug
+        for (int i = 0; i < existing_config.network_count; i++) {
+            ESP_LOGI(TAG, "  Network %d: %s (Auth failed: %d)", 
+                     i, existing_config.networks[i].ssid, existing_config.networks[i].auth_failed);
+        }
+    }
+    
     // Initialize WiFi manager - this will attempt to connect using stored credentials
     ret = wifi_manager_init();
     if (ret == ESP_OK) {
@@ -664,11 +685,24 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "[ 2 ] Start codec chip");
-    audio_board_handle_t board_handle = audio_board_init();
-    audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
-
+    audio_board_handle_t board_handle = NULL;
     int player_volume = 75;
-    audio_hal_set_volume(board_handle->audio_hal, player_volume);
+    
+#ifdef CONFIG_AUDIO_BOARD_CUSTOM
+    ESP_LOGI(TAG, "Custom board detected, skipping external codec initialization");
+    ESP_LOGI(TAG, "Audio will be output directly via I2S to pins (no external codec)");
+    // For custom board, we don't initialize external codec
+    // Audio will go directly to I2S pins for connection to external amp/DAC
+#else
+    board_handle = audio_board_init();
+    if (board_handle && board_handle->audio_hal) {
+        audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+        audio_hal_set_volume(board_handle->audio_hal, player_volume);
+        ESP_LOGI(TAG, "External codec initialized and volume set to %d %%", player_volume);
+    } else {
+        ESP_LOGW(TAG, "Failed to initialize audio board/codec");
+    }
+#endif
 
 
     ESP_LOGI(TAG, "[ 4 ] Set up event listener");
@@ -729,7 +763,14 @@ void app_main(void)
                 if (player_volume > 100) {
                     player_volume = 100;
                 }
-                audio_hal_set_volume(board_handle->audio_hal, player_volume);
+#ifdef CONFIG_AUDIO_BOARD_CUSTOM
+                ESP_LOGI(TAG, "[ * ] Volume control not available on custom board - would control digital gain");
+                // TODO: For custom board, implement digital volume control via downmix gain
+#else
+                if (board_handle && board_handle->audio_hal) {
+                    audio_hal_set_volume(board_handle->audio_hal, player_volume);
+                }
+#endif
                 ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
             } else if ((int) msg.data == get_input_voldown_id()) {
                 ESP_LOGI(TAG, "[ * ] [Vol-] touch tap event");
@@ -737,7 +778,14 @@ void app_main(void)
                 if (player_volume < 0) {
                     player_volume = 0;
                 }
-                audio_hal_set_volume(board_handle->audio_hal, player_volume);
+#ifdef CONFIG_AUDIO_BOARD_CUSTOM
+                ESP_LOGI(TAG, "[ * ] Volume control not available on custom board - would control digital gain");
+                // TODO: For custom board, implement digital volume control via downmix gain
+#else
+                if (board_handle && board_handle->audio_hal) {
+                    audio_hal_set_volume(board_handle->audio_hal, player_volume);
+                }
+#endif
                 ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
             } else if ((int) msg.data == get_input_play_id()) {
                 ESP_LOGI(TAG, "[ * ] play button pressed - would send control message to toggle track");

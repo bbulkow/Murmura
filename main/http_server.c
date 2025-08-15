@@ -46,7 +46,7 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json) {
  * @brief Parse JSON from request body
  */
 static cJSON* parse_json_request(httpd_req_t *req) {
-    char *buf = malloc(req->content_len + 1);
+    char *buf = heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM);
     if (!buf) {
         ESP_LOGE(TAG, "Failed to allocate memory for request buffer");
         return NULL;
@@ -526,7 +526,9 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     }
     
     // Allocate and initialize loop manager
-    g_loop_manager = calloc(1, sizeof(loop_manager_t));
+    g_loop_manager = heap_caps_malloc(sizeof(loop_manager_t), MALLOC_CAP_SPIRAM);
+    memset(g_loop_manager,0, sizeof(loop_manager_t));
+//    g_loop_manager = calloc(1, sizeof(loop_manager_t));
     if (!g_loop_manager) {
         ESP_LOGE(TAG, "Failed to allocate loop manager");
         return ESP_FAIL;

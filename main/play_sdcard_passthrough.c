@@ -102,7 +102,8 @@ esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
         // Create a raw stream element as passthrough
         raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
         raw_cfg.type = AUDIO_STREAM_WRITER;
-        raw_cfg.out_rb_size = 8192;
+        // raw_cfg.out_rb_size = 8192;
+        raw_cfg.out_rb_size = 4096;
         stream->tracks[i].raw_write_e = raw_stream_init(&raw_cfg);
 
         // Register elements in track pipeline

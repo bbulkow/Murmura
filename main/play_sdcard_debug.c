@@ -52,10 +52,10 @@ static const char *TAG = "PLAY_SDCARD_DEBUG";
 esp_err_t check_file_exists(const char *path) {
     struct stat file_stat;
     if (stat(path, &file_stat) == -1) {
-        ESP_LOGE(TAG, "File does not exist: %s", path);
+        ESP_LOGD(TAG, "File does not exist: %s", path);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "File exists: %s, size: %ld bytes", path, (long)file_stat.st_size);
+    ESP_LOGD(TAG, "File exists: %s, size: %ld bytes", path, (long)file_stat.st_size);
     return ESP_OK;
 }
 
@@ -63,7 +63,7 @@ esp_err_t check_file_exists(const char *path) {
 esp_err_t validate_wav_header(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) {
-        ESP_LOGE(TAG, "Failed to open file: %s", path);
+        ESP_LOGD(TAG, "Failed to open file: %s", path);
         return ESP_FAIL;
     }
     
@@ -86,29 +86,29 @@ esp_err_t validate_wav_header(const char *path) {
     fclose(file);
     
     if (read < 36) {
-        ESP_LOGE(TAG, "File too small to be a valid WAV: %s", path);
+        ESP_LOGD(TAG, "File too small to be a valid WAV: %s", path);
         return ESP_FAIL;
     }
     
     // Check RIFF header
     if (strncmp(wav_header.riff, "RIFF", 4) != 0) {
-        ESP_LOGE(TAG, "Invalid RIFF header in %s: %.4s", path, wav_header.riff);
+        ESP_LOGD(TAG, "Invalid RIFF header in %s: %.4s", path, wav_header.riff);
         return ESP_FAIL;
     }
     
     // Check WAVE format
     if (strncmp(wav_header.wave, "WAVE", 4) != 0) {
-        ESP_LOGE(TAG, "Invalid WAVE format in %s: %.4s", path, wav_header.wave);
+        ESP_LOGD(TAG, "Invalid WAVE format in %s: %.4s", path, wav_header.wave);
         return ESP_FAIL;
     }
     
     // Check fmt chunk
     if (strncmp(wav_header.fmt, "fmt ", 4) != 0) {
-        ESP_LOGE(TAG, "Invalid fmt chunk in %s: %.4s", path, wav_header.fmt);
+        ESP_LOGD(TAG, "Invalid fmt chunk in %s: %.4s", path, wav_header.fmt);
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "WAV file %s: format=%d, channels=%d, sample_rate=%lu, bits=%d", 
+    ESP_LOGD(TAG, "WAV file %s: format=%d, channels=%d, sample_rate=%lu, bits=%d", 
              path, wav_header.format, wav_header.channels, 
              (unsigned long)wav_header.sample_rate, wav_header.bits_per_sample);
     
@@ -128,7 +128,7 @@ void audio_control_start_debug(audio_stream_t *stream) {
     
     // First, check if files exist and are valid
     for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGI(TAG, "Checking track %d: %s", i, tracks[i]);
+        ESP_LOGD(TAG, "Checking track %d: %s", i, tracks[i]);
         
         if (check_file_exists(tracks[i]) != ESP_OK) {
             ESP_LOGE(TAG, "Track %d file missing!", i);
