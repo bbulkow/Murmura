@@ -339,6 +339,7 @@ void audio_stream_deinit(audio_stream_t *stream) {
 typedef struct {
     QueueHandle_t queue;
     audio_event_iface_handle_t evt;
+    audio_board_handle_t board_handle;
 } audio_control_parameters_t;
 
 
@@ -500,9 +501,18 @@ void audio_control_task(void *pvParameters)
                     // Update loop manager state
                     loop_manager->global_volume_percent = volume;
                     
-                    // Note: The actual volume control will be handled by app_main
-                    // We'll need to pass the board_handle to this task or use a global
-                    ESP_LOGI(TAG, "Global volume set to %d%% (board handle update needed)", volume);
+                    // Actually set the hardware volume using the board handle
+#ifdef CONFIG_AUDIO_BOARD_CUSTOM
+                    ESP_LOGI(TAG, "Global volume set to %d%% (custom board - no hardware codec)", volume);
+                    // For custom board, we could implement digital volume control via downmix gain
+#else
+                    if (params->board_handle && params->board_handle->audio_hal) {
+                        audio_hal_set_volume(params->board_handle->audio_hal, volume);
+                        ESP_LOGI(TAG, "Global volume set to %d%% (hardware codec updated)", volume);
+                    } else {
+                        ESP_LOGW(TAG, "Global volume set to %d%% (no board handle available)", volume);
+                    }
+#endif
                     break;
                 }
 
@@ -795,7 +805,8 @@ void app_main(void)
     // Start the audio control task
     audio_control_parameters_t params = {
         .queue = audio_control_queue,
-        .evt = evt
+        .evt = evt,
+        .board_handle = board_handle
     };
 
     if (xTaskCreate(audio_control_task, "audio_control", 4096, (void *)&params, 5, NULL) != pdPASS) {
