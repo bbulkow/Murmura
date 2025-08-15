@@ -197,6 +197,7 @@ esp_err_t audio_stream_init(audio_stream_t **stream_o) {
         // Create fatfs reader
         fatfs_stream_cfg_t fatfs_cfg = FATFS_STREAM_CFG_DEFAULT();
         fatfs_cfg.type = AUDIO_STREAM_READER;
+        fatfs_cfg.task_core = 1;  // Run on APP CPU (core 1) to avoid WiFi conflicts
         stream->tracks[i].fatfs_e = fatfs_stream_init(&fatfs_cfg);
         
 #if 0
@@ -502,17 +503,12 @@ void audio_control_task(void *pvParameters)
                     loop_manager->global_volume_percent = volume;
                     
                     // Actually set the hardware volume using the board handle
-#ifdef CONFIG_AUDIO_BOARD_CUSTOM
-                    ESP_LOGI(TAG, "Global volume set to %d%% (custom board - no hardware codec)", volume);
-                    // For custom board, we could implement digital volume control via downmix gain
-#else
                     if (params->board_handle && params->board_handle->audio_hal) {
                         audio_hal_set_volume(params->board_handle->audio_hal, volume);
                         ESP_LOGI(TAG, "Global volume set to %d%% (hardware codec updated)", volume);
                     } else {
                         ESP_LOGW(TAG, "Global volume set to %d%% (no board handle available)", volume);
                     }
-#endif
                     break;
                 }
 
@@ -694,6 +690,12 @@ void app_main(void)
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
     esp_log_level_set("DOWNMIX", ESP_LOG_DEBUG);
+    
+    // Reduce log spew from ESP-ADF components
+    esp_log_level_set("AUDIO_ELEMENT", ESP_LOG_ERROR);
+    esp_log_level_set("AUDIO_PIPELINE", ESP_LOG_ERROR);
+    esp_log_level_set("WAV_DECODER", ESP_LOG_ERROR);
+    esp_log_level_set("FATFS_STREAM", ESP_LOG_ERROR);
 
     ESP_LOGI(TAG, "[ 0 ] Create control queue and start audio control task");
     // Create a queue to handle audio control messages
@@ -778,12 +780,6 @@ void app_main(void)
     audio_board_handle_t board_handle = NULL;
     int player_volume = 75;
     
-#ifdef CONFIG_AUDIO_BOARD_CUSTOM
-    ESP_LOGI(TAG, "Custom board detected, skipping external codec initialization");
-    ESP_LOGI(TAG, "Audio will be output directly via I2S to pins (no external codec)");
-    // For custom board, we don't initialize external codec
-    // Audio will go directly to I2S pins for connection to external amp/DAC
-#else
     board_handle = audio_board_init();
     if (board_handle && board_handle->audio_hal) {
         audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
@@ -792,29 +788,38 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "Failed to initialize audio board/codec");
     }
-#endif
 
 
-    ESP_LOGI(TAG, "[ 4 ] Set up event listener");
+    ESP_LOGI(TAG, "[ 4 ] Set up event listeners");
+    // Create separate event interfaces for peripherals and audio pipeline
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
-    audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
+    audio_event_iface_handle_t periph_evt = audio_event_iface_init(&evt_cfg);
+    
+    audio_event_iface_cfg_t audio_evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
+    audio_event_iface_handle_t audio_evt = audio_event_iface_init(&audio_evt_cfg);
 
     ESP_LOGI(TAG, "[ 5 ] Listen to peripherals");
-    audio_event_iface_set_listener(esp_periph_set_get_event_iface(set), evt);
+    audio_event_iface_set_listener(esp_periph_set_get_event_iface(set), periph_evt);
 
-    // Start the audio control task
-    audio_control_parameters_t params = {
-        .queue = audio_control_queue,
-        .evt = evt,
-        .board_handle = board_handle
-    };
+    // Start the audio control task - allocate params on heap so it persists
+    audio_control_parameters_t *params = heap_caps_malloc(sizeof(audio_control_parameters_t), MALLOC_CAP_DEFAULT);
+    if (!params) {
+        ESP_LOGE(TAG, "Failed to allocate memory for audio control parameters");
+        vQueueDelete(audio_control_queue);
+        return;
+    }
+    
+    params->queue = audio_control_queue;
+    params->evt = audio_evt;  // Use the audio event interface, not the peripheral one
+    params->board_handle = board_handle;
 
     // Pin audio control task to Core 1 (APP CPU) to avoid WiFi interference on Core 0
-    if (xTaskCreatePinnedToCore(audio_control_task, "audio_control", 4096, (void *)&params, 
+    if (xTaskCreatePinnedToCore(audio_control_task, "audio_control", 4096, (void *)params, 
                                  5,  // Higher priority than WiFi
                                  NULL,
                                  1) != pdPASS) {  // Pin to Core 1 (APP CPU)
         ESP_LOGE(TAG, "Failed to create audio control task");
+        free(params);
         vQueueDelete(audio_control_queue);
         return;
     }
@@ -836,7 +841,7 @@ void app_main(void)
 
         audio_event_iface_msg_t msg;
 
-        esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
+        esp_err_t ret = audio_event_iface_listen(periph_evt, &msg, portMAX_DELAY);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "[ * ] Event interface error : %d errno %d ", ret, errno);
             continue;
@@ -858,30 +863,36 @@ void app_main(void)
                 if (player_volume > 100) {
                     player_volume = 100;
                 }
-#ifdef CONFIG_AUDIO_BOARD_CUSTOM
-                ESP_LOGI(TAG, "[ * ] Volume control not available on custom board - would control digital gain");
-                // TODO: For custom board, implement digital volume control via downmix gain
-#else
                 if (board_handle && board_handle->audio_hal) {
                     audio_hal_set_volume(board_handle->audio_hal, player_volume);
                 }
-#endif
                 ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
+                
+                // Also update the loop manager's global volume state via control queue
+                audio_control_msg_t vol_msg = {
+                    .type = AUDIO_ACTION_SET_GLOBAL_VOLUME,
+                    .data = {}
+                };
+                vol_msg.data.set_global_volume.volume_percent = player_volume;
+                xQueueSend(audio_control_queue, &vol_msg, 0);  // Non-blocking send
             } else if ((int) msg.data == get_input_voldown_id()) {
                 ESP_LOGI(TAG, "[ * ] [Vol-] touch tap event");
                 player_volume -= 10;
                 if (player_volume < 0) {
                     player_volume = 0;
                 }
-#ifdef CONFIG_AUDIO_BOARD_CUSTOM
-                ESP_LOGI(TAG, "[ * ] Volume control not available on custom board - would control digital gain");
-                // TODO: For custom board, implement digital volume control via downmix gain
-#else
                 if (board_handle && board_handle->audio_hal) {
                     audio_hal_set_volume(board_handle->audio_hal, player_volume);
                 }
-#endif
                 ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
+                
+                // Also update the loop manager's global volume state via control queue
+                audio_control_msg_t vol_msg = {
+                    .type = AUDIO_ACTION_SET_GLOBAL_VOLUME,
+                    .data = {}
+                };
+                vol_msg.data.set_global_volume.volume_percent = player_volume;
+                xQueueSend(audio_control_queue, &vol_msg, 0);  // Non-blocking send
             } else if ((int) msg.data == get_input_play_id()) {
                 ESP_LOGI(TAG, "[ * ] play button pressed - would send control message to toggle track");
                 // TODO: Send a control message to the audio_control_task to toggle track 0
@@ -937,10 +948,11 @@ void app_main(void)
 
     /* Stop all periph before removing the listener */
     esp_periph_set_stop_all(set);
-    audio_event_iface_remove_listener(esp_periph_set_get_event_iface(set), evt);
+    audio_event_iface_remove_listener(esp_periph_set_get_event_iface(set), periph_evt);
 
     /* Make sure audio_pipeline_remove_listener & audio_event_iface_remove_listener are called before destroying event_iface */
-    audio_event_iface_destroy(evt);
+    audio_event_iface_destroy(periph_evt);
+    audio_event_iface_destroy(audio_evt);
 
     /* Release peripheral resources */
     esp_periph_set_destroy(set);
