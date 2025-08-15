@@ -57,6 +57,7 @@
 #include "music_files.h"
 #include "wifi_manager.h"
 #include "http_server.h"
+#include <math.h>  // For log10f
 
 static const char *TAG = "PLAY_SDCARD";
 
@@ -354,6 +355,21 @@ void audio_control_task(void *pvParameters)
     audio_stream_t *stream;
     // Use the passthrough approach to fix decoder output issue
     audio_stream_init_with_passthrough(&stream);
+    
+    // Initialize loop tracking state
+    loop_manager_t *loop_manager = heap_caps_calloc(1, sizeof(loop_manager_t), MALLOC_CAP_SPIRAM);
+    if (!loop_manager) {
+        ESP_LOGE(TAG, "Failed to allocate loop manager");
+        return;
+    }
+    loop_manager->audio_stream = stream;
+    loop_manager->audio_control_queue = control_queue;
+    loop_manager->global_volume_percent = 75;  // Default volume 75%
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        loop_manager->loops[i].is_playing = false;
+        loop_manager->loops[i].volume_percent = 100;  // Default to 100% (0dB)
+        loop_manager->loops[i].track_index = i;
+    }
 
     ESP_LOGI(TAG, "audio_control: Initialize HTTP server");
     // Initialize HTTP server for remote control
@@ -361,6 +377,8 @@ void audio_control_task(void *pvParameters)
     if (http_ret == ESP_OK) {
         ESP_LOGI(TAG, "HTTP server initialized successfully");
         ESP_LOGI(TAG, "Access the API documentation at http://<device-ip>/");
+        // Update HTTP server with loop manager reference
+        http_server_set_loop_manager(loop_manager);
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
     }
@@ -386,6 +404,22 @@ void audio_control_task(void *pvParameters)
                     ESP_LOGI(TAG, "Processing START action...");
                     audio_control_start(stream);
                     audio_started = true;
+                    
+                    // Update loop manager state for the initial tracks
+                    const char *initial_tracks[] = {
+                        "/sdcard/track1.wav",
+                        "/sdcard/track2.wav", 
+                        "/sdcard/track3.wav"
+                    };
+                    for (int i = 0; i < MAX_TRACKS; i++) {
+                        loop_manager->loops[i].is_playing = true;
+                        strncpy(loop_manager->loops[i].file_path, initial_tracks[i], 
+                                sizeof(loop_manager->loops[i].file_path) - 1);
+                        // Note: volume was already initialized to 100% when loop_manager was created
+                        // We don't change it here to preserve any volume set before starting
+                        ESP_LOGI(TAG, "Set loop_manager track %d: is_playing=true, file=%s, volume=%d%%", 
+                                 i, initial_tracks[i], loop_manager->loops[i].volume_percent);
+                    }
                     break;
 
                 case AUDIO_ACTION_START_TRACK: {
@@ -404,6 +438,11 @@ void audio_control_task(void *pvParameters)
                         // Start the track
                         audio_pipeline_run(stream->tracks[track].pipeline);
                         ESP_LOGI(TAG, "Started track %d with file: %s", track, msg.data.start_track.file_path);
+                        
+                        // Update loop manager state
+                        loop_manager->loops[track].is_playing = true;
+                        strncpy(loop_manager->loops[track].file_path, msg.data.start_track.file_path, 
+                                sizeof(loop_manager->loops[track].file_path) - 1);
                     }
                     break;
                 }
@@ -416,18 +455,54 @@ void audio_control_task(void *pvParameters)
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
                         audio_pipeline_terminate(stream->tracks[track].pipeline);
                         ESP_LOGI(TAG, "Stopped track %d", track);
+                        
+                        // Update loop manager state - only change playing state, preserve file path
+                        loop_manager->loops[track].is_playing = false;
+                        // Note: We intentionally preserve file_path so track can be restarted
                     }
                     break;
                 }
 
-                case AUDIO_ACTION_SET_GAIN: {
-                    ESP_LOGI(TAG, "Processing SET_GAIN action for track %d", msg.data.set_gain.track_index);
-                    int track = msg.data.set_gain.track_index;
+                case AUDIO_ACTION_SET_VOLUME: {
+                    ESP_LOGI(TAG, "Processing SET_VOLUME action for track %d: %d%%", 
+                             msg.data.set_volume.track_index, msg.data.set_volume.volume_percent);
+                    int track = msg.data.set_volume.track_index;
                     if (track >= 0 && track < MAX_TRACKS) {
-                        float gain[2] = {0.0f, msg.data.set_gain.gain_db};
+                        int volume = msg.data.set_volume.volume_percent;
+                        if (volume < 0) volume = 0;
+                        if (volume > 100) volume = 100;
+                        
+                        // Convert volume percent to dB gain
+                        // 100% = 0dB, 50% = -6dB, 25% = -12dB, 0% = -60dB
+                        float gain_db;
+                        if (volume == 0) {
+                            gain_db = -60.0f;  // Effectively mute
+                        } else {
+                            gain_db = 20.0f * log10f(volume / 100.0f);
+                        }
+                        
+                        float gain[2] = {0.0f, gain_db};
                         downmix_set_gain_info(stream->downmix_e, gain, track);
-                        ESP_LOGI(TAG, "Set track %d gain to %.1f dB", track, msg.data.set_gain.gain_db);
+                        ESP_LOGI(TAG, "Set track %d volume to %d%% (%.1f dB)", track, volume, gain_db);
+                        
+                        // Update loop manager state
+                        loop_manager->loops[track].volume_percent = volume;
                     }
+                    break;
+                }
+
+                case AUDIO_ACTION_SET_GLOBAL_VOLUME: {
+                    ESP_LOGI(TAG, "Processing SET_GLOBAL_VOLUME action: %d%%", msg.data.set_global_volume.volume_percent);
+                    int volume = msg.data.set_global_volume.volume_percent;
+                    if (volume < 0) volume = 0;
+                    if (volume > 100) volume = 100;
+                    
+                    // Update loop manager state
+                    loop_manager->global_volume_percent = volume;
+                    
+                    // Note: The actual volume control will be handled by app_main
+                    // We'll need to pass the board_handle to this task or use a global
+                    ESP_LOGI(TAG, "Global volume set to %d%% (board handle update needed)", volume);
                     break;
                 }
 
@@ -476,10 +551,10 @@ void audio_control_task(void *pvParameters)
                 bool at_end = (info.byte_pos >= info.total_bytes - 1024) && (info.total_bytes > 0);
                 
                 // Log states periodically or when at end of file
-                if (loop_check_counter % 50 == 0 || at_end) {  // Every ~0.5 second or at EOF
-                    ESP_LOGI(TAG, "Track %d: fatfs=%d, decode=%d, raw=%d, pos=%lld/%lld", 
-                             i, fatfs_state, decode_state, raw_state, info.byte_pos, info.total_bytes);
-                }
+                // if (loop_check_counter % 50 == 0 || at_end) {  // Every ~0.5 second or at EOF
+                //     ESP_LOGI(TAG, "Track %d: fatfs=%d, decode=%d, raw=%d, pos=%lld/%lld", 
+                //              i, fatfs_state, decode_state, raw_state, info.byte_pos, info.total_bytes);
+                // }
                 
                 // Detect when track has finished playing
                 if (at_end && !track_finished[i]) {
@@ -499,13 +574,18 @@ void audio_control_task(void *pvParameters)
                     audio_pipeline_reset_ringbuffer(stream->tracks[i].pipeline);
                     audio_pipeline_reset_elements(stream->tracks[i].pipeline);
                     
-                    // Re-set the URI
-                    const char *tracks[] = {
-                        "/sdcard/track1.wav",
-                        "/sdcard/track2.wav", 
-                        "/sdcard/track3.wav"
-                    };
-                    audio_element_set_uri(stream->tracks[i].fatfs_e, tracks[i]);
+                    // Re-set the URI (keep the same file that was playing)
+                    const char *current_file = loop_manager->loops[i].file_path;
+                    if (strlen(current_file) == 0) {
+                        // Fallback to default tracks if no file path is stored
+                        const char *tracks[] = {
+                            "/sdcard/track1.wav",
+                            "/sdcard/track2.wav", 
+                            "/sdcard/track3.wav"
+                        };
+                        current_file = tracks[i];
+                    }
+                    audio_element_set_uri(stream->tracks[i].fatfs_e, current_file);
                     
                     // Restart pipeline
                     audio_pipeline_run(stream->tracks[i].pipeline);

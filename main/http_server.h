@@ -17,13 +17,14 @@
 typedef struct {
     bool is_playing;
     char file_path[MAX_FILE_PATH_LEN];
-    float gain_db;
+    int volume_percent;  // 0-100%
     int track_index;
 } loop_status_t;
 
 // Global loop manager structure
 typedef struct {
     loop_status_t loops[MAX_TRACKS];
+    int global_volume_percent;  // 0-100%
     audio_stream_t *audio_stream;
     QueueHandle_t audio_control_queue;
 } loop_manager_t;
@@ -51,5 +52,13 @@ esp_err_t http_server_stop(void);
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t http_server_get_loop_status(loop_manager_t *manager);
+
+/**
+ * @brief Set the loop manager reference for the HTTP server
+ * 
+ * @param manager Pointer to the loop manager maintained by audio_control_task
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t http_server_set_loop_manager(loop_manager_t *manager);
 
 #endif // HTTP_SERVER_H

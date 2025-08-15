@@ -66,7 +66,8 @@ typedef enum {
     AUDIO_ACTION_PLAY_PAUSE,
     AUDIO_ACTION_START_TRACK,  // Start a specific track with file
     AUDIO_ACTION_STOP_TRACK,   // Stop a specific track
-    AUDIO_ACTION_SET_GAIN      // Set gain for a track
+    AUDIO_ACTION_SET_VOLUME,   // Set volume for a track (0-100%)
+    AUDIO_ACTION_SET_GLOBAL_VOLUME // Set global/master volume (0-100%)
     // Add other audio control actions as needed
 } audio_action_type_t;
 
@@ -82,15 +83,20 @@ typedef struct {
 
 typedef struct {
     int track_index;
-    float gain_db;
-} track_gain_data_t;
+    int volume_percent;  // 0-100%
+} track_volume_data_t;
+
+typedef struct {
+    int volume_percent;  // 0-100%
+} global_volume_data_t;
 
 typedef struct {
     audio_action_type_t type;
     union {
         track_start_data_t start_track;
         track_stop_data_t stop_track;
-        track_gain_data_t set_gain;
+        track_volume_data_t set_volume;
+        global_volume_data_t set_global_volume;
         void *generic_data;
     } data;
 } audio_control_msg_t;
