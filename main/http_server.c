@@ -11,6 +11,7 @@
 #include "play_sdcard.h"
 #include "wifi_manager.h"
 #include "esp_wifi.h"
+#include "config_manager.h"
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -32,6 +33,11 @@ static esp_err_t wifi_status_handler(httpd_req_t *req);
 static esp_err_t wifi_networks_handler(httpd_req_t *req);
 static esp_err_t wifi_add_network_handler(httpd_req_t *req);
 static esp_err_t wifi_remove_network_handler(httpd_req_t *req);
+// Configuration management handlers
+static esp_err_t config_save_handler(httpd_req_t *req);
+static esp_err_t config_load_handler(httpd_req_t *req);
+static esp_err_t config_delete_handler(httpd_req_t *req);
+static esp_err_t config_status_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -695,7 +701,7 @@ static esp_err_t wifi_networks_handler(httpd_req_t *req) {
             cJSON_AddStringToObject(network_obj, "ssid", networks[i].ssid);
             // Don't expose the password in the response for security
             cJSON_AddBoolToObject(network_obj, "has_password", strlen(networks[i].password) > 0);
-            cJSON_AddBoolToObject(network_obj, "auth_failed", networks[i].auth_failed);
+            cJSON_AddNumberToObject(network_obj, "auth_fail_count", networks[i].auth_fail_count);
             cJSON_AddBoolToObject(network_obj, "available", networks[i].available);
             cJSON_AddNumberToObject(network_obj, "rssi", networks[i].rssi);
             
@@ -835,6 +841,194 @@ static esp_err_t wifi_remove_network_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief GET /api/config/status - Get configuration status
+ */
+static esp_err_t config_status_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/config/status");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Check if configuration file exists
+    bool config_exists_flag = config_exists();
+    cJSON_AddBoolToObject(response, "config_exists", config_exists_flag);
+    cJSON_AddStringToObject(response, "config_path", CONFIG_FILE_PATH);
+    
+    // If configuration exists, show current vs saved
+    if (config_exists_flag && g_loop_manager) {
+        // Load saved configuration
+        loop_config_t saved_config;
+        if (config_load(&saved_config) == ESP_OK) {
+            // Compare current with saved
+            cJSON *current = cJSON_CreateObject();
+            cJSON *saved = cJSON_CreateObject();
+            
+            // Add current state
+            cJSON_AddNumberToObject(current, "global_volume", g_loop_manager->global_volume_percent);
+            cJSON *current_loops = cJSON_CreateArray();
+            for (int i = 0; i < MAX_TRACKS; i++) {
+                cJSON *loop = cJSON_CreateObject();
+                cJSON_AddNumberToObject(loop, "track", i);
+                cJSON_AddBoolToObject(loop, "playing", g_loop_manager->loops[i].is_playing);
+                cJSON_AddStringToObject(loop, "file", g_loop_manager->loops[i].file_path);
+                cJSON_AddNumberToObject(loop, "volume", g_loop_manager->loops[i].volume_percent);
+                cJSON_AddItemToArray(current_loops, loop);
+            }
+            cJSON_AddItemToObject(current, "loops", current_loops);
+            
+            // Add saved state
+            cJSON_AddNumberToObject(saved, "global_volume", saved_config.global_volume_percent);
+            cJSON *saved_loops = cJSON_CreateArray();
+            for (int i = 0; i < MAX_TRACKS; i++) {
+                cJSON *loop = cJSON_CreateObject();
+                cJSON_AddNumberToObject(loop, "track", i);
+                cJSON_AddBoolToObject(loop, "playing", saved_config.loops[i].is_playing);
+                cJSON_AddStringToObject(loop, "file", saved_config.loops[i].file_path);
+                cJSON_AddNumberToObject(loop, "volume", saved_config.loops[i].volume_percent);
+                cJSON_AddItemToArray(saved_loops, loop);
+            }
+            cJSON_AddItemToObject(saved, "loops", saved_loops);
+            
+            cJSON_AddItemToObject(response, "current_config", current);
+            cJSON_AddItemToObject(response, "saved_config", saved);
+            
+            // Check if configs match
+            bool configs_match = (g_loop_manager->global_volume_percent == saved_config.global_volume_percent);
+            for (int i = 0; i < MAX_TRACKS && configs_match; i++) {
+                if (g_loop_manager->loops[i].is_playing != saved_config.loops[i].is_playing ||
+                    strcmp(g_loop_manager->loops[i].file_path, saved_config.loops[i].file_path) != 0 ||
+                    g_loop_manager->loops[i].volume_percent != saved_config.loops[i].volume_percent) {
+                    configs_match = false;
+                }
+            }
+            cJSON_AddBoolToObject(response, "configs_match", configs_match);
+        }
+    }
+    
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return ret;
+}
+
+/**
+ * @brief POST /api/config/save - Save current configuration
+ */
+static esp_err_t config_save_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/config/save");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    if (!g_loop_manager) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Loop manager not initialized");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        return ESP_OK;
+    }
+    
+    // Save current configuration
+    esp_err_t ret = config_save(g_loop_manager);
+    
+    if (ret == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "message", "Configuration saved successfully");
+        cJSON_AddStringToObject(response, "path", CONFIG_FILE_PATH);
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to save configuration");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
+ * @brief POST /api/config/load - Load and apply saved configuration
+ */
+static esp_err_t config_load_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/config/load");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    if (!g_loop_manager || !g_loop_manager->audio_control_queue) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Audio system not initialized");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        return ESP_OK;
+    }
+    
+    // Load configuration from file
+    loop_config_t config;
+    esp_err_t ret = config_load(&config);
+    
+    if (ret == ESP_OK) {
+        // Apply the configuration
+        ret = config_apply(&config, g_loop_manager->audio_control_queue, g_loop_manager);
+        
+        if (ret == ESP_OK) {
+            cJSON_AddBoolToObject(response, "success", true);
+            cJSON_AddStringToObject(response, "message", "Configuration loaded and applied successfully");
+            
+            // Return what was loaded
+            cJSON *loaded_config = cJSON_CreateObject();
+            cJSON_AddNumberToObject(loaded_config, "global_volume", config.global_volume_percent);
+            cJSON *loops = cJSON_CreateArray();
+            for (int i = 0; i < MAX_TRACKS; i++) {
+                cJSON *loop = cJSON_CreateObject();
+                cJSON_AddNumberToObject(loop, "track", i);
+                cJSON_AddBoolToObject(loop, "playing", config.loops[i].is_playing);
+                cJSON_AddStringToObject(loop, "file", config.loops[i].file_path);
+                cJSON_AddNumberToObject(loop, "volume", config.loops[i].volume_percent);
+                cJSON_AddItemToArray(loops, loop);
+            }
+            cJSON_AddItemToObject(loaded_config, "loops", loops);
+            cJSON_AddItemToObject(response, "loaded_config", loaded_config);
+        } else {
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Failed to apply configuration");
+        }
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "No saved configuration found");
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to load configuration");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
+ * @brief DELETE /api/config/delete - Delete saved configuration
+ */
+static esp_err_t config_delete_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "DELETE /api/config/delete");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    esp_err_t ret = config_delete();
+    
+    if (ret == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "message", "Configuration deleted successfully");
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to delete configuration");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
  * @brief GET / - Root handler with API documentation
  */
 static esp_err_t root_get_handler(httpd_req_t *req) {
@@ -958,7 +1152,7 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 20;  // Increased to accommodate all endpoints
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     
@@ -1067,9 +1261,43 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     };
     httpd_register_uri_handler(server, &wifi_remove_uri);
     
+    // Register configuration management endpoints
+    httpd_uri_t config_status_uri = {
+        .uri = "/api/config/status",
+        .method = HTTP_GET,
+        .handler = config_status_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &config_status_uri);
+    
+    httpd_uri_t config_save_uri = {
+        .uri = "/api/config/save",
+        .method = HTTP_POST,
+        .handler = config_save_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &config_save_uri);
+    
+    httpd_uri_t config_load_uri = {
+        .uri = "/api/config/load",
+        .method = HTTP_POST,
+        .handler = config_load_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &config_load_uri);
+    
+    httpd_uri_t config_delete_uri = {
+        .uri = "/api/config/delete",
+        .method = HTTP_DELETE,
+        .handler = config_delete_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &config_delete_uri);
+    
     ESP_LOGI(TAG, "HTTP server started successfully");
     ESP_LOGI(TAG, "API available at http://<device-ip>/");
     ESP_LOGI(TAG, "WiFi management available at /api/wifi/*");
+    ESP_LOGI(TAG, "Configuration management available at /api/config/*");
     
     return ESP_OK;
 }

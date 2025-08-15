@@ -34,11 +34,11 @@ typedef enum {
 
 // WiFi network entry structure
 typedef struct {
-    char ssid[33];          // Max SSID length is 32 chars + null terminator
-    char password[65];      // Max password length is 64 chars + null terminator
-    bool auth_failed;       // True if authentication failed for this network
-    int8_t rssi;           // Signal strength (used during scanning)
-    bool available;        // True if network was found during scan
+    char ssid[33];              // SSID (max 32 chars + null terminator)
+    char password[65];          // Password (max 64 chars + null terminator)
+    bool available;             // Whether this network was found in scan
+    uint8_t auth_fail_count;   // Number of consecutive authentication failures
+    int8_t rssi;                // Signal strength when available
 } wifiman_network_entry_t;
 
 // WiFi configuration structure

@@ -1,4 +1,4 @@
-set(COMPONENT_SRCS "http_server.c" "music_files.c" "play_sdcard.c" "play_sdcard_debug.c" "play_sdcard_passthrough.c" "wifi_manager_async.c")
+set(COMPONENT_SRCS "config_manager.c" "http_server.c" "music_files.c" "play_sdcard.c" "play_sdcard_debug.c" "play_sdcard_passthrough.c" "wifi_manager_async.c")
 set(COMPONENT_ADD_INCLUDEDIRS .)
 
 # Specify exact peripherals needed to avoid LCD compilation issues with ESP-IDF v5.4

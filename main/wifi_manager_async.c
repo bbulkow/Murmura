@@ -76,19 +76,29 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             s_auth_failure = true;
             ESP_LOGW(TAG, "Authentication failed for network index %d", s_current_network_index);
             
-            // Mark this network as having auth failure
+            // Increment auth failure counter for this network (cap at 10 to prevent NVS wear)
             if (s_current_network_index >= 0 && s_current_network_index < s_stored_config.network_count) {
-                s_stored_config.networks[s_current_network_index].auth_failed = true;
+                uint8_t current_count = s_stored_config.networks[s_current_network_index].auth_fail_count;
                 
-                // Save auth failure state to NVS
-                nvs_handle_t nvs_handle;
-                if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) == ESP_OK) {
-                    char key[16];
-                    snprintf(key, sizeof(key), "%s%d", WIFI_NVS_AUTH_FAIL_PREFIX, s_current_network_index);
-                    uint8_t fail_val = 1;
-                    nvs_set_u8(nvs_handle, key, fail_val);
-                    nvs_commit(nvs_handle);
-                    nvs_close(nvs_handle);
+                // Only increment if below 10 to prevent unbounded NVS writes
+                if (current_count < 10) {
+                    s_stored_config.networks[s_current_network_index].auth_fail_count++;
+                    ESP_LOGI(TAG, "Network %s auth fail count now: %d", 
+                             s_stored_config.networks[s_current_network_index].ssid,
+                             s_stored_config.networks[s_current_network_index].auth_fail_count);
+                    
+                    // Save updated auth failure counter to NVS
+                    nvs_handle_t nvs_handle;
+                    if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) == ESP_OK) {
+                        char key[16];
+                        snprintf(key, sizeof(key), "%s%d", WIFI_NVS_AUTH_FAIL_PREFIX, s_current_network_index);
+                        nvs_set_u8(nvs_handle, key, s_stored_config.networks[s_current_network_index].auth_fail_count);
+                        nvs_commit(nvs_handle);
+                        nvs_close(nvs_handle);
+                    }
+                } else {
+                    ESP_LOGI(TAG, "Network %s auth fail count capped at 10 (NVS wear protection)", 
+                             s_stored_config.networks[s_current_network_index].ssid);
                 }
             }
         }
@@ -108,6 +118,27 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         s_auth_failure = false;
         s_wifi_state = WIFIMAN_STATE_CONNECTED;
         s_reconnect_interval_ms = 10000;  // Reset reconnect interval
+        
+        // Clear auth failure counter on successful connection
+        if (s_current_network_index >= 0 && s_current_network_index < s_stored_config.network_count) {
+            if (s_stored_config.networks[s_current_network_index].auth_fail_count > 0) {
+                ESP_LOGI(TAG, "Clearing auth failure counter for %s (was %d)", 
+                         s_stored_config.networks[s_current_network_index].ssid,
+                         s_stored_config.networks[s_current_network_index].auth_fail_count);
+                s_stored_config.networks[s_current_network_index].auth_fail_count = 0;
+                
+                // Update NVS to clear the counter
+                nvs_handle_t nvs_handle;
+                if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) == ESP_OK) {
+                    char key[16];
+                    snprintf(key, sizeof(key), "%s%d", WIFI_NVS_AUTH_FAIL_PREFIX, s_current_network_index);
+                    nvs_erase_key(nvs_handle, key);  // Erase the key (0 is default)
+                    nvs_commit(nvs_handle);
+                    nvs_close(nvs_handle);
+                }
+            }
+        }
+        
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         xSemaphoreGive(s_wifi_mutex);
     }
@@ -141,7 +172,24 @@ static esp_err_t wifi_manager_scan_networks(void)
 static int wifi_manager_find_best_network(void)
 {
     int best_index = -1;
+    uint8_t lowest_fail_count = 255;
     int8_t best_rssi = -127;
+    
+    // Print all stored networks for debugging
+    ESP_LOGI(TAG, "=== STORED NETWORKS ===");
+    for (int i = 0; i < s_stored_config.network_count; i++) {
+        ESP_LOGI(TAG, "Stored[%d]: SSID='%s', Auth_fail_count=%d", 
+                 i, s_stored_config.networks[i].ssid, 
+                 s_stored_config.networks[i].auth_fail_count);
+    }
+    
+    // Print all scanned networks for debugging
+    ESP_LOGI(TAG, "=== SCANNED NETWORKS ===");
+    for (int i = 0; i < s_scan_count && i < 20; i++) {
+        ESP_LOGI(TAG, "Scan[%d]: SSID='%s', RSSI=%d, Channel=%d", 
+                 i, (char *)s_scan_results[i].ssid, 
+                 s_scan_results[i].rssi, s_scan_results[i].primary);
+    }
     
     // First, mark all stored networks as not available
     for (int i = 0; i < s_stored_config.network_count; i++) {
@@ -151,28 +199,18 @@ static int wifi_manager_find_best_network(void)
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     
-    // Match scan results with stored networks - use DEBUG level to reduce logs
-    ESP_LOGD(TAG, "Matching %d scan results with %d stored networks", 
-             s_scan_count, s_stored_config.network_count);
-    
+    // Match scan results with stored networks
+    ESP_LOGI(TAG, "=== MATCHING PROCESS ===");
     for (int i = 0; i < s_scan_count; i++) {
         for (int j = 0; j < s_stored_config.network_count; j++) {
             if (strcmp((char *)s_scan_results[i].ssid, s_stored_config.networks[j].ssid) == 0) {
-                // Reduce log level to DEBUG to minimize impact
-                ESP_LOGD(TAG, "Found stored network: %s (RSSI: %d, Auth failed: %d)", 
+                ESP_LOGI(TAG, "MATCH FOUND! Network: %s (RSSI: %d, Auth fail count: %d)", 
                          s_stored_config.networks[j].ssid, 
                          s_scan_results[i].rssi,
-                         s_stored_config.networks[j].auth_failed);
+                         s_stored_config.networks[j].auth_fail_count);
                 
                 s_stored_config.networks[j].available = true;
                 s_stored_config.networks[j].rssi = s_scan_results[i].rssi;
-                
-                // Find the best available network (strongest signal, no auth failure)
-                if (!s_stored_config.networks[j].auth_failed && 
-                    s_scan_results[i].rssi > best_rssi) {
-                    best_rssi = s_scan_results[i].rssi;
-                    best_index = j;
-                }
             }
             // Add small delay after each comparison to yield CPU
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -183,11 +221,35 @@ static int wifi_manager_find_best_network(void)
         }
     }
     
+    // Find the best available network (lowest failure count, then strongest signal)
+    // Networks are prioritized by:
+    // 1. Lowest auth failure count
+    // 2. Strongest RSSI signal
+    for (int i = 0; i < s_stored_config.network_count; i++) {
+        if (!s_stored_config.networks[i].available) {
+            continue;  // Skip unavailable networks
+        }
+        
+        // Select network if it has fewer failures, or same failures but better signal
+        if (s_stored_config.networks[i].auth_fail_count < lowest_fail_count ||
+            (s_stored_config.networks[i].auth_fail_count == lowest_fail_count && 
+             s_stored_config.networks[i].rssi > best_rssi)) {
+            
+            lowest_fail_count = s_stored_config.networks[i].auth_fail_count;
+            best_rssi = s_stored_config.networks[i].rssi;
+            best_index = i;
+            
+            ESP_LOGI(TAG, "New best network candidate: %s (index=%d, fail_count=%d, RSSI=%d)",
+                     s_stored_config.networks[i].ssid, i, lowest_fail_count, best_rssi);
+        }
+    }
+    
     if (best_index >= 0) {
-        ESP_LOGI(TAG, "Best network: %s (RSSI: %d)", 
-                 s_stored_config.networks[best_index].ssid, best_rssi);
+        ESP_LOGI(TAG, "=== RESULT: Best network: %s (index=%d, fail_count=%d, RSSI=%d) ===", 
+                 s_stored_config.networks[best_index].ssid, best_index, 
+                 s_stored_config.networks[best_index].auth_fail_count, best_rssi);
     } else {
-        ESP_LOGD(TAG, "No suitable network found");
+        ESP_LOGI(TAG, "=== RESULT: No suitable network found ===");
     }
     
     return best_index;
@@ -200,9 +262,9 @@ static esp_err_t wifi_manager_try_next_network(void)
     int8_t best_rssi = -127;
     
     for (int i = 0; i < s_stored_config.network_count; i++) {
-        // Skip current network and networks with auth failure or not available
+        // Skip current network and networks with high auth failure count or not available
         if (i == s_current_network_index || 
-            s_stored_config.networks[i].auth_failed ||
+            s_stored_config.networks[i].auth_fail_count >= 10 ||
             !s_stored_config.networks[i].available) {
             continue;
         }
@@ -680,14 +742,14 @@ esp_err_t wifi_manager_read_credentials(wifiman_config_t *config)
             continue;
         }
 
-        // Read auth failure flag
+        // Read auth failure counter
         snprintf(key, sizeof(key), "%s%d", WIFI_NVS_AUTH_FAIL_PREFIX, i);
-        uint8_t auth_failed = 0;
-        ret = nvs_get_u8(nvs_handle, key, &auth_failed);
-        config->networks[i].auth_failed = (ret == ESP_OK && auth_failed == 1);
+        uint8_t auth_fail_count = 0;
+        ret = nvs_get_u8(nvs_handle, key, &auth_fail_count);
+        config->networks[i].auth_fail_count = (ret == ESP_OK) ? auth_fail_count : 0;
 
-        ESP_LOGI(TAG, "Network %d: SSID=%s, Auth failed=%d", 
-                 i, config->networks[i].ssid, config->networks[i].auth_failed);
+        ESP_LOGI(TAG, "Network %d: SSID=%s, Auth fail count=%d", 
+                 i, config->networks[i].ssid, config->networks[i].auth_fail_count);
     }
 
     nvs_close(nvs_handle);

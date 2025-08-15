@@ -103,7 +103,8 @@ typedef struct {
 
 // Debug function declarations
 void debug_audio_event(audio_event_iface_msg_t *msg);
-void audio_control_start_debug(audio_stream_t *stream);
+// audio_control_start_debug_v2 starts only the output pipeline (downmix + I2S)
+// Track pipelines are started later via START_TRACK messages after URIs are set
 void audio_control_start_debug_v2(audio_stream_t *stream);
 void debug_ringbuffer_connections(audio_stream_t *stream);
 void debug_element_configs(audio_stream_t *stream);

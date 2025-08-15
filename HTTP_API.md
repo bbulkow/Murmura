@@ -418,6 +418,161 @@ This design allows for:
 - Easier UI development - can show all tracks consistently
 - More flexible control - can restart tracks without re-specifying files or volumes
 
+## Configuration Persistence Endpoints
+
+### Get Configuration Status
+
+**GET** `/api/config/status`
+
+Returns both the current running configuration and the saved configuration from the SD card (if it exists).
+
+**Response (with saved config):**
+```json
+{
+  "current": {
+    "global_volume": 85,
+    "loops": [
+      {
+        "track": 0,
+        "is_playing": true,
+        "file_path": "/sdcard/track1.wav",
+        "volume": 100
+      },
+      {
+        "track": 1,
+        "is_playing": false,
+        "file_path": "/sdcard/track2.wav",
+        "volume": 75
+      },
+      {
+        "track": 2,
+        "is_playing": true,
+        "file_path": "/sdcard/track3.wav",
+        "volume": 50
+      }
+    ]
+  },
+  "saved": {
+    "global_volume": 75,
+    "loops": [
+      {
+        "track": 0,
+        "is_playing": true,
+        "file_path": "/sdcard/track1.wav",
+        "volume": 100
+      },
+      {
+        "track": 1,
+        "is_playing": true,
+        "file_path": "/sdcard/track2.wav",
+        "volume": 100
+      },
+      {
+        "track": 2,
+        "is_playing": true,
+        "file_path": "/sdcard/track3.wav",
+        "volume": 100
+      }
+    ]
+  },
+  "saved_exists": true
+}
+```
+
+**Response (no saved config):**
+```json
+{
+  "current": {
+    "global_volume": 85,
+    "loops": [...]
+  },
+  "saved": null,
+  "saved_exists": false
+}
+```
+
+### Save Configuration
+
+**POST** `/api/config/save`
+
+Saves the current configuration (loops, volumes, playing states) to `/sdcard/loop_config.json`. This configuration will be automatically loaded on device startup.
+
+**Request Body:** None required
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Configuration saved to SD card",
+  "path": "/sdcard/loop_config.json"
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Failed to save configuration: SD card not mounted"
+}
+```
+
+### Load Configuration
+
+**POST** `/api/config/load`
+
+Loads and applies the saved configuration from `/sdcard/loop_config.json`. This allows you to restore a previously saved configuration without restarting the device.
+
+**Request Body:** None required
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Configuration loaded and applied",
+  "tracks_configured": 3
+}
+```
+
+**Response (error - file not found):**
+```json
+{
+  "success": false,
+  "error": "No saved configuration found"
+}
+```
+
+**Response (error - invalid config):**
+```json
+{
+  "success": false,
+  "error": "Invalid configuration format"
+}
+```
+
+### Delete Configuration
+
+**DELETE** `/api/config/delete`
+
+Deletes the saved configuration file from the SD card. After deletion, the device will use the default configuration on next startup.
+
+**Request Body:** None required
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Configuration file deleted"
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Configuration file not found"
+}
+```
+
 ## WiFi Management Endpoints
 
 ### Get WiFi Status
@@ -553,6 +708,85 @@ Error responses include a JSON body with details:
   "success": false,
   "error": "Track index out of range"
 }
+```
+
+## Configuration Management Examples
+
+### Using curl
+
+```bash
+# Get configuration status (current vs saved)
+curl http://192.168.1.100/api/config/status
+
+# Save current configuration to SD card
+curl -X POST http://192.168.1.100/api/config/save
+
+# Load saved configuration from SD card
+curl -X POST http://192.168.1.100/api/config/load
+
+# Delete saved configuration
+curl -X DELETE http://192.168.1.100/api/config/delete
+```
+
+### Using JavaScript/Fetch
+
+```javascript
+// Get configuration status
+fetch('http://192.168.1.100/api/config/status')
+  .then(response => response.json())
+  .then(data => {
+    console.log('Current config:', data.current);
+    console.log('Saved config:', data.saved);
+    console.log('Config exists:', data.saved_exists);
+  });
+
+// Save current configuration
+fetch('http://192.168.1.100/api/config/save', {
+  method: 'POST'
+})
+.then(response => response.json())
+.then(data => console.log('Save result:', data));
+
+// Load saved configuration
+fetch('http://192.168.1.100/api/config/load', {
+  method: 'POST'
+})
+.then(response => response.json())
+.then(data => console.log('Load result:', data));
+
+// Delete saved configuration
+fetch('http://192.168.1.100/api/config/delete', {
+  method: 'DELETE'
+})
+.then(response => response.json())
+.then(data => console.log('Delete result:', data));
+```
+
+### Using Python
+
+```python
+import requests
+
+# Device IP
+base_url = "http://192.168.1.100"
+
+# Get configuration status
+response = requests.get(f"{base_url}/api/config/status")
+config_status = response.json()
+print(f"Current config: {config_status['current']}")
+print(f"Saved exists: {config_status['saved_exists']}")
+
+# Save current configuration
+response = requests.post(f"{base_url}/api/config/save")
+print(f"Save result: {response.json()}")
+
+# Load saved configuration
+response = requests.post(f"{base_url}/api/config/load")
+print(f"Load result: {response.json()}")
+
+# Delete saved configuration
+response = requests.delete(f"{base_url}/api/config/delete")
+print(f"Delete result: {response.json()}")
 ```
 
 ## WiFi Management Examples

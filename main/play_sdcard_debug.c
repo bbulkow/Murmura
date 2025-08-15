@@ -115,98 +115,10 @@ esp_err_t validate_wav_header(const char *path) {
     return ESP_OK;
 }
 
-// Enhanced audio_control_start with debugging
-void audio_control_start_debug(audio_stream_t *stream) {
-    ESP_LOGI(TAG, "Starting audio control with debugging");
-    
-    // Define the actual files that should exist on your SD card
-    const char *tracks[] = {
-        "/sdcard/track1.wav",
-        "/sdcard/track2.wav", 
-        "/sdcard/track3.wav"
-    };
-    
-    // First, check if files exist and are valid
-    for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGD(TAG, "Checking track %d: %s", i, tracks[i]);
-        
-        if (check_file_exists(tracks[i]) != ESP_OK) {
-            ESP_LOGE(TAG, "Track %d file missing!", i);
-            // Try to list files in /sdcard to see what's actually there
-            ESP_LOGD(TAG, "Listing files in /sdcard/:");
-            DIR *dir = opendir("/sdcard");
-            if (dir) {
-                struct dirent *entry;
-                while ((entry = readdir(dir)) != NULL) {
-                    if (strstr(entry->d_name, ".wav") || strstr(entry->d_name, ".WAV")) {
-                        ESP_LOGD(TAG, "  Found WAV: %s", entry->d_name);
-                    }
-                }
-                closedir(dir);
-            }
-            continue;
-        }
-        
-        if (validate_wav_header(tracks[i]) != ESP_OK) {
-            ESP_LOGE(TAG, "Track %d has invalid WAV header!", i);
-            continue;
-        }
-        
-        // Set URI and check return value
-        esp_err_t err = audio_element_set_uri(stream->tracks[i].fatfs_e, tracks[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set URI for track %d: %s", i, esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "Successfully set URI for track %d", i);
-        }
-        
-        // Get element info after setting URI
-        audio_element_info_t info;
-        audio_element_getinfo(stream->tracks[i].fatfs_e, &info);
-        ESP_LOGD(TAG, "Track %d element info: sample_rate=%d, channels=%d, bits=%d", 
-                 i, info.sample_rates, info.channels, info.bits);
-    }
-    
-    // Configure initial gains using downmix
-    float gain0[2] = {0.0f, -6.0f};  // -6dB for track 0
-    float gain1[2] = {0.0f, -10.0f}; // -10dB for track 1  
-    float gain2[2] = {0.0f, -8.0f};  // -8dB for track 2
-    
-    downmix_set_gain_info(stream->downmix_e, gain0, 0);
-    downmix_set_gain_info(stream->downmix_e, gain1, 1);
-    downmix_set_gain_info(stream->downmix_e, gain2, 2);
-
-    // Start output pipeline first
-    ESP_LOGD(TAG, "Starting output pipeline");
-    esp_err_t err = audio_pipeline_run(stream->pipeline);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start output pipeline: %s", esp_err_to_name(err));
-        return;
-    }
-    
-    // Start all track pipelines with error checking
-    for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGD(TAG, "Starting track %d pipeline", i);
-        
-        // Check element states before starting
-        audio_element_state_t state = audio_element_get_state(stream->tracks[i].fatfs_e);
-        ESP_LOGD(TAG, "Track %d fatfs element state before start: %d", i, state);
-        
-        err = audio_pipeline_run(stream->tracks[i].pipeline);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start track %d pipeline: %s", i, esp_err_to_name(err));
-        } else {
-            ESP_LOGD(TAG, "Successfully started track %d pipeline", i);
-        }
-        
-        // Check element states after starting
-        state = audio_element_get_state(stream->tracks[i].fatfs_e);
-        ESP_LOGD(TAG, "Track %d fatfs element state: %d", i, state);
-        
-        state = audio_element_get_state(stream->tracks[i].decode_e);
-        ESP_LOGD(TAG, "Track %d decoder element state: %d", i, state);
-    }
-}
+// NOTE: The old audio_control_start_debug function has been removed.
+// It was never called and contained hardcoded filenames.
+// We now use audio_control_start_debug_v2 which properly waits for
+// configuration to set URIs before starting track pipelines.
 
 // Function to debug ringbuffer connections
 void debug_ringbuffer_connections(audio_stream_t *stream) {
@@ -271,34 +183,19 @@ void debug_element_configs(audio_stream_t *stream) {
 
 // Enhanced audio_control_start with more debugging
 void audio_control_start_debug_v2(audio_stream_t *stream) {
-    ESP_LOGI(TAG, "Starting audio control with enhanced debugging");
+    ESP_LOGI(TAG, "Starting audio control - output pipeline only");
     esp_err_t err;  // Declare err at function scope
     
-    // Define the actual files that should exist on your SD card
-    const char *tracks[] = {
-        "/sdcard/track1.wav",
-        "/sdcard/track2.wav", 
-        "/sdcard/track3.wav"
-    };
-    
-    // First, set URIs for all tracks
-    for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGI(TAG, "Setting URI for track %d: %s", i, tracks[i]);
-        
-        err = audio_element_set_uri(stream->tracks[i].fatfs_e, tracks[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set URI for track %d: %s", i, esp_err_to_name(err));
-        } else {
-            ESP_LOGD(TAG, "Successfully set URI for track %d", i);
-        }
-    }
+    // NOTE: This function should ONLY start the output pipeline (downmix + I2S)
+    // Track pipelines will be started later via START_TRACK messages after URIs are set
+    ESP_LOGI(TAG, "Setting up ringbuffer connections but NOT starting track pipelines");
     
     // Debug connections BEFORE starting pipelines
     ESP_LOGD(TAG, "=== BEFORE starting pipelines ===");
     debug_ringbuffer_connections(stream);
     debug_element_configs(stream);
     
-    // Configure initial gains using downmix
+    // Configure initial gains using downmix (prepare for when tracks start)
     float gain0[2] = {0.0f, -6.0f};  // -6dB for track 0
     float gain1[2] = {0.0f, -10.0f}; // -10dB for track 1  
     float gain2[2] = {0.0f, -8.0f};  // -8dB for track 2
@@ -307,7 +204,8 @@ void audio_control_start_debug_v2(audio_stream_t *stream) {
     downmix_set_gain_info(stream->downmix_e, gain1, 1);
     downmix_set_gain_info(stream->downmix_e, gain2, 2);
 
-    // Create output ringbuffers for decoders and connect to downmix BEFORE starting pipelines
+    // Create output ringbuffers for decoders and connect to downmix
+    // This prepares the connections for when track pipelines are started later
     ESP_LOGD(TAG, "Creating decoder output ringbuffers and connecting to downmix");
     for (int i = 0; i < MAX_TRACKS; i++) {
         // Create a ringbuffer for decoder output
@@ -327,25 +225,19 @@ void audio_control_start_debug_v2(audio_stream_t *stream) {
         ESP_LOGD(TAG, "Connected track %d decoder to downmix via ringbuffer", i);
     }
     
-    // Now start all track pipelines
-    for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGD(TAG, "Starting track %d pipeline", i);
-        
-        err = audio_pipeline_run(stream->tracks[i].pipeline);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start track %d pipeline: %s", i, esp_err_to_name(err));
-        } else {
-            ESP_LOGD(TAG, "Successfully started track %d pipeline", i);
-        }
-    }
+    // IMPORTANT: Do NOT start track pipelines here!
+    // They will be started via START_TRACK messages after URIs are configured
+    ESP_LOGI(TAG, "Track pipelines will be started later via START_TRACK messages");
     
-    // Start output pipeline AFTER connections are made
-    ESP_LOGD(TAG, "Starting output pipeline");
+    // Start ONLY the output pipeline (downmix + I2S)
+    ESP_LOGD(TAG, "Starting output pipeline (downmix + I2S)");
     err = audio_pipeline_run(stream->pipeline);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start output pipeline: %s", esp_err_to_name(err));
         return;
     }
+    
+    ESP_LOGI(TAG, "Output pipeline started successfully, waiting for track configurations");
     
     // Debug connections AFTER starting pipelines
     vTaskDelay(100 / portTICK_PERIOD_MS); // Give elements time to initialize

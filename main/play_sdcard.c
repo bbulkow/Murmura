@@ -57,6 +57,7 @@
 #include "music_files.h"
 #include "wifi_manager.h"
 #include "http_server.h"
+#include "config_manager.h"
 #include <math.h>  // For log10f
 
 static const char *TAG = "PLAY_SDCARD";
@@ -384,6 +385,52 @@ void audio_control_task(void *pvParameters)
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
     }
+    
+    ESP_LOGI(TAG, "audio_control: Load configuration (from file or default)");
+    
+    // Load configuration FIRST - either from file or use default
+    loop_config_t startup_config;
+    if (config_load_or_default(&startup_config) == ESP_OK) {
+        ESP_LOGI(TAG, "Configuration loaded:");
+        ESP_LOGI(TAG, "  Global volume: %d%%", startup_config.global_volume_percent);
+        for (int i = 0; i < MAX_TRACKS; i++) {
+            if (strlen(startup_config.loops[i].file_path) > 0) {
+                ESP_LOGI(TAG, "  Track %d: %s (volume=%d%%, playing=%s)", 
+                         i, startup_config.loops[i].file_path, 
+                         startup_config.loops[i].volume_percent,
+                         startup_config.loops[i].is_playing ? "yes" : "no");
+            }
+        }
+        
+        // Start the audio system infrastructure (output pipeline only)
+        ESP_LOGI(TAG, "Starting audio system infrastructure...");
+        
+        // Send START message to initialize audio infrastructure
+        audio_control_msg_t start_msg = {
+            .type = AUDIO_ACTION_START,
+            .data = {}
+        };
+        xQueueSend(control_queue, &start_msg, portMAX_DELAY);
+        
+        // Wait for audio system to be ready
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        
+        // Apply the configuration through the message queue (thread-safe)
+        ESP_LOGI(TAG, "Applying configuration through message queue...");
+        if (config_apply(&startup_config, control_queue, loop_manager) == ESP_OK) {
+            ESP_LOGI(TAG, "Configuration messages sent successfully");
+        } else {
+            ESP_LOGW(TAG, "Failed to send some configuration messages");
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to load configuration, starting with empty tracks");
+        // Start audio infrastructure anyway but with no tracks
+        audio_control_msg_t start_msg = {
+            .type = AUDIO_ACTION_START,
+            .data = {}
+        };
+        xQueueSend(control_queue, &start_msg, portMAX_DELAY);
+    }
 
     ESP_LOGI(TAG, "audio_control: start listener");
 
@@ -406,22 +453,8 @@ void audio_control_task(void *pvParameters)
                     ESP_LOGI(TAG, "Processing START action...");
                     audio_control_start(stream);
                     audio_started = true;
-                    
-                    // Update loop manager state for the initial tracks
-                    const char *initial_tracks[] = {
-                        "/sdcard/track1.wav",
-                        "/sdcard/track2.wav", 
-                        "/sdcard/track3.wav"
-                    };
-                    for (int i = 0; i < MAX_TRACKS; i++) {
-                        loop_manager->loops[i].is_playing = true;
-                        strncpy(loop_manager->loops[i].file_path, initial_tracks[i], 
-                                sizeof(loop_manager->loops[i].file_path) - 1);
-                        // Note: volume was already initialized to 100% when loop_manager was created
-                        // We don't change it here to preserve any volume set before starting
-                        ESP_LOGI(TAG, "Set loop_manager track %d: is_playing=true, file=%s, volume=%d%%", 
-                                 i, initial_tracks[i], loop_manager->loops[i].volume_percent);
-                    }
+                    // Note: Tracks are now started by config_apply() during initialization
+                    // This action just starts the audio system infrastructure
                     break;
 
                 case AUDIO_ACTION_START_TRACK: {
@@ -582,22 +615,20 @@ void audio_control_task(void *pvParameters)
                     
                     // Re-set the URI (keep the same file that was playing)
                     const char *current_file = loop_manager->loops[i].file_path;
-                    if (strlen(current_file) == 0) {
-                        // Fallback to default tracks if no file path is stored
-                        const char *tracks[] = {
-                            "/sdcard/track1.wav",
-                            "/sdcard/track2.wav", 
-                            "/sdcard/track3.wav"
-                        };
-                        current_file = tracks[i];
+                    // Only restart if there's actually a file configured
+                    if (strlen(current_file) > 0) {
+                        audio_element_set_uri(stream->tracks[i].fatfs_e, current_file);
+                        
+                        // Restart pipeline
+                        audio_pipeline_run(stream->tracks[i].pipeline);
+                        
+                        track_finished[i] = false;  // Reset the flag
+                        ESP_LOGI(TAG, "Track %d restarted with file: %s", i, current_file);
+                    } else {
+                        // No file configured for this track, don't restart
+                        track_finished[i] = false;  // Reset the flag anyway
+                        ESP_LOGW(TAG, "Track %d finished but no file configured, not restarting", i);
                     }
-                    audio_element_set_uri(stream->tracks[i].fatfs_e, current_file);
-                    
-                    // Restart pipeline
-                    audio_pipeline_run(stream->tracks[i].pipeline);
-                    
-                    track_finished[i] = false;  // Reset the flag
-                    ESP_LOGI(TAG, "Track %d restarted", i);
                 }
             }
             
@@ -731,9 +762,19 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Found %d existing WiFi networks in NVS, skipping add", existing_config.network_count);
         // List existing networks for debug
+        bool has_auth_failures = false;
         for (int i = 0; i < existing_config.network_count; i++) {
-            ESP_LOGI(TAG, "  Network %d: %s (Auth failed: %d)", 
-                     i, existing_config.networks[i].ssid, existing_config.networks[i].auth_failed);
+            ESP_LOGI(TAG, "  Network %d: %s (Auth fail count: %d)", 
+                     i, existing_config.networks[i].ssid, existing_config.networks[i].auth_fail_count);
+            if (existing_config.networks[i].auth_fail_count > 0) {
+                has_auth_failures = true;
+            }
+        }
+        
+        // Clear auth failures if any exist (allows retry after password change or temporary issues)
+        if (has_auth_failures) {
+            ESP_LOGI(TAG, "Clearing authentication failures to allow reconnection attempts...");
+            wifi_manager_clear_all_auth_failures();
         }
     }
     
@@ -824,15 +865,9 @@ void app_main(void)
         return;
     }
 
-    // Send a START message to the audio control task
-    ESP_LOGI(TAG, "[ 6 ] Send START message to audio control task");
-    audio_control_msg_t start_msg = {
-        .type = AUDIO_ACTION_START,
-        .data = {}  // Zero-initialize the union
-    };
-    if (xQueueSend(audio_control_queue, &start_msg, portMAX_DELAY) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to send START message to audio control task");
-    }
+    // Note: We no longer send START message here - the audio control task
+    // will load configuration and start playing automatically on initialization
+    ESP_LOGI(TAG, "[ 6 ] Audio control task will load configuration and start playing");
 
     ESP_LOGI(TAG, "[ 7 ] Listen for all pipeline events (Note: actual audio is now handled by audio_control_task)");
 
