@@ -15,6 +15,8 @@
 
 static const char *TAG = "WIFI_MANAGER";
 
+// #define DEBUG 1
+
 // FreeRTOS event group to signal when we are connected
 static EventGroupHandle_t s_wifi_event_group;
 
@@ -45,7 +47,7 @@ static SemaphoreHandle_t s_wifi_mutex = NULL;
 
 // Reconnection parameters
 static uint32_t s_reconnect_interval_ms = 10000;  // Start with 10 seconds
-static const uint32_t MAX_RECONNECT_INTERVAL_MS = 300000;  // Max 5 minutes
+static const uint32_t MAX_RECONNECT_INTERVAL_MS = 120000;  // Max 2 minutes
 
 // Forward declarations
 static esp_err_t wifi_manager_try_next_network(void);
@@ -174,7 +176,8 @@ static int wifi_manager_find_best_network(void)
     int best_index = -1;
     uint8_t lowest_fail_count = 255;
     int8_t best_rssi = -127;
-    
+
+#ifdef DEBUG
     // Print all stored networks for debugging
     ESP_LOGI(TAG, "=== STORED NETWORKS ===");
     for (int i = 0; i < s_stored_config.network_count; i++) {
@@ -190,7 +193,8 @@ static int wifi_manager_find_best_network(void)
                  i, (char *)s_scan_results[i].ssid, 
                  s_scan_results[i].rssi, s_scan_results[i].primary);
     }
-    
+#endif    
+
     // First, mark all stored networks as not available
     for (int i = 0; i < s_stored_config.network_count; i++) {
         s_stored_config.networks[i].available = false;
@@ -200,14 +204,18 @@ static int wifi_manager_find_best_network(void)
     }
     
     // Match scan results with stored networks
+#ifdef DEBUG
     ESP_LOGI(TAG, "=== MATCHING PROCESS ===");
+#endif
     for (int i = 0; i < s_scan_count; i++) {
         for (int j = 0; j < s_stored_config.network_count; j++) {
             if (strcmp((char *)s_scan_results[i].ssid, s_stored_config.networks[j].ssid) == 0) {
+#ifdef DEBUG
                 ESP_LOGI(TAG, "MATCH FOUND! Network: %s (RSSI: %d, Auth fail count: %d)", 
                          s_stored_config.networks[j].ssid, 
                          s_scan_results[i].rssi,
                          s_stored_config.networks[j].auth_fail_count);
+#endif
                 
                 s_stored_config.networks[j].available = true;
                 s_stored_config.networks[j].rssi = s_scan_results[i].rssi;
@@ -238,12 +246,14 @@ static int wifi_manager_find_best_network(void)
             lowest_fail_count = s_stored_config.networks[i].auth_fail_count;
             best_rssi = s_stored_config.networks[i].rssi;
             best_index = i;
-            
+#ifdef DEBUG            
             ESP_LOGI(TAG, "New best network candidate: %s (index=%d, fail_count=%d, RSSI=%d)",
                      s_stored_config.networks[i].ssid, i, lowest_fail_count, best_rssi);
+#endif
         }
     }
     
+#ifdef DEBUG
     if (best_index >= 0) {
         ESP_LOGI(TAG, "=== RESULT: Best network: %s (index=%d, fail_count=%d, RSSI=%d) ===", 
                  s_stored_config.networks[best_index].ssid, best_index, 
@@ -251,6 +261,7 @@ static int wifi_manager_find_best_network(void)
     } else {
         ESP_LOGI(TAG, "=== RESULT: No suitable network found ===");
     }
+#endif
     
     return best_index;
 }
