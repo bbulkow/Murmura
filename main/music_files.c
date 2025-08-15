@@ -45,14 +45,14 @@ esp_err_t music_determine_filetype( const char *filename, enum FILETYPE_ENUM *fi
 
     if ( (lenstr > sizeof(MP3_SUFFIX)) &&
          (strncmp(filename + lenstr - sizeof(MP3_SUFFIX) + 1 , MP3_SUFFIX, sizeof(MP3_SUFFIX) -1) == 0 ) ) {
-        ESP_LOGI(TAG, "[ MFG ] Found MP3: %s", filename);
+        ESP_LOGD(TAG, "[ MFG ] Found MP3: %s", filename);
         *filetype_o = FILETYPE_MP3;
         return(ESP_OK);
     }
     // is it wav?
     else if ((lenstr > sizeof(WAV_SUFFIX)) &&
          (strncmp(filename + lenstr - sizeof(WAV_SUFFIX) + 1 , WAV_SUFFIX, sizeof(WAV_SUFFIX) -1) == 0 ) ) {
-        ESP_LOGI(TAG, "[ MFG ] Found WAV: %s", filename);
+        ESP_LOGD(TAG, "[ MFG ] Found WAV: %s", filename);
         *filetype_o = FILETYPE_WAV;
         return(ESP_OK);
     }
@@ -105,17 +105,17 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
     }
 
     struct dirent *ent;
-    ESP_LOGI(TAG, "[ MFG ] enumerate SDcard");
+    ESP_LOGD(TAG, "[ MFG ] enumerate SDcard");
     while ((ent = readdir(dir)) != NULL) {
 
         int lenstr = strlen(ent->d_name);
 
-        ESP_LOGI(TAG, "[ MFG ] %s", ent->d_name);
+        ESP_LOGD(TAG, "[ MFG ] %s", ent->d_name);
 
         // is mp3?
         if ( (lenstr > sizeof(MP3_SUFFIX)) &&
              (strncmp(ent->d_name + lenstr - sizeof(MP3_SUFFIX) + 1 , MP3_SUFFIX, sizeof(MP3_SUFFIX) -1) == 0 ) ) {
-            ESP_LOGI(TAG, "[ MFG ] Found MP3: %s", ent->d_name);
+            ESP_LOGD(TAG, "[ MFG ] Found MP3: %s", ent->d_name);
             if (filename) free(filename);
             filename = heap_caps_malloc(lenstr + sizeof(PATH_PREFIX) + 2, MALLOC_CAP_SPIRAM);
             // filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
@@ -125,7 +125,7 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
         // is it wav?
         else if ((lenstr > sizeof(WAV_SUFFIX)) &&
              (strncmp(ent->d_name + lenstr - sizeof(WAV_SUFFIX) + 1 , WAV_SUFFIX, sizeof(WAV_SUFFIX) -1) == 0 ) ) {
-            ESP_LOGI(TAG, "[ MFG ] Found WAV: %s", ent->d_name);
+            ESP_LOGD(TAG, "[ MFG ] Found WAV: %s", ent->d_name);
             if (filename) free(filename);
             filename = heap_caps_malloc(lenstr + sizeof(PATH_PREFIX) + 2, MALLOC_CAP_SPIRAM);
             // filename = malloc(lenstr + sizeof(PATH_PREFIX) + 2);
@@ -134,7 +134,7 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
         }
 
     }
-    ESP_LOGI(TAG, "[ 1.1] that's all the SDcard");
+    ESP_LOGD(TAG, "[ 1.1] that's all the SDcard");
     closedir(dir);
 
     *file_o = filename;
@@ -189,4 +189,3 @@ esp_err_t music_filenames_get(char ***file_array_o) {
     return(ESP_OK);
 
 }
-

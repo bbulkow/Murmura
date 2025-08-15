@@ -24,12 +24,14 @@ esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
         return ESP_FAIL;
     }
 
-    // Create downmix element
+    // Create downmix element - Pin to Core 1 (APP CPU)
     downmix_cfg_t downmix_cfg = DEFAULT_DOWNMIX_CONFIG();
     downmix_cfg.downmix_info.source_num = MAX_TRACKS;
     downmix_cfg.downmix_info.output_type = ESP_DOWNMIX_OUTPUT_TYPE_TWO_CHANNEL;
     downmix_cfg.downmix_info.mode = ESP_DOWNMIX_WORK_MODE_SWITCH_ON;
     downmix_cfg.downmix_info.out_ctx = ESP_DOWNMIX_OUT_CTX_NORMAL;
+    downmix_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
+    downmix_cfg.task_prio = 22; // High priority for smooth audio
     
     stream->downmix_e = downmix_init(&downmix_cfg);
     if (!stream->downmix_e) {
@@ -39,9 +41,11 @@ esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
         return ESP_FAIL;
     }
 
-    // I2S output
+    // I2S output - Pin to Core 1 (APP CPU)
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
+    i2s_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
+    i2s_cfg.task_prio = 23; // Highest priority for I2S output
     stream->i2s_e = i2s_stream_init(&i2s_cfg);
     if (!stream->i2s_e) {
         ESP_LOGE(TAG, "Failed to create i2s element");
@@ -88,22 +92,24 @@ esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
             return ESP_FAIL;
         }
         
-        // Create fatfs reader
+        // Create fatfs reader - Pin to Core 1 (APP CPU)
         fatfs_stream_cfg_t fatfs_cfg = FATFS_STREAM_CFG_DEFAULT();
         fatfs_cfg.type = AUDIO_STREAM_READER;
+        fatfs_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
+        fatfs_cfg.task_prio = 19; // Lower than decoder but still high
         stream->tracks[i].fatfs_e = fatfs_stream_init(&fatfs_cfg);
         
-        // Create WAV decoder
+        // Create WAV decoder - Pin to Core 1 (APP CPU)
         wav_decoder_cfg_t wav_dec_cfg = DEFAULT_WAV_DECODER_CONFIG();
-        wav_dec_cfg.task_core = 1;
-        wav_dec_cfg.task_prio = 20;
+        wav_dec_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
+        wav_dec_cfg.task_prio = 20; // Decoder priority
         stream->tracks[i].decode_e = wav_decoder_init(&wav_dec_cfg);
 
         // Create a raw stream element as passthrough
         raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
         raw_cfg.type = AUDIO_STREAM_WRITER;
-        // raw_cfg.out_rb_size = 8192;
         raw_cfg.out_rb_size = 4096;
+        // Note: raw_stream doesn't support direct task_core configuration
         stream->tracks[i].raw_write_e = raw_stream_init(&raw_cfg);
 
         // Register elements in track pipeline

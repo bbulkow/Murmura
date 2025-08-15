@@ -9,6 +9,8 @@
 #include "http_server.h"
 #include "music_files.h"
 #include "play_sdcard.h"
+#include "wifi_manager.h"
+#include "esp_wifi.h"
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -25,6 +27,11 @@ static esp_err_t loop_stop_handler(httpd_req_t *req);
 static esp_err_t loop_volume_handler(httpd_req_t *req);
 static esp_err_t global_volume_handler(httpd_req_t *req);
 static esp_err_t root_get_handler(httpd_req_t *req);
+// WiFi management handlers
+static esp_err_t wifi_status_handler(httpd_req_t *req);
+static esp_err_t wifi_networks_handler(httpd_req_t *req);
+static esp_err_t wifi_add_network_handler(httpd_req_t *req);
+static esp_err_t wifi_remove_network_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -594,6 +601,240 @@ static esp_err_t global_volume_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief GET /api/wifi/status - Get current WiFi connection status
+ */
+static esp_err_t wifi_status_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/wifi/status");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get WiFi connection state
+    bool is_connected = wifi_manager_is_connected();
+    cJSON_AddBoolToObject(response, "connected", is_connected);
+    
+    if (is_connected) {
+        // Get connected SSID
+        char ssid[33] = {0};
+        wifi_manager_get_connected_ssid(ssid, sizeof(ssid));
+        cJSON_AddStringToObject(response, "ssid", ssid);
+        
+        // Get IP address
+        char ip_str[16] = {0};
+        wifi_manager_get_ip_string(ip_str, sizeof(ip_str));
+        cJSON_AddStringToObject(response, "ip_address", ip_str);
+        
+        // Get signal strength (RSSI)
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            cJSON_AddNumberToObject(response, "rssi", ap_info.rssi);
+            
+            // Convert RSSI to signal strength percentage (rough approximation)
+            int signal_percent = 0;
+            if (ap_info.rssi >= -50) {
+                signal_percent = 100;
+            } else if (ap_info.rssi >= -60) {
+                signal_percent = 90;
+            } else if (ap_info.rssi >= -67) {
+                signal_percent = 75;
+            } else if (ap_info.rssi >= -70) {
+                signal_percent = 60;
+            } else if (ap_info.rssi >= -80) {
+                signal_percent = 40;
+            } else if (ap_info.rssi >= -90) {
+                signal_percent = 20;
+            } else {
+                signal_percent = 10;
+            }
+            cJSON_AddNumberToObject(response, "signal_strength", signal_percent);
+        }
+    } else {
+        // Get connection state
+        wifiman_state_t state = wifi_manager_get_state();
+        const char *state_str = "disconnected";
+        switch (state) {
+            case WIFIMAN_STATE_SCANNING:
+                state_str = "scanning";
+                break;
+            case WIFIMAN_STATE_CONNECTING:
+                state_str = "connecting";
+                break;
+            case WIFIMAN_STATE_CONNECTION_FAILED:
+                state_str = "connection_failed";
+                break;
+            default:
+                state_str = "disconnected";
+                break;
+        }
+        cJSON_AddStringToObject(response, "state", state_str);
+    }
+    
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return ret;
+}
+
+/**
+ * @brief GET /api/wifi/networks - Get list of configured networks
+ */
+static esp_err_t wifi_networks_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/wifi/networks");
+    
+    cJSON *response = cJSON_CreateObject();
+    cJSON *networks_array = cJSON_CreateArray();
+    
+    // Get stored networks
+    wifiman_network_entry_t networks[WIFI_MAX_NETWORKS];
+    size_t count = 0;
+    esp_err_t ret = wifi_manager_get_stored_networks(networks, WIFI_MAX_NETWORKS, &count);
+    
+    if (ret == ESP_OK) {
+        for (size_t i = 0; i < count; i++) {
+            cJSON *network_obj = cJSON_CreateObject();
+            cJSON_AddNumberToObject(network_obj, "index", i);
+            cJSON_AddStringToObject(network_obj, "ssid", networks[i].ssid);
+            // Don't expose the password in the response for security
+            cJSON_AddBoolToObject(network_obj, "has_password", strlen(networks[i].password) > 0);
+            cJSON_AddBoolToObject(network_obj, "auth_failed", networks[i].auth_failed);
+            cJSON_AddBoolToObject(network_obj, "available", networks[i].available);
+            cJSON_AddNumberToObject(network_obj, "rssi", networks[i].rssi);
+            
+            cJSON_AddItemToArray(networks_array, network_obj);
+        }
+    }
+    
+    cJSON_AddItemToObject(response, "networks", networks_array);
+    cJSON_AddNumberToObject(response, "count", count);
+    cJSON_AddNumberToObject(response, "max_networks", WIFI_MAX_NETWORKS);
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
+ * @brief POST /api/wifi/add - Add a new WiFi network
+ * Body: { "ssid": "NetworkName", "password": "NetworkPassword" }
+ */
+static esp_err_t wifi_add_network_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/wifi/add");
+    
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+    
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get SSID
+    cJSON *ssid_json = cJSON_GetObjectItem(request, "ssid");
+    if (!cJSON_IsString(ssid_json) || strlen(ssid_json->valuestring) == 0) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid SSID");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Get password
+    cJSON *password_json = cJSON_GetObjectItem(request, "password");
+    if (!cJSON_IsString(password_json)) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid password");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Add the network
+    esp_err_t ret = wifi_manager_add_network(ssid_json->valuestring, password_json->valuestring);
+    
+    if (ret == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "message", "Network added successfully");
+        cJSON_AddStringToObject(response, "ssid", ssid_json->valuestring);
+        
+        // Trigger reconnection to try the new network
+        wifi_manager_reconnect();
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        if (ret == ESP_ERR_NO_MEM) {
+            cJSON_AddStringToObject(response, "error", "Maximum number of networks reached");
+        } else {
+            cJSON_AddStringToObject(response, "error", "Failed to add network");
+        }
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    
+    return send_ret;
+}
+
+/**
+ * @brief POST /api/wifi/remove - Remove a WiFi network
+ * Body: { "ssid": "NetworkName" }
+ */
+static esp_err_t wifi_remove_network_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/wifi/remove");
+    
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+    
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get SSID
+    cJSON *ssid_json = cJSON_GetObjectItem(request, "ssid");
+    if (!cJSON_IsString(ssid_json) || strlen(ssid_json->valuestring) == 0) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid SSID");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Remove the network
+    esp_err_t ret = wifi_manager_remove_network(ssid_json->valuestring);
+    
+    if (ret == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "message", "Network removed successfully");
+        cJSON_AddStringToObject(response, "ssid", ssid_json->valuestring);
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Network not found");
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to remove network");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    
+    return send_ret;
+}
+
+/**
  * @brief GET / - Root handler with API documentation
  */
 static esp_err_t root_get_handler(httpd_req_t *req) {
@@ -793,8 +1034,42 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     };
     httpd_register_uri_handler(server, &global_volume_uri);
     
+    // Register WiFi management endpoints
+    httpd_uri_t wifi_status_uri = {
+        .uri = "/api/wifi/status",
+        .method = HTTP_GET,
+        .handler = wifi_status_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_status_uri);
+    
+    httpd_uri_t wifi_networks_uri = {
+        .uri = "/api/wifi/networks",
+        .method = HTTP_GET,
+        .handler = wifi_networks_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_networks_uri);
+    
+    httpd_uri_t wifi_add_uri = {
+        .uri = "/api/wifi/add",
+        .method = HTTP_POST,
+        .handler = wifi_add_network_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_add_uri);
+    
+    httpd_uri_t wifi_remove_uri = {
+        .uri = "/api/wifi/remove",
+        .method = HTTP_POST,
+        .handler = wifi_remove_network_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &wifi_remove_uri);
+    
     ESP_LOGI(TAG, "HTTP server started successfully");
     ESP_LOGI(TAG, "API available at http://<device-ip>/");
+    ESP_LOGI(TAG, "WiFi management available at /api/wifi/*");
     
     return ESP_OK;
 }

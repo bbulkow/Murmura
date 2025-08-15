@@ -418,6 +418,128 @@ This design allows for:
 - Easier UI development - can show all tracks consistently
 - More flexible control - can restart tracks without re-specifying files or volumes
 
+## WiFi Management Endpoints
+
+### Get WiFi Status
+
+**GET** `/api/wifi/status`
+
+Returns the current WiFi connection status including SSID, IP address, and signal strength.
+
+**Response (when connected):**
+```json
+{
+  "connected": true,
+  "ssid": "MyNetwork",
+  "ip_address": "192.168.1.100",
+  "rssi": -65,
+  "signal_strength": 70
+}
+```
+
+**Response (when disconnected):**
+```json
+{
+  "connected": false,
+  "state": "scanning"  // or "connecting", "connection_failed", "disconnected"
+}
+```
+
+### List Configured Networks
+
+**GET** `/api/wifi/networks`
+
+Returns a list of all WiFi networks configured in the device.
+
+**Response:**
+```json
+{
+  "networks": [
+    {
+      "index": 0,
+      "ssid": "HomeNetwork",
+      "has_password": true,
+      "auth_failed": false,
+      "available": true,
+      "rssi": -65
+    },
+    {
+      "index": 1,
+      "ssid": "OfficeNetwork",
+      "has_password": true,
+      "auth_failed": false,
+      "available": false,
+      "rssi": -127
+    }
+  ],
+  "count": 2,
+  "max_networks": 5
+}
+```
+
+**Note:** Passwords are never exposed in the response for security reasons.
+
+### Add WiFi Network
+
+**POST** `/api/wifi/add`
+
+Adds a new WiFi network to the device configuration. The device will immediately attempt to connect to the new network.
+
+**Request Body:**
+```json
+{
+  "ssid": "NetworkName",
+  "password": "NetworkPassword"
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Network added successfully",
+  "ssid": "NetworkName"
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Maximum number of networks reached"
+}
+```
+
+### Remove WiFi Network
+
+**POST** `/api/wifi/remove`
+
+Removes a WiFi network from the device configuration.
+
+**Request Body:**
+```json
+{
+  "ssid": "NetworkName"
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Network removed successfully",
+  "ssid": "NetworkName"
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Network not found"
+}
+```
+
 ## Error Handling
 
 All endpoints return appropriate HTTP status codes:
@@ -433,6 +555,51 @@ Error responses include a JSON body with details:
 }
 ```
 
+## WiFi Management Examples
+
+### Using curl
+
+```bash
+# Get WiFi status
+curl http://192.168.1.100/api/wifi/status
+
+# List configured networks
+curl http://192.168.1.100/api/wifi/networks
+
+# Add a new WiFi network
+curl -X POST http://192.168.1.100/api/wifi/add \
+  -H "Content-Type: application/json" \
+  -d '{"ssid": "MyNetwork", "password": "MyPassword"}'
+
+# Remove a WiFi network
+curl -X POST http://192.168.1.100/api/wifi/remove \
+  -H "Content-Type: application/json" \
+  -d '{"ssid": "OldNetwork"}'
+```
+
+### Using JavaScript/Fetch
+
+```javascript
+// Get WiFi status
+fetch('http://192.168.1.100/api/wifi/status')
+  .then(response => response.json())
+  .then(data => console.log(data));
+
+// Add a new network
+fetch('http://192.168.1.100/api/wifi/add', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    ssid: 'MyNetwork',
+    password: 'MyPassword'
+  })
+})
+.then(response => response.json())
+.then(data => console.log(data));
+```
+
 ## Notes
 
 - CORS headers are included to allow browser-based access
@@ -443,3 +610,7 @@ Error responses include a JSON body with details:
 - The `/api/loops` endpoint always returns all 3 tracks for consistent UI state
 - Volume is always specified as 0-100% (not in dB)
 - Global volume corresponds to the same control as the physical Vol+/Vol- buttons on the device
+- The device supports up to 5 WiFi networks in its configuration
+- WiFi operations are performed asynchronously in the background
+- Signal strength is reported as both RSSI (dBm) and percentage (0-100)
+- Adding a new network triggers an immediate connection attempt

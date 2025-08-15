@@ -103,7 +103,7 @@ static const char *AEL_STATUS_STRINGS[] = {
 
 
 esp_err_t audio_stream_init(audio_stream_t **stream_o) {
-    ESP_LOGI(TAG, "Initializing audio stream with downmix");
+    ESP_LOGD(TAG, "Initializing audio stream with downmix");
     
     audio_stream_t *stream = calloc(1, sizeof(audio_stream_t));
     if (!stream) {
@@ -210,7 +210,7 @@ esp_err_t audio_stream_init(audio_stream_t **stream_o) {
         esp_decoder_cfg_t auto_dec_cfg = DEFAULT_ESP_DECODER_CONFIG();
         stream->tracks[i].decode_e = esp_decoder_init(&auto_dec_cfg, auto_decode, 10);
 #else
-        ESP_LOGI(TAG, "[3.4] Create wav decoder");
+        ESP_LOGD(TAG, "[3.4] Create wav decoder");
         wav_decoder_cfg_t  wav_dec_cfg  = DEFAULT_WAV_DECODER_CONFIG();
         wav_dec_cfg.task_core = 1;
         wav_dec_cfg.task_prio = 20;
@@ -234,7 +234,7 @@ esp_err_t audio_stream_init(audio_stream_t **stream_o) {
     }
 
     *stream_o = stream;
-    ESP_LOGI(TAG, "Audio stream initialized successfully with downmix");
+    ESP_LOGD(TAG, "Audio stream initialized successfully with downmix");
     return ESP_OK;
 }
 
@@ -256,7 +256,7 @@ void audio_control_set_gain(audio_stream_t *stream, int track_index, float gain_
     
     float gain[2] = {0.0f, gain_db};
     downmix_set_gain_info(stream->downmix_e, gain, track_index);
-    ESP_LOGI(TAG, "Set track %d gain to %.1f dB", track_index, gain_db);
+    ESP_LOGD(TAG, "Set track %d gain to %.1f dB", track_index, gain_db);
 }
 
 void audio_control_start_track(audio_stream_t *stream, int track_index) {
@@ -265,9 +265,9 @@ void audio_control_start_track(audio_stream_t *stream, int track_index) {
         return;
     }
 
-    ESP_LOGI(TAG, "Starting track %d", track_index);
+    ESP_LOGD(TAG, "Starting track %d", track_index);
     audio_pipeline_run(stream->tracks[track_index].pipeline);
-    ESP_LOGI(TAG, "Started track %d", track_index);
+    ESP_LOGD(TAG, "Started track %d", track_index);
 }
 
 void audio_control_stop_track(audio_stream_t *stream, int track_index) {
@@ -276,11 +276,11 @@ void audio_control_stop_track(audio_stream_t *stream, int track_index) {
         return;
     }
     
-    ESP_LOGI(TAG, "Stoping track %d", track_index);
+    ESP_LOGD(TAG, "Stoping track %d", track_index);
     audio_pipeline_stop(stream->tracks[track_index].pipeline);
     audio_pipeline_wait_for_stop(stream->tracks[track_index].pipeline);
     audio_pipeline_terminate(stream->tracks[track_index].pipeline);
-    ESP_LOGI(TAG, "Stopped track %d", track_index);
+    ESP_LOGD(TAG, "Stopped track %d", track_index);
 }
 
 void audio_control_stop(audio_stream_t *stream) {
@@ -612,18 +612,18 @@ void audio_control_task(void *pvParameters)
                 // Identify which element sent the event
                 for (int i = 0; i < MAX_TRACKS; i++) {
                     if (evt_msg.source == (void *)stream->tracks[i].fatfs_e) {
-                        ESP_LOGI(TAG, "Event from track %d FATFS element", i);
-                    } else if (evt_msg.source == (void *)stream->tracks[i].decode_e) {
-                        ESP_LOGI(TAG, "Event from track %d decoder element", i);
-                    } else if (evt_msg.source == (void *)stream->tracks[i].raw_write_e) {
-                        ESP_LOGI(TAG, "Event from track %d raw_write element", i);
+                    ESP_LOGD(TAG, "Event from track %d FATFS element", i);
+                } else if (evt_msg.source == (void *)stream->tracks[i].decode_e) {
+                    ESP_LOGD(TAG, "Event from track %d decoder element", i);
+                } else if (evt_msg.source == (void *)stream->tracks[i].raw_write_e) {
+                    ESP_LOGD(TAG, "Event from track %d raw_write element", i);
                     }
                 }
                 
                 if (evt_msg.source == (void *)stream->downmix_e) {
-                    ESP_LOGI(TAG, "Event from downmix element");
-                } else if (evt_msg.source == (void *)stream->i2s_e) {
-                    ESP_LOGI(TAG, "Event from I2S element");
+                ESP_LOGD(TAG, "Event from downmix element");
+            } else if (evt_msg.source == (void *)stream->i2s_e) {
+                ESP_LOGD(TAG, "Event from I2S element");
                 }
                 
                 // Handle specific important events
@@ -768,9 +768,9 @@ void app_main(void)
     // List music files on SD card
     char **music_files;
     if (music_filenames_get(&music_files) == ESP_OK && music_files != NULL) {
-        ESP_LOGI(TAG, "Music files found on SD card:");
+        ESP_LOGD(TAG, "Music files found on SD card:");
         for (int i = 0; music_files[i] != NULL; i++) {
-            ESP_LOGI(TAG, "  [%d] %s", i, music_files[i]);
+            ESP_LOGD(TAG, "  [%d] %s", i, music_files[i]);
         }
     }
 
@@ -809,7 +809,11 @@ void app_main(void)
         .board_handle = board_handle
     };
 
-    if (xTaskCreate(audio_control_task, "audio_control", 4096, (void *)&params, 5, NULL) != pdPASS) {
+    // Pin audio control task to Core 1 (APP CPU) to avoid WiFi interference on Core 0
+    if (xTaskCreatePinnedToCore(audio_control_task, "audio_control", 4096, (void *)&params, 
+                                 5,  // Higher priority than WiFi
+                                 NULL,
+                                 1) != pdPASS) {  // Pin to Core 1 (APP CPU)
         ESP_LOGE(TAG, "Failed to create audio control task");
         vQueueDelete(audio_control_queue);
         return;
