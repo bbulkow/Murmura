@@ -29,6 +29,7 @@ static esp_err_t loop_stop_handler(httpd_req_t *req);
 static esp_err_t loop_volume_handler(httpd_req_t *req);
 static esp_err_t global_volume_handler(httpd_req_t *req);
 static esp_err_t root_get_handler(httpd_req_t *req);
+static esp_err_t api_docs_handler(httpd_req_t *req);
 // WiFi management handlers
 static esp_err_t wifi_status_handler(httpd_req_t *req);
 static esp_err_t wifi_networks_handler(httpd_req_t *req);
@@ -41,8 +42,8 @@ static esp_err_t config_delete_handler(httpd_req_t *req);
 static esp_err_t config_status_handler(httpd_req_t *req);
 // Unit status handlers
 static esp_err_t unit_status_handler(httpd_req_t *req);
-static esp_err_t unit_id_get_handler(httpd_req_t *req);
-static esp_err_t unit_id_set_handler(httpd_req_t *req);
+static esp_err_t id_get_handler(httpd_req_t *req);
+static esp_err_t id_set_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -1074,10 +1075,10 @@ static esp_err_t unit_status_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/unit_id - Get the current unit ID
+ * @brief GET /api/id - Get the current ID
  */
-static esp_err_t unit_id_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/unit_id");
+static esp_err_t id_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/id");
     
     cJSON *response = cJSON_CreateObject();
     
@@ -1099,11 +1100,11 @@ static esp_err_t unit_id_get_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief POST /api/unit_id - Set the unit ID
- * Body: { "unit_id": "LOUDFRAME-001" }
+ * @brief POST /api/id - Set the ID
+ * Body: { "id": "LOUDFRAME-001" }
  */
-static esp_err_t unit_id_set_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "POST /api/unit_id");
+static esp_err_t id_set_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/id");
     
     if (req->content_len == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
@@ -1149,52 +1150,142 @@ static esp_err_t unit_id_set_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET / - Root handler with API documentation
+ * @brief GET /api-docs - API documentation handler
  */
-static esp_err_t root_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /");
+static esp_err_t api_docs_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api-docs");
     
     const char *html = 
         "<!DOCTYPE html>"
         "<html>"
         "<head>"
-        "<title>Audio Loop Controller API</title>"
+        "<title>Loudframe API Documentation</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
         "<style>"
-        "body { font-family: Arial, sans-serif; margin: 40px; }"
-        "h1 { color: #333; }"
-        "h2 { color: #666; margin-top: 30px; }"
-        "pre { background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }"
-        ".endpoint { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 3px solid #4CAF50; }"
-        ".method { font-weight: bold; color: #4CAF50; }"
-        ".path { color: #2196F3; font-family: monospace; }"
+        "* { box-sizing: border-box; margin: 0; padding: 0; }"
+        "body { "
+        "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; "
+        "  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
+        "  min-height: 100vh; "
+        "  padding: 10px; "
+        "}"
+        ".container { max-width: 800px; margin: 0 auto; }"
+        ".header { "
+        "  text-align: center; "
+        "  color: white; "
+        "  margin: 20px 0; "
+        "}"
+        ".header h1 { font-size: 24px; margin-bottom: 10px; }"
+        ".header a { "
+        "  color: white; "
+        "  text-decoration: none; "
+        "  opacity: 0.9; "
+        "  font-size: 14px; "
+        "}"
+        ".header a:hover { opacity: 1; text-decoration: underline; }"
+        ".card { "
+        "  background: white; "
+        "  border-radius: 12px; "
+        "  padding: 20px; "
+        "  margin: 10px 0; "
+        "  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); "
+        "}"
+        "h2 { "
+        "  color: #333; "
+        "  font-size: 20px; "
+        "  margin: 20px 0 15px 0; "
+        "  padding-bottom: 10px; "
+        "  border-bottom: 2px solid #667eea; "
+        "}"
+        ".endpoint { "
+        "  background: #f8f9fa; "
+        "  border-radius: 8px; "
+        "  padding: 15px; "
+        "  margin: 15px 0; "
+        "  border-left: 4px solid #667eea; "
+        "}"
+        ".method { "
+        "  display: inline-block; "
+        "  font-weight: 600; "
+        "  padding: 3px 8px; "
+        "  border-radius: 4px; "
+        "  margin-right: 10px; "
+        "  font-size: 12px; "
+        "}"
+        ".method-get { background: #4caf50; color: white; }"
+        ".method-post { background: #2196f3; color: white; }"
+        ".method-delete { background: #f44336; color: white; }"
+        ".path { "
+        "  font-family: 'Courier New', monospace; "
+        "  color: #333; "
+        "  font-weight: 600; "
+        "}"
+        ".description { "
+        "  color: #666; "
+        "  margin: 10px 0; "
+        "  font-size: 14px; "
+        "}"
+        "pre { "
+        "  background: #2d2d2d; "
+        "  color: #f8f8f2; "
+        "  padding: 12px; "
+        "  border-radius: 6px; "
+        "  overflow-x: auto; "
+        "  margin: 10px 0; "
+        "  font-size: 12px; "
+        "  line-height: 1.4; "
+        "}"
+        "@media (max-width: 600px) { "
+        "  .container { padding: 0 10px; } "
+        "  h1 { font-size: 20px; } "
+        "  .card { padding: 15px; } "
+        "  pre { font-size: 11px; } "
+        "}"
         "</style>"
         "</head>"
         "<body>"
-        "<h1>Audio Loop Controller API</h1>"
-        "<p>ESP32 Audio Loop Controller with JSON API</p>"
+        "<div class='container'>"
+        "<div class='header'>"
+        "<h1>Loudframe API Documentation</h1>"
+        "<a href='/'>Back to Controller</a>"
+        "</div>"
         
-        "<h2>API Endpoints</h2>"
+        "<div class='card'>"
+        "<h2>Audio Control Endpoints</h2>"
         
         "<div class='endpoint'>"
-        "<span class='method'>GET</span> <span class='path'>/api/files</span>"
-        "<p>List all audio files in the SD card root directory</p>"
-        "<pre>Response:\n"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/files</span>"
+        "<p class='description'>List all audio files on the SD card</p>"
+        "<pre>"
+        "Response:\n"
         "{\n"
         "  \"files\": [\n"
-        "    { \"index\": 0, \"name\": \"track1.wav\", \"type\": \"wav\", \"path\": \"/sdcard/track1.wav\" },\n"
-        "    { \"index\": 1, \"name\": \"track2.mp3\", \"type\": \"mp3\", \"path\": \"/sdcard/track2.mp3\" }\n"
+        "    {\n"
+        "      \"index\": 0,\n"
+        "      \"name\": \"track1.wav\",\n"
+        "      \"type\": \"wav\",\n"
+        "      \"path\": \"/sdcard/track1.wav\"\n"
+        "    }\n"
         "  ],\n"
-        "  \"count\": 2\n"
+        "  \"count\": 1\n"
         "}</pre>"
         "</div>"
         
         "<div class='endpoint'>"
-        "<span class='method'>GET</span> <span class='path'>/api/loops</span>"
-        "<p>List currently playing loops</p>"
-        "<pre>Response:\n"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/loops</span>"
+        "<p class='description'>Get status of all loop tracks</p>"
+        "<pre>"
+        "Response:\n"
         "{\n"
         "  \"loops\": [\n"
-        "    { \"track\": 0, \"file\": \"/sdcard/track1.wav\", \"volume\": 100, \"playing\": true }\n"
+        "    {\n"
+        "      \"track\": 0,\n"
+        "      \"file\": \"/sdcard/track1.wav\",\n"
+        "      \"volume\": 100,\n"
+        "      \"playing\": true\n"
+        "    }\n"
         "  ],\n"
         "  \"active_count\": 1,\n"
         "  \"max_tracks\": 3,\n"
@@ -1203,9 +1294,11 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div>"
         
         "<div class='endpoint'>"
-        "<span class='method'>POST</span> <span class='path'>/api/loop/file</span>"
-        "<p>Set the file for a specific track (starts playing immediately)</p>"
-        "<pre>Request:\n"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/loop/file</span>"
+        "<p class='description'>Set file for a track and start playing</p>"
+        "<pre>"
+        "Request:\n"
         "{\n"
         "  \"track\": 0,\n"
         "  \"file_index\": 0  // OR \"file_path\": \"/sdcard/track1.wav\"\n"
@@ -1213,27 +1306,22 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div>"
         
         "<div class='endpoint'>"
-        "<span class='method'>POST</span> <span class='path'>/api/loop/start</span>"
-        "<p>Start/restart playing a track with its currently set file</p>"
-        "<pre>Request:\n"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/loop/stop</span>"
+        "<p class='description'>Stop a specific track</p>"
+        "<pre>"
+        "Request:\n"
         "{\n"
         "  \"track\": 0\n"
         "}</pre>"
         "</div>"
         
         "<div class='endpoint'>"
-        "<span class='method'>POST</span> <span class='path'>/api/loop/stop</span>"
-        "<p>Stop a loop on a specific track</p>"
-        "<pre>Request:\n"
-        "{\n"
-        "  \"track\": 0\n"
-        "}</pre>"
-        "</div>"
-        
-        "<div class='endpoint'>"
-        "<span class='method'>POST</span> <span class='path'>/api/loop/volume</span>"
-        "<p>Set volume for a specific loop (0-100%)</p>"
-        "<pre>Request:\n"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/loop/volume</span>"
+        "<p class='description'>Set volume for a specific track (0-100%)</p>"
+        "<pre>"
+        "Request:\n"
         "{\n"
         "  \"track\": 0,\n"
         "  \"volume\": 75\n"
@@ -1241,19 +1329,834 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div>"
         
         "<div class='endpoint'>"
-        "<span class='method'>POST</span> <span class='path'>/api/global/volume</span>"
-        "<p>Set global/master volume (0-100%)</p>"
-        "<pre>Request:\n"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/global/volume</span>"
+        "<p class='description'>Set global/master volume (0-100%)</p>"
+        "<pre>"
+        "Request:\n"
         "{\n"
         "  \"volume\": 85\n"
         "}</pre>"
         "</div>"
+        "</div>"
         
+        "<div class='card'>"
+        "<h2>System Status Endpoints</h2>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/status</span>"
+        "<p class='description'>Get unit status information</p>"
+        "<pre>"
+        "Response:\n"
+        "{\n"
+        "  \"mac_address\": \"AA:BB:CC:DD:EE:FF\",\n"
+        "  \"id\": \"LOUDFRAME-001\",\n"
+        "  \"ip_address\": \"192.168.1.100\",\n"
+        "  \"wifi_connected\": true,\n"
+        "  \"firmware_version\": \"1.0.0\",\n"
+        "  \"uptime_seconds\": 3600,\n"
+        "  \"uptime_formatted\": \"00 01:00:00\"\n"
+        "}</pre>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/id</span>"
+        "<p class='description'>Get the device ID</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/id</span>"
+        "<p class='description'>Set the device ID</p>"
+        "<pre>"
+        "Request:\n"
+        "{\n"
+        "  \"id\": \"LOUDFRAME-001\"\n"
+        "}</pre>"
+        "</div>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>WiFi Management Endpoints</h2>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/wifi/status</span>"
+        "<p class='description'>Get WiFi connection status</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/wifi/networks</span>"
+        "<p class='description'>List configured WiFi networks</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/wifi/add</span>"
+        "<p class='description'>Add a new WiFi network</p>"
+        "<pre>"
+        "Request:\n"
+        "{\n"
+        "  \"ssid\": \"NetworkName\",\n"
+        "  \"password\": \"NetworkPassword\"\n"
+        "}</pre>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/wifi/remove</span>"
+        "<p class='description'>Remove a WiFi network</p>"
+        "<pre>"
+        "Request:\n"
+        "{\n"
+        "  \"ssid\": \"NetworkName\"\n"
+        "}</pre>"
+        "</div>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>Configuration Management</h2>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-get'>GET</span>"
+        "<span class='path'>/api/config/status</span>"
+        "<p class='description'>Get configuration status</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/config/save</span>"
+        "<p class='description'>Save current configuration</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/config/load</span>"
+        "<p class='description'>Load and apply saved configuration</p>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-delete'>DELETE</span>"
+        "<span class='path'>/api/config/delete</span>"
+        "<p class='description'>Delete saved configuration</p>"
+        "</div>"
+        "</div>"
+        
+        "</div>"
         "</body>"
         "</html>";
     
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, html, strlen(html));
+}
+
+/**
+ * @brief GET /favicon.ico - Favicon handler (returns empty icon to avoid 404)
+ */
+static esp_err_t favicon_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /favicon.ico");
+    
+    // Return a minimal valid ICO file (1x1 transparent pixel)
+    static const uint8_t favicon_data[] = {
+        0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00,
+        0x01, 0x00, 0x18, 0x00, 0x30, 0x00, 0x00, 0x00, 0x16, 0x00,
+        0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    
+    httpd_resp_set_type(req, "image/x-icon");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000");
+    return httpd_resp_send(req, (const char *)favicon_data, sizeof(favicon_data));
+}
+
+/**
+ * @brief GET /settings - Settings page handler
+ */
+static esp_err_t settings_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /settings");
+    
+    const char *html = 
+        "<!DOCTYPE html>"
+        "<html>"
+        "<head>"
+        "<title>Loudframe Settings</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+        "<style>"
+        "* { box-sizing: border-box; margin: 0; padding: 0; }"
+        "body { "
+        "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; "
+        "  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
+        "  min-height: 100vh; "
+        "  padding: 10px; "
+        "}"
+        ".container { max-width: 600px; margin: 0 auto; }"
+        ".card { "
+        "  background: white; "
+        "  border-radius: 12px; "
+        "  padding: 20px; "
+        "  margin: 10px 0; "
+        "  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); "
+        "}"
+        "h1 { "
+        "  color: white; "
+        "  text-align: center; "
+        "  margin: 20px 0; "
+        "  font-size: 24px; "
+        "}"
+        "h2 { "
+        "  color: #333; "
+        "  font-size: 18px; "
+        "  margin-bottom: 15px; "
+        "  padding-bottom: 10px; "
+        "  border-bottom: 2px solid #667eea; "
+        "}"
+        ".menu-bar { "
+        "  background: rgba(255, 255, 255, 0.1); "
+        "  border-radius: 8px; "
+        "  padding: 10px; "
+        "  margin-bottom: 20px; "
+        "  display: flex; "
+        "  gap: 10px; "
+        "  justify-content: center; "
+        "  flex-wrap: wrap; "
+        "}"
+        ".menu-btn { "
+        "  background: white; "
+        "  color: #667eea; "
+        "  border: none; "
+        "  padding: 8px 16px; "
+        "  border-radius: 6px; "
+        "  font-size: 14px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "  text-decoration: none; "
+        "  display: inline-block; "
+        "  transition: all 0.3s ease; "
+        "}"
+        ".menu-btn:hover { "
+        "  background: #667eea; "
+        "  color: white; "
+        "  transform: translateY(-2px); "
+        "}"
+        ".menu-btn.active { "
+        "  background: #667eea; "
+        "  color: white; "
+        "}"
+        ".form-group { "
+        "  margin: 20px 0; "
+        "}"
+        "label { "
+        "  display: block; "
+        "  color: #666; "
+        "  font-weight: 500; "
+        "  margin-bottom: 8px; "
+        "}"
+        "input[type='text'] { "
+        "  width: 100%; "
+        "  padding: 10px; "
+        "  border: 2px solid #e0e0e0; "
+        "  border-radius: 6px; "
+        "  font-size: 14px; "
+        "  transition: border-color 0.3s ease; "
+        "}"
+        "input[type='text']:focus { "
+        "  outline: none; "
+        "  border-color: #667eea; "
+        "}"
+        ".btn-primary { "
+        "  background: #667eea; "
+        "  color: white; "
+        "  border: none; "
+        "  padding: 10px 20px; "
+        "  border-radius: 8px; "
+        "  font-size: 14px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "  margin-right: 10px; "
+        "}"
+        ".btn-primary:hover { background: #5a67d8; }"
+        ".btn-secondary { "
+        "  background: #e0e0e0; "
+        "  color: #333; "
+        "  border: none; "
+        "  padding: 10px 20px; "
+        "  border-radius: 8px; "
+        "  font-size: 14px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "}"
+        ".btn-secondary:hover { background: #d0d0d0; }"
+        ".status-message { "
+        "  padding: 12px; "
+        "  border-radius: 6px; "
+        "  margin: 15px 0; "
+        "  font-size: 14px; "
+        "  display: none; "
+        "}"
+        ".status-message.success { "
+        "  background: #e8f5e9; "
+        "  color: #2e7d32; "
+        "  border: 1px solid #4caf50; "
+        "  display: block; "
+        "}"
+        ".status-message.error { "
+        "  background: #ffebee; "
+        "  color: #c62828; "
+        "  border: 1px solid #f44336; "
+        "  display: block; "
+        "}"
+        ".current-value { "
+        "  background: #f5f5f5; "
+        "  padding: 8px 12px; "
+        "  border-radius: 6px; "
+        "  margin-bottom: 10px; "
+        "  color: #666; "
+        "  font-size: 14px; "
+        "}"
+        "@media (max-width: 480px) { "
+        "  h1 { font-size: 20px; } "
+        "  .card { padding: 15px; } "
+        "}"
+        "</style>"
+        "</head>"
+        "<body>"
+        "<div class='container'>"
+        "<h1>Loudframe Settings</h1>"
+        
+        "<div class='menu-bar'>"
+        "<a href='/' class='menu-btn'>Status</a>"
+        "<a href='/settings' class='menu-btn active'>Settings</a>"
+        "<a href='/api-docs' class='menu-btn'>API Docs</a>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>Device ID</h2>"
+        "<div id='status-message' class='status-message'></div>"
+        "<div class='current-value'>Current ID: <span id='current-id'>Loading...</span></div>"
+        "<div class='form-group'>"
+        "<label for='device-id'>ID:</label>"
+        "<input type='text' id='device-id' placeholder='Enter device ID (e.g., LOUDFRAME-001)' maxlength='32'>"
+        "</div>"
+        "<button class='btn-primary' onclick='updateDeviceId()'>Update ID</button>"
+        "<button class='btn-secondary' onclick='loadCurrentId()'>Refresh</button>"
+        "</div>"
+        "</div>"
+        
+        "<script>"
+        "console.log('[S1] Script start');"
+        "function loadCurrentId() {"
+        "  console.log('[S2] loadCurrentId called');"
+        "  fetch('/api/id')"
+        "    .then(function(r) {"
+        "      console.log('[S3] Got resp:', r.status);"
+        "      if (!r.ok) throw new Error('HTTP err');"
+        "      return r.json();"
+        "    })"
+        "    .then(function(d) {"
+        "      console.log('[S4] Data:', d);"
+        "      if (d.success && d.id) {"
+        "        document.getElementById('current-id').textContent = d.id;"
+        "        document.getElementById('device-id').value = d.id;"
+        "      } else {"
+        "        document.getElementById('current-id').textContent = 'Not Set';"
+        "      }"
+        "    })"
+        "    .catch(function(e) {"
+        "      console.error('[S5] Err:', e);"
+        "      document.getElementById('current-id').textContent = 'Error';"
+        "    });"
+        "}"
+        ""
+        "function updateDeviceId() {"
+        "  var id = document.getElementById('device-id').value.trim();"
+        "  var msg = document.getElementById('status-message');"
+        "  if (!id) {"
+        "    msg.className = 'status-message error';"
+        "    msg.textContent = 'Please enter a device ID';"
+        "    return;"
+        "  }"
+        "  fetch('/api/id', {"
+        "    method: 'POST',"
+        "    headers: {'Content-Type': 'application/json'},"
+        "    body: JSON.stringify({id: id})"
+        "  })"
+        "  .then(function(r) { return r.json(); })"
+        "  .then(function(d) {"
+        "    if (d.success) {"
+        "      msg.className = 'status-message success';"
+        "      msg.textContent = 'ID updated!';"
+        "      document.getElementById('current-id').textContent = id;"
+        "      setTimeout(function() { msg.style.display = 'none'; }, 3000);"
+        "    } else {"
+        "      msg.className = 'status-message error';"
+        "      msg.textContent = d.error || 'Failed';"
+        "    }"
+        "  })"
+        "  .catch(function(e) {"
+        "    msg.className = 'status-message error';"
+        "    msg.textContent = 'Network error';"
+        "  });"
+        "}"
+        ""
+        "console.log('[S6] Funcs defined');"
+        "if (document.readyState === 'loading') {"
+        "  console.log('[S7] Wait for DOM');"
+        "  document.addEventListener('DOMContentLoaded', function() {"
+        "    console.log('[S8] DOM ready');"
+        "    loadCurrentId();"
+        "  });"
+        "} else {"
+        "  console.log('[S9] Direct call');"
+        "  loadCurrentId();"
+        "}"
+        "console.log('[S10] Script end');"
+        "</script>"
+        "<!-- END -->"
+        "</body>"
+        "</html>";
+    
+    // Check response size for potential truncation
+    size_t html_size = strlen(html);
+    ESP_LOGI(TAG, "Settings page HTML size: %d bytes", html_size);
+    
+    // ESP32 HTTP server typically has a limit around 16KB for single response
+    const size_t MAX_RESPONSE_SIZE = 16384;  // 16KB typical limit
+    const size_t WARNING_THRESHOLD = 14336;  // 14KB warning threshold (87.5% of max)
+    
+    if (html_size >= MAX_RESPONSE_SIZE) {
+        ESP_LOGE(TAG, "WARNING: Settings page HTML exceeds maximum response size!");
+        ESP_LOGE(TAG, "HTML size: %d bytes, Max size: %d bytes", html_size, MAX_RESPONSE_SIZE);
+        ESP_LOGE(TAG, "Response will likely be truncated!");
+    } else if (html_size >= WARNING_THRESHOLD) {
+        ESP_LOGW(TAG, "Settings page HTML approaching maximum response size");
+        ESP_LOGW(TAG, "HTML size: %d bytes, Warning at: %d bytes, Max: %d bytes", 
+                 html_size, WARNING_THRESHOLD, MAX_RESPONSE_SIZE);
+    }
+    
+    httpd_resp_set_type(req, "text/html");
+    esp_err_t ret = httpd_resp_send(req, html, html_size);
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send settings page response: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Settings page sent successfully (%d bytes)", html_size);
+    }
+    
+    return ret;
+}
+
+/**
+ * @brief GET / - Root handler with status display
+ */
+static esp_err_t root_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /");
+    
+    const char *html = 
+        "<!DOCTYPE html>"
+        "<html>"
+        "<head>"
+        "<title>Loudframe Controller</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+        "<style>"
+        "* { box-sizing: border-box; margin: 0; padding: 0; }"
+        "body { "
+        "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; "
+        "  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
+        "  min-height: 100vh; "
+        "  padding: 10px; "
+        "}"
+        ".container { max-width: 600px; margin: 0 auto; }"
+        ".card { "
+        "  background: white; "
+        "  border-radius: 12px; "
+        "  padding: 20px; "
+        "  margin: 10px 0; "
+        "  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); "
+        "}"
+        "h1 { "
+        "  color: white; "
+        "  text-align: center; "
+        "  margin: 20px 0; "
+        "  font-size: 24px; "
+        "}"
+        "h2 { "
+        "  color: #333; "
+        "  font-size: 18px; "
+        "  margin-bottom: 15px; "
+        "  padding-bottom: 10px; "
+        "  border-bottom: 2px solid #667eea; "
+        "}"
+        ".menu-bar { "
+        "  background: rgba(255, 255, 255, 0.1); "
+        "  border-radius: 8px; "
+        "  padding: 10px; "
+        "  margin-bottom: 20px; "
+        "  display: flex; "
+        "  gap: 10px; "
+        "  justify-content: center; "
+        "  flex-wrap: wrap; "
+        "}"
+        ".menu-btn { "
+        "  background: white; "
+        "  color: #667eea; "
+        "  border: none; "
+        "  padding: 8px 16px; "
+        "  border-radius: 6px; "
+        "  font-size: 14px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "  text-decoration: none; "
+        "  display: inline-block; "
+        "  transition: all 0.3s ease; "
+        "}"
+        ".menu-btn:hover { "
+        "  background: #667eea; "
+        "  color: white; "
+        "  transform: translateY(-2px); "
+        "}"
+        ".menu-btn.active { "
+        "  background: #667eea; "
+        "  color: white; "
+        "}"
+        ".status-item { "
+        "  display: flex; "
+        "  justify-content: space-between; "
+        "  padding: 8px 0; "
+        "  border-bottom: 1px solid #eee; "
+        "}"
+        ".status-item:last-child { border-bottom: none; }"
+        ".label { "
+        "  color: #666; "
+        "  font-weight: 500; "
+        "}"
+        ".value { "
+        "  color: #333; "
+        "  font-weight: 600; "
+        "  text-align: right; "
+        "  word-break: break-all; "
+        "}"
+        ".track { "
+        "  background: #f8f9fa; "
+        "  border-radius: 8px; "
+        "  padding: 12px; "
+        "  margin: 10px 0; "
+        "}"
+        ".track-header { "
+        "  display: flex; "
+        "  justify-content: space-between; "
+        "  align-items: center; "
+        "  margin-bottom: 8px; "
+        "}"
+        ".track-title { "
+        "  font-weight: 600; "
+        "  color: #333; "
+        "}"
+        ".playing-badge { "
+        "  background: #4caf50; "
+        "  color: white; "
+        "  padding: 2px 8px; "
+        "  border-radius: 12px; "
+        "  font-size: 12px; "
+        "  font-weight: 600; "
+        "}"
+        ".stopped-badge { "
+        "  background: #9e9e9e; "
+        "  color: white; "
+        "  padding: 2px 8px; "
+        "  border-radius: 12px; "
+        "  font-size: 12px; "
+        "  font-weight: 600; "
+        "}"
+        ".track-info { "
+        "  color: #666; "
+        "  font-size: 14px; "
+        "}"
+        ".volume-bar { "
+        "  background: #e0e0e0; "
+        "  height: 6px; "
+        "  border-radius: 3px; "
+        "  margin-top: 8px; "
+        "  position: relative; "
+        "}"
+        ".volume-fill { "
+        "  background: #667eea; "
+        "  height: 100%; "
+        "  border-radius: 3px; "
+        "  transition: width 0.3s ease; "
+        "}"
+        ".loading { "
+        "  text-align: center; "
+        "  color: #999; "
+        "  padding: 20px; "
+        "}"
+        ".error { "
+        "  background: #ffebee; "
+        "  color: #c62828; "
+        "  padding: 12px; "
+        "  border-radius: 8px; "
+        "  margin: 10px 0; "
+        "}"
+        ".refresh-btn { "
+        "  background: #667eea; "
+        "  color: white; "
+        "  border: none; "
+        "  padding: 10px 20px; "
+        "  border-radius: 8px; "
+        "  font-size: 14px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "  display: block; "
+        "  margin: 20px auto; "
+        "}"
+        ".refresh-btn:hover { background: #5a67d8; }"
+        "@media (max-width: 480px) { "
+        "  h1 { font-size: 20px; } "
+        "  .card { padding: 15px; } "
+        "}"
+        "</style>"
+        "</head>"
+        "<body>"
+        "<div class='container'>"
+        "<h1>Loudframe Controller</h1>"
+        
+        "<div class='menu-bar'>"
+        "<a href='/' class='menu-btn active'>Status</a>"
+        "<a href='/settings' class='menu-btn'>Settings</a>"
+        "<a href='/api-docs' class='menu-btn'>API Docs</a>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>Unit Status</h2>"
+        "<div id='status-content'>"
+        "<div class='loading'>Loading status...</div>"
+        "</div>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>Loop Tracks</h2>"
+        "<div id='loops-content'>"
+        "<div class='loading'>Loading loops...</div>"
+        "</div>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>Configuration</h2>"
+        "<div style='text-align: center; padding: 10px;'>"
+        "<button class='menu-btn' style='background: #667eea; color: white; padding: 12px 24px; font-size: 16px;' "
+        "onclick=\"window.location.href='/settings'\">Configure Device ID</button>"
+        "<p style='margin-top: 10px; color: #666; font-size: 14px;'>Click to set or change the device ID</p>"
+        "</div>"
+        "</div>"
+        
+        "<button class='refresh-btn' onclick='refreshData()'>Refresh</button>"
+        "</div>"
+        
+        "<script>"
+        "console.log('[DEBUG] 1. Script tag started executing');"
+        "try {"
+        "  console.log('[DEBUG] 2. About to define fetchStatus function');"
+        "  "
+        "  function fetchStatus() {"
+        "  console.log('[DEBUG] fetchStatus() called at', new Date().toISOString());"
+        "  console.log('[DEBUG] About to fetch /api/status');"
+        "  "
+        "  fetch('/api/status')"
+        "    .then(function(response) {"
+        "      console.log('[DEBUG] Status response received:', response.status, response.statusText);"
+        "      console.log('[DEBUG] Response headers:', response.headers);"
+        "      if (!response.ok) {"
+        "        throw new Error('HTTP error! status: ' + response.status);"
+        "      }"
+        "      return response.json();"
+        "    })"
+        "    .then(function(data) {"
+        "      console.log('[DEBUG] Status data parsed:', data);"
+        "      var container = document.getElementById('status-content');"
+        "      console.log('[DEBUG] Status container element:', container);"
+        "      "
+        "      if (container) {"
+        "        console.log('[DEBUG] Building status HTML');"
+        "        var html = '';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">ID</span>';"
+        "        html += '<span class=\"value\">' + (data.id || 'Not Set') + '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">IP Address</span>';"
+        "        html += '<span class=\"value\">' + (data.ip_address || 'N/A') + '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">MAC Address</span>';"
+        "        html += '<span class=\"value\">' + (data.mac_address || 'N/A') + '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">WiFi Status</span>';"
+        "        html += '<span class=\"value\">' + (data.wifi_connected ? 'Connected' : 'Disconnected') + '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">Firmware</span>';"
+        "        html += '<span class=\"value\">' + (data.firmware_version || 'Unknown') + '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"status-item\">';"
+        "        html += '<span class=\"label\">Uptime</span>';"
+        "        html += '<span class=\"value\">' + (data.uptime_formatted || 'N/A') + '</span>';"
+        "        html += '</div>';"
+        "        console.log('[DEBUG] Setting innerHTML for status');"
+        "        container.innerHTML = html;"
+        "        console.log('[DEBUG] Status HTML updated successfully');"
+        "      } else {"
+        "        console.error('[DEBUG] ERROR: status-content element not found!');"
+        "      }"
+        "    })"
+        "    .catch(function(error) {"
+        "      console.error('[DEBUG] Status fetch error:', error);"
+        "      console.error('[DEBUG] Error stack:', error.stack);"
+        "      var container = document.getElementById('status-content');"
+        "      if (container) {"
+        "        container.innerHTML = '<div class=\"error\">Failed to load status: ' + error.message + '</div>';"
+        "      }"
+        "    });"
+        "}"
+        ""
+        "function fetchLoops() {"
+        "  console.log('[DEBUG] fetchLoops() called at', new Date().toISOString());"
+        "  console.log('[DEBUG] About to fetch /api/loops');"
+        "  "
+        "  fetch('/api/loops')"
+        "    .then(function(response) {"
+        "      console.log('[DEBUG] Loops response received:', response.status, response.statusText);"
+        "      if (!response.ok) {"
+        "        throw new Error('HTTP error! status: ' + response.status);"
+        "      }"
+        "      return response.json();"
+        "    })"
+        "    .then(function(data) {"
+        "      console.log('[DEBUG] Loops data parsed:', data);"
+        "      var container = document.getElementById('loops-content');"
+        "      console.log('[DEBUG] Loops container element:', container);"
+        "      "
+        "      if (!container) {"
+        "        console.error('[DEBUG] ERROR: loops-content element not found!');"
+        "        return;"
+        "      }"
+        "      "
+        "      if (!data.loops || data.loops.length === 0) {"
+        "        console.log('[DEBUG] No loops data available');"
+        "        container.innerHTML = '<div class=\"error\">No loops data available</div>';"
+        "        return;"
+        "      }"
+        "      "
+        "      console.log('[DEBUG] Building loops HTML for', data.loops.length, 'tracks');"
+        "      var html = '<div class=\"status-item\">';"
+        "      html += '<span class=\"label\">Global Volume</span>';"
+        "      html += '<span class=\"value\">' + data.global_volume + '%</span>';"
+        "      html += '</div>';"
+        "      "
+        "      data.loops.forEach(function(loop, index) {"
+        "        console.log('[DEBUG] Processing loop', index, ':', loop);"
+        "        var fileName = loop.file ? loop.file.split('/').pop() : 'No file';"
+        "        html += '<div class=\"track\">';"
+        "        html += '<div class=\"track-header\">';"
+        "        html += '<span class=\"track-title\">Track ' + (loop.track + 1) + '</span>';"
+        "        html += '<span class=\"' + (loop.playing ? 'playing-badge' : 'stopped-badge') + '\">';"
+        "        html += (loop.playing ? 'PLAYING' : 'STOPPED');"
+        "        html += '</span>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"track-info\">';"
+        "        html += '<div>File: ' + fileName + '</div>';"
+        "        html += '<div>Volume: ' + loop.volume + '%</div>';"
+        "        html += '</div>';"
+        "        html += '<div class=\"volume-bar\">';"
+        "        html += '<div class=\"volume-fill\" style=\"width: ' + loop.volume + '%\"></div>';"
+        "        html += '</div>';"
+        "        html += '</div>';"
+        "      });"
+        "      "
+        "      console.log('[DEBUG] Setting innerHTML for loops');"
+        "      container.innerHTML = html;"
+        "      console.log('[DEBUG] Loops HTML updated successfully');"
+        "    })"
+        "    .catch(function(error) {"
+        "      console.error('[DEBUG] Loops fetch error:', error);"
+        "      console.error('[DEBUG] Error stack:', error.stack);"
+        "      var container = document.getElementById('loops-content');"
+        "      if (container) {"
+        "        container.innerHTML = '<div class=\"error\">Failed to load loops: ' + error.message + '</div>';"
+        "      }"
+        "    });"
+        "}"
+        ""
+        "function refreshData() {"
+        "  console.log('[DEBUG] refreshData() called at', new Date().toISOString());"
+        "  console.log('[DEBUG] Document readyState:', document.readyState);"
+        "  console.log('[DEBUG] status-content element exists?', !!document.getElementById('status-content'));"
+        "  console.log('[DEBUG] loops-content element exists?', !!document.getElementById('loops-content'));"
+        "  fetchStatus();"
+        "  fetchLoops();"
+        "}"
+        ""
+        "  console.log('[DEBUG] 3. fetchStatus function defined');"
+        "  console.log('[DEBUG] 4. About to define fetchLoops function');"
+        "  "
+        "  console.log('[DEBUG] 5. fetchLoops function defined');"
+        "  console.log('[DEBUG] 6. About to define refreshData function');"
+        "  "
+        "  console.log('[DEBUG] 7. refreshData function defined');"
+        "  "
+        "  console.log('[DEBUG] 8. About to call refreshData for initial load');"
+        "  console.log('[DEBUG] 9. Document readyState:', document.readyState);"
+        "  "
+        "  refreshData();"
+        "  "
+        "  console.log('[DEBUG] 10. Initial refreshData() called');"
+        "  "
+        "  var intervalId = setInterval(refreshData, 5000);"
+        "  console.log('[DEBUG] 11. Auto-refresh interval set with ID:', intervalId);"
+        "  "
+        "  console.log('[DEBUG] 12. Script finished executing');"
+        "} catch (error) {"
+        "  console.error('[DEBUG] ERROR in script execution:', error);"
+        "  console.error('[DEBUG] Error message:', error.message);"
+        "  console.error('[DEBUG] Error stack:', error.stack);"
+        "}"
+        "</script>"
+        "</body>"
+        "</html>";
+    
+    // Check response size for potential truncation
+    size_t html_size = strlen(html);
+    ESP_LOGI(TAG, "Root page HTML size: %d bytes", html_size);
+    
+    // ESP32 HTTP server typically has a limit around 16KB for single response
+    const size_t MAX_RESPONSE_SIZE = 16384;  // 16KB typical limit
+    const size_t WARNING_THRESHOLD = 14336;  // 14KB warning threshold (87.5% of max)
+    
+    if (html_size >= MAX_RESPONSE_SIZE) {
+        ESP_LOGE(TAG, "WARNING: Root page HTML exceeds maximum response size!");
+        ESP_LOGE(TAG, "HTML size: %d bytes, Max size: %d bytes", html_size, MAX_RESPONSE_SIZE);
+        ESP_LOGE(TAG, "Response will likely be truncated!");
+    } else if (html_size >= WARNING_THRESHOLD) {
+        ESP_LOGW(TAG, "Root page HTML approaching maximum response size");
+        ESP_LOGW(TAG, "HTML size: %d bytes, Warning at: %d bytes, Max: %d bytes", 
+                 html_size, WARNING_THRESHOLD, MAX_RESPONSE_SIZE);
+    }
+    
+    httpd_resp_set_type(req, "text/html");
+    esp_err_t ret = httpd_resp_send(req, html, html_size);
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send root page response: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Root page sent successfully (%d bytes)", html_size);
+    }
+    
+    return ret;
 }
 
 /**
@@ -1272,7 +2175,7 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 20;  // Increased to accommodate all endpoints
+    config.max_uri_handlers = 25;  // Increased from 20 to handle all 22 handlers with buffer
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     
@@ -1283,14 +2186,52 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         return ESP_FAIL;
     }
     
-    // Register URI handlers
+    // Register URI handlers with error checking
+    esp_err_t ret;
+    
     httpd_uri_t root_uri = {
         .uri = "/",
         .method = HTTP_GET,
         .handler = root_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &root_uri);
+    ret = httpd_register_uri_handler(server, &root_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /: %s", esp_err_to_name(ret));
+    }
+    
+    httpd_uri_t settings_uri = {
+        .uri = "/settings",
+        .method = HTTP_GET,
+        .handler = settings_get_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &settings_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /settings: %s", esp_err_to_name(ret));
+    }
+    
+    httpd_uri_t favicon_uri = {
+        .uri = "/favicon.ico",
+        .method = HTTP_GET,
+        .handler = favicon_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &favicon_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /favicon.ico: %s", esp_err_to_name(ret));
+    }
+    
+    httpd_uri_t api_docs_uri = {
+        .uri = "/api-docs",
+        .method = HTTP_GET,
+        .handler = api_docs_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &api_docs_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api-docs: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t files_uri = {
         .uri = "/api/files",
@@ -1298,7 +2239,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = files_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &files_uri);
+    ret = httpd_register_uri_handler(server, &files_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/files: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t loops_uri = {
         .uri = "/api/loops",
@@ -1306,7 +2250,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = loops_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &loops_uri);
+    ret = httpd_register_uri_handler(server, &loops_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/loops: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t file_uri = {
         .uri = "/api/loop/file",
@@ -1314,7 +2261,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = loop_file_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &file_uri);
+    ret = httpd_register_uri_handler(server, &file_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/loop/file: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t start_uri = {
         .uri = "/api/loop/start",
@@ -1322,7 +2272,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = loop_start_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &start_uri);
+    ret = httpd_register_uri_handler(server, &start_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/loop/start: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t stop_uri = {
         .uri = "/api/loop/stop",
@@ -1330,7 +2283,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = loop_stop_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &stop_uri);
+    ret = httpd_register_uri_handler(server, &stop_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/loop/stop: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t volume_uri = {
         .uri = "/api/loop/volume",
@@ -1338,7 +2294,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = loop_volume_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &volume_uri);
+    ret = httpd_register_uri_handler(server, &volume_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/loop/volume: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t global_volume_uri = {
         .uri = "/api/global/volume",
@@ -1346,7 +2305,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = global_volume_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &global_volume_uri);
+    ret = httpd_register_uri_handler(server, &global_volume_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/global/volume: %s", esp_err_to_name(ret));
+    }
     
     // Register WiFi management endpoints
     httpd_uri_t wifi_status_uri = {
@@ -1355,7 +2317,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = wifi_status_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &wifi_status_uri);
+    ret = httpd_register_uri_handler(server, &wifi_status_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/status: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t wifi_networks_uri = {
         .uri = "/api/wifi/networks",
@@ -1363,7 +2328,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = wifi_networks_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &wifi_networks_uri);
+    ret = httpd_register_uri_handler(server, &wifi_networks_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/networks: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t wifi_add_uri = {
         .uri = "/api/wifi/add",
@@ -1371,7 +2339,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = wifi_add_network_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &wifi_add_uri);
+    ret = httpd_register_uri_handler(server, &wifi_add_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/add: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t wifi_remove_uri = {
         .uri = "/api/wifi/remove",
@@ -1379,7 +2350,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = wifi_remove_network_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &wifi_remove_uri);
+    ret = httpd_register_uri_handler(server, &wifi_remove_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/remove: %s", esp_err_to_name(ret));
+    }
     
     // Register configuration management endpoints
     httpd_uri_t config_status_uri = {
@@ -1388,7 +2362,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = config_status_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_status_uri);
+    ret = httpd_register_uri_handler(server, &config_status_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/config/status: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t config_save_uri = {
         .uri = "/api/config/save",
@@ -1396,7 +2373,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = config_save_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_save_uri);
+    ret = httpd_register_uri_handler(server, &config_save_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/config/save: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t config_load_uri = {
         .uri = "/api/config/load",
@@ -1404,7 +2384,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = config_load_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_load_uri);
+    ret = httpd_register_uri_handler(server, &config_load_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/config/load: %s", esp_err_to_name(ret));
+    }
     
     httpd_uri_t config_delete_uri = {
         .uri = "/api/config/delete",
@@ -1412,7 +2395,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = config_delete_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &config_delete_uri);
+    ret = httpd_register_uri_handler(server, &config_delete_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/config/delete: %s", esp_err_to_name(ret));
+    }
     
     // Register unit status endpoints
     httpd_uri_t unit_status_uri = {
@@ -1421,23 +2407,32 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .handler = unit_status_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &unit_status_uri);
+    ret = httpd_register_uri_handler(server, &unit_status_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/status: %s", esp_err_to_name(ret));
+    }
     
-    httpd_uri_t unit_id_get_uri = {
-        .uri = "/api/unit_id",
+    httpd_uri_t id_get_uri = {
+        .uri = "/api/id",
         .method = HTTP_GET,
-        .handler = unit_id_get_handler,
+        .handler = id_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &unit_id_get_uri);
+    ret = httpd_register_uri_handler(server, &id_get_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for GET /api/id: %s", esp_err_to_name(ret));
+    }
     
-    httpd_uri_t unit_id_set_uri = {
-        .uri = "/api/unit_id",
+    httpd_uri_t id_set_uri = {
+        .uri = "/api/id",
         .method = HTTP_POST,
-        .handler = unit_id_set_handler,
+        .handler = id_set_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(server, &unit_id_set_uri);
+    ret = httpd_register_uri_handler(server, &id_set_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for POST /api/id: %s", esp_err_to_name(ret));
+    }
     
     // Initialize unit status manager
     unit_status_init();

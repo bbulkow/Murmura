@@ -834,13 +834,13 @@ fetch('http://192.168.1.100/api/wifi/add', {
 .then(data => console.log(data));
 ```
 
-## Unit Status Management Endpoints
+## Device Status Management Endpoints
 
-### Get Unit Status
+### Get Device Status
 
 **GET** `/api/status`
 
-Returns comprehensive unit status information including MAC address (unique identifier), unit ID, IP address, WiFi connection status, firmware version, and uptime.
+Returns comprehensive device status information including MAC address (unique identifier), device ID, IP address, WiFi connection status, firmware version, and uptime.
 
 **Response:**
 ```json
@@ -857,14 +857,14 @@ Returns comprehensive unit status information including MAC address (unique iden
 
 **Notes:**
 - The MAC address serves as a unique device identifier
-- The `id` field contains the user-configurable unit ID
+- The `id` field contains the user-configurable device ID
 - `uptime_formatted` is in format: "DD HH:MM:SS"
 
-### Get Unit ID
+### Get Device ID
 
-**GET** `/api/unit_id`
+**GET** `/api/id`
 
-Returns the current unit ID.
+Returns the current device ID.
 
 **Response:**
 ```json
@@ -874,11 +874,11 @@ Returns the current unit ID.
 }
 ```
 
-### Set Unit ID
+### Set Device ID
 
-**POST** `/api/unit_id`
+**POST** `/api/id`
 
-Sets a custom unit ID for the device. This ID is persisted to the SD card at `/sdcard/unit_id.txt`.
+Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id.txt`.
 
 **Request Body:**
 ```json
@@ -905,23 +905,23 @@ Sets a custom unit ID for the device. This ID is persisted to the SD card at `/s
 ```
 
 **Notes:**
-- The unit ID can be up to 63 characters long
+- The device ID can be up to 63 characters long
 - The ID is saved to `/sdcard/unit_id.txt` for persistence across reboots
-- Default unit ID is "LOUDFRAME-001" if no custom ID is set
+- Default device ID is "LOUDFRAME-001" if no custom ID is set
 
-## Unit Status Examples
+## Device Status Examples
 
 ### Using curl
 
 ```bash
-# Get complete unit status
+# Get complete device status
 curl http://192.168.1.100/api/status
 
-# Get current unit ID
-curl http://192.168.1.100/api/unit_id
+# Get current device ID
+curl http://192.168.1.100/api/id
 
-# Set a custom unit ID
-curl -X POST http://192.168.1.100/api/unit_id \
+# Set a custom device ID
+curl -X POST http://192.168.1.100/api/id \
   -H "Content-Type: application/json" \
   -d '{"id": "LOUDFRAME-VENUE-01"}'
 ```
@@ -929,22 +929,22 @@ curl -X POST http://192.168.1.100/api/unit_id \
 ### Using JavaScript/Fetch
 
 ```javascript
-// Get unit status
+// Get device status
 fetch('http://192.168.1.100/api/status')
   .then(response => response.json())
   .then(data => {
     console.log('MAC Address:', data.mac_address);
-    console.log('Unit ID:', data.id);
+    console.log('Device ID:', data.id);
     console.log('Uptime:', data.uptime_formatted);
   });
 
-// Get unit ID
-fetch('http://192.168.1.100/api/unit_id')
+// Get device ID
+fetch('http://192.168.1.100/api/id')
   .then(response => response.json())
-  .then(data => console.log('Unit ID:', data.id));
+  .then(data => console.log('Device ID:', data.id));
 
-// Set unit ID
-fetch('http://192.168.1.100/api/unit_id', {
+// Set device ID
+fetch('http://192.168.1.100/api/id', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -965,21 +965,21 @@ import requests
 # Device IP
 base_url = "http://192.168.1.100"
 
-# Get unit status
+# Get device status
 response = requests.get(f"{base_url}/api/status")
 status = response.json()
 print(f"MAC Address: {status['mac_address']}")
-print(f"Unit ID: {status['id']}")
+print(f"Device ID: {status['id']}")
 print(f"Uptime: {status['uptime_formatted']}")
 
-# Get unit ID
-response = requests.get(f"{base_url}/api/unit_id")
-unit_id = response.json()
-print(f"Current unit ID: {unit_id['id']}")
+# Get device ID
+response = requests.get(f"{base_url}/api/id")
+device_id = response.json()
+print(f"Current device ID: {device_id['id']}")
 
-# Set unit ID
+# Set device ID
 response = requests.post(
-    f"{base_url}/api/unit_id",
+    f"{base_url}/api/id",
     json={"id": "LOUDFRAME-PYTHON-01"}
 )
 print(f"Set ID result: {response.json()}")
@@ -999,5 +999,4 @@ print(f"Set ID result: {response.json()}")
 - WiFi operations are performed asynchronously in the background
 - Signal strength is reported as both RSSI (dBm) and percentage (0-100)
 - Adding a new network triggers an immediate connection attempt
-- Unit ID is persisted to SD card and survives device reboots
-- Note: The API endpoints still use `/api/unit_id` for backwards compatibility, but the JSON field is now `id` instead of `unit_id`
+- Device ID is persisted to SD card and survives device reboots
