@@ -12,6 +12,7 @@
 #include "wifi_manager.h"
 #include "esp_wifi.h"
 #include "config_manager.h"
+#include "unit_status_manager.h"
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -38,6 +39,10 @@ static esp_err_t config_save_handler(httpd_req_t *req);
 static esp_err_t config_load_handler(httpd_req_t *req);
 static esp_err_t config_delete_handler(httpd_req_t *req);
 static esp_err_t config_status_handler(httpd_req_t *req);
+// Unit status handlers
+static esp_err_t unit_status_handler(httpd_req_t *req);
+static esp_err_t unit_id_get_handler(httpd_req_t *req);
+static esp_err_t unit_id_set_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -1029,6 +1034,121 @@ static esp_err_t config_delete_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief GET /api/status - Get unit status including MAC, IP, unit ID, uptime
+ */
+static esp_err_t unit_status_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/status");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get unit status
+    unit_status_t status;
+    esp_err_t ret = unit_status_get(&status);
+    
+    if (ret == ESP_OK) {
+        cJSON_AddStringToObject(response, "mac_address", status.mac_address);
+        cJSON_AddStringToObject(response, "id", status.id);
+        cJSON_AddStringToObject(response, "ip_address", status.ip_address);
+        cJSON_AddBoolToObject(response, "wifi_connected", status.wifi_connected);
+        cJSON_AddStringToObject(response, "firmware_version", status.firmware_version);
+        cJSON_AddNumberToObject(response, "uptime_seconds", status.uptime_seconds);
+        
+        // Add human-readable uptime
+        int days = status.uptime_seconds / 86400;
+        int hours = (status.uptime_seconds % 86400) / 3600;
+        int minutes = (status.uptime_seconds % 3600) / 60;
+        int seconds = status.uptime_seconds % 60;
+        
+        char uptime_str[64];
+        snprintf(uptime_str, sizeof(uptime_str), "%02d %02d:%02d:%02d", days, hours, minutes, seconds);
+        cJSON_AddStringToObject(response, "uptime_formatted", uptime_str);
+    } else {
+        cJSON_AddBoolToObject(response, "error", true);
+        cJSON_AddStringToObject(response, "message", "Failed to get unit status");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
+ * @brief GET /api/unit_id - Get the current unit ID
+ */
+static esp_err_t unit_id_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/unit_id");
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    char id[MAX_UNIT_ID_LEN];
+    esp_err_t ret = unit_status_get_id(id, sizeof(id));
+    
+    if (ret == ESP_OK) {
+        cJSON_AddStringToObject(response, "id", id);
+        cJSON_AddBoolToObject(response, "success", true);
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to get unit ID");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return send_ret;
+}
+
+/**
+ * @brief POST /api/unit_id - Set the unit ID
+ * Body: { "unit_id": "LOUDFRAME-001" }
+ */
+static esp_err_t unit_id_set_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/unit_id");
+    
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+    
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get unit ID from request
+    cJSON *id_json = cJSON_GetObjectItem(request, "id");
+    if (!cJSON_IsString(id_json) || strlen(id_json->valuestring) == 0) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid id");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Set the unit ID
+    esp_err_t ret = unit_status_set_id(id_json->valuestring);
+    
+    if (ret == ESP_OK) {
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "message", "Unit ID updated successfully");
+        cJSON_AddStringToObject(response, "id", id_json->valuestring);
+    } else {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to set unit ID");
+    }
+    
+    esp_err_t send_ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    
+    return send_ret;
+}
+
+/**
  * @brief GET / - Root handler with API documentation
  */
 static esp_err_t root_get_handler(httpd_req_t *req) {
@@ -1293,6 +1413,34 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         .user_ctx = NULL
     };
     httpd_register_uri_handler(server, &config_delete_uri);
+    
+    // Register unit status endpoints
+    httpd_uri_t unit_status_uri = {
+        .uri = "/api/status",
+        .method = HTTP_GET,
+        .handler = unit_status_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &unit_status_uri);
+    
+    httpd_uri_t unit_id_get_uri = {
+        .uri = "/api/unit_id",
+        .method = HTTP_GET,
+        .handler = unit_id_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &unit_id_get_uri);
+    
+    httpd_uri_t unit_id_set_uri = {
+        .uri = "/api/unit_id",
+        .method = HTTP_POST,
+        .handler = unit_id_set_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &unit_id_set_uri);
+    
+    // Initialize unit status manager
+    unit_status_init();
     
     ESP_LOGI(TAG, "HTTP server started successfully");
     ESP_LOGI(TAG, "API available at http://<device-ip>/");

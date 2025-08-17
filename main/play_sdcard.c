@@ -58,6 +58,7 @@
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "config_manager.h"
+#include "mdns_manager.h"
 #include <math.h>  // For log10f
 
 static const char *TAG = "PLAY_SDCARD";
@@ -785,6 +786,23 @@ void app_main(void)
         char ip_str[16];
         if (wifi_manager_get_ip_string(ip_str, sizeof(ip_str)) == ESP_OK) {
             ESP_LOGI(TAG, "IP Address: %s", ip_str);
+        }
+        
+        ESP_LOGI(TAG, "[ 1.6 ] Initialize mDNS service");
+        // Initialize mDNS after WiFi is connected
+        ret = mdns_manager_init();
+        if (ret == ESP_OK) {
+            char hostname[16];
+            if (mdns_manager_get_hostname(hostname, sizeof(hostname)) == ESP_OK) {
+                ESP_LOGI(TAG, "mDNS service started successfully");
+                ESP_LOGI(TAG, "Device is discoverable as: %s.local", hostname);
+                ESP_LOGI(TAG, "You can access the device at:");
+                ESP_LOGI(TAG, "  - http://%s.local", hostname);
+                ESP_LOGI(TAG, "  - http://%s", ip_str);
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to initialize mDNS: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "Device will only be accessible via IP address: %s", ip_str);
         }
     } else if (ret == ESP_ERR_NOT_FOUND) {
         ESP_LOGW(TAG, "No WiFi credentials found in NVS. WiFi not connected.");
