@@ -44,6 +44,7 @@ static esp_err_t config_status_handler(httpd_req_t *req);
 static esp_err_t unit_status_handler(httpd_req_t *req);
 static esp_err_t id_get_handler(httpd_req_t *req);
 static esp_err_t id_set_handler(httpd_req_t *req);
+static esp_err_t file_upload_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -1150,6 +1151,150 @@ static esp_err_t id_set_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief POST /api/upload - Upload audio file to SD card
+ * Handles large file uploads by streaming directly to SD card
+ */
+static esp_err_t file_upload_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/upload");
+    
+    // Buffer for reading chunks - keep small to avoid memory issues
+    #define UPLOAD_CHUNK_SIZE 4096
+    char *chunk_buf = heap_caps_malloc(UPLOAD_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
+    if (!chunk_buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
+        return ESP_FAIL;
+    }
+    
+    // Parse query string to get filename
+    char query_str[256] = {0};
+    char filename[128] = {0};
+    size_t query_len = httpd_req_get_url_query_len(req);
+    
+    if (query_len > 0 && query_len < sizeof(query_str)) {
+        httpd_req_get_url_query_str(req, query_str, sizeof(query_str));
+        
+        // Extract filename from query string (e.g., ?filename=track.wav)
+        char param_buf[128] = {0};
+        if (httpd_query_key_value(query_str, "filename", param_buf, sizeof(param_buf)) == ESP_OK) {
+            // URL decode the filename
+            size_t decoded_len = 0;
+            for (size_t i = 0, j = 0; i < strlen(param_buf) && j < sizeof(filename) - 1; i++, j++) {
+                if (param_buf[i] == '%' && i + 2 < strlen(param_buf)) {
+                    char hex[3] = {param_buf[i+1], param_buf[i+2], '\0'};
+                    filename[j] = (char)strtol(hex, NULL, 16);
+                    i += 2;
+                } else if (param_buf[i] == '+') {
+                    filename[j] = ' ';
+                } else {
+                    filename[j] = param_buf[i];
+                }
+                decoded_len = j + 1;
+            }
+            filename[decoded_len] = '\0';
+        }
+    }
+    
+    // If no filename provided, generate one based on timestamp
+    if (strlen(filename) == 0) {
+        snprintf(filename, sizeof(filename), "upload_%ld.wav", (long)esp_timer_get_time() / 1000000);
+    }
+    
+    // Ensure filename doesn't contain path separators (security)
+    // Remove any path components, keeping only the filename
+    char *base_name = strrchr(filename, '/');
+    if (base_name) {
+        memmove(filename, base_name + 1, strlen(base_name));
+    }
+    base_name = strrchr(filename, '\\');
+    if (base_name) {
+        memmove(filename, base_name + 1, strlen(base_name));
+    }
+    
+    // Build full path
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
+    
+    ESP_LOGI(TAG, "Uploading file: %s (size: %d bytes)", filepath, req->content_len);
+    
+    // Open file for writing
+    FILE *file = fopen(filepath, "wb");
+    if (!file) {
+        ESP_LOGE(TAG, "Failed to open file for writing: %s", filepath);
+        free(chunk_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create file");
+        return ESP_FAIL;
+    }
+    
+    // Read and write data in chunks
+    size_t total_received = 0;
+    size_t remaining = req->content_len;
+    
+    while (remaining > 0) {
+        // Determine how much to read this iteration
+        size_t to_read = (remaining < UPLOAD_CHUNK_SIZE) ? remaining : UPLOAD_CHUNK_SIZE;
+        
+        // Read chunk from HTTP request
+        int received = httpd_req_recv(req, chunk_buf, to_read);
+        
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                // Retry if timeout
+                ESP_LOGW(TAG, "Upload timeout, retrying...");
+                continue;
+            }
+            ESP_LOGE(TAG, "Upload failed: error receiving data");
+            fclose(file);
+            remove(filepath);  // Clean up partial file
+            free(chunk_buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
+            return ESP_FAIL;
+        }
+        
+        // Write chunk to file
+        size_t written = fwrite(chunk_buf, 1, received, file);
+        if (written != received) {
+            ESP_LOGE(TAG, "Failed to write to file: wrote %d of %d bytes", written, received);
+            fclose(file);
+            remove(filepath);  // Clean up partial file
+            free(chunk_buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to write file");
+            return ESP_FAIL;
+        }
+        
+        total_received += received;
+        remaining -= received;
+        
+        // Log progress for large files
+        if (req->content_len > 1024 * 1024) {  // If larger than 1MB
+            int percent = (total_received * 100) / req->content_len;
+            if (percent % 10 == 0) {  // Log every 10%
+                ESP_LOGI(TAG, "Upload progress: %d%% (%d/%d bytes)", 
+                         percent, total_received, req->content_len);
+            }
+        }
+    }
+    
+    // Close file
+    fclose(file);
+    free(chunk_buf);
+    
+    ESP_LOGI(TAG, "File uploaded successfully: %s (%d bytes)", filename, total_received);
+    
+    // Send success response
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "filename", filename);
+    cJSON_AddStringToObject(response, "path", filepath);
+    cJSON_AddNumberToObject(response, "size", total_received);
+    cJSON_AddStringToObject(response, "message", "File uploaded successfully");
+    
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    return ret;
+}
+
+/**
  * @brief GET /api-docs - API documentation handler
  */
 static esp_err_t api_docs_handler(httpd_req_t *req) {
@@ -1442,6 +1587,29 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "<span class='method method-delete'>DELETE</span>"
         "<span class='path'>/api/config/delete</span>"
         "<p class='description'>Delete saved configuration</p>"
+        "</div>"
+        "</div>"
+        
+        "<div class='card'>"
+        "<h2>File Management</h2>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-post'>POST</span>"
+        "<span class='path'>/api/upload?filename=track.wav</span>"
+        "<p class='description'>Upload an audio file to the SD card. Supports large files (100+ MB) via streaming.</p>"
+        "<pre>"
+        "Upload using curl:\n"
+        "curl -X POST \"http://&lt;device-ip&gt;/api/upload?filename=track.wav\" \\\n"
+        "     -H \"Content-Type: application/octet-stream\" \\\n"
+        "     --data-binary @localfile.wav\n"
+        "\n"
+        "Response:\n"
+        "{\n"
+        "  \"success\": true,\n"
+        "  \"filename\": \"track.wav\",\n"
+        "  \"path\": \"/sdcard/track.wav\",\n"
+        "  \"size\": 1048576\n"
+        "}</pre>"
         "</div>"
         "</div>"
         
@@ -2432,6 +2600,17 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     ret = httpd_register_uri_handler(server, &id_set_uri);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for POST /api/id: %s", esp_err_to_name(ret));
+    }
+    
+    httpd_uri_t upload_uri = {
+        .uri = "/api/upload",
+        .method = HTTP_POST,
+        .handler = file_upload_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &upload_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/upload: %s", esp_err_to_name(ret));
     }
     
     // Initialize unit status manager

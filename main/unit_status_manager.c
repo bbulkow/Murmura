@@ -14,7 +14,7 @@
 static const char *TAG = "UNIT_STATUS";
 
 // Firmware version - update this with each release
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.1"
 
 // Static storage for unit ID
 static char g_id[MAX_UNIT_ID_LEN] = "LOUDFRAME-001";  // Default unit ID
