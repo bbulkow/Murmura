@@ -165,11 +165,6 @@ static esp_err_t loops_get_handler(httpd_req_t *req) {
             cJSON_AddBoolToObject(loop_obj, "playing", g_loop_manager->loops[i].is_playing);
             
             cJSON_AddItemToArray(loops_array, loop_obj);
-            
-            ESP_LOGI(TAG, "Track %d: playing=%d, file=%s, volume=%d%%", 
-                     i, g_loop_manager->loops[i].is_playing, 
-                     (file_path[0] != '\0') ? file_path : "(none)",
-                     g_loop_manager->loops[i].volume_percent);
         }
     }
     
@@ -1891,7 +1886,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
     
     // Check response size for potential truncation
     size_t html_size = strlen(html);
-    ESP_LOGI(TAG, "Settings page HTML size: %d bytes", html_size);
+    ESP_LOGD(TAG, "Settings page HTML size: %d bytes", html_size);
     
     // ESP32 HTTP server typically has a limit around 16KB for single response
     const size_t MAX_RESPONSE_SIZE = 16384;  // 16KB typical limit
@@ -1913,7 +1908,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send settings page response: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "Settings page sent successfully (%d bytes)", html_size);
+        ESP_LOGD(TAG, "Settings page sent successfully (%d bytes)", html_size);
     }
     
     return ret;
@@ -2299,7 +2294,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     
     // Check response size for potential truncation
     size_t html_size = strlen(html);
-    ESP_LOGI(TAG, "Root page HTML size: %d bytes", html_size);
+    ESP_LOGD(TAG, "Root page HTML size: %d bytes", html_size);
     
     // ESP32 HTTP server typically has a limit around 16KB for single response
     const size_t MAX_RESPONSE_SIZE = 16384;  // 16KB typical limit
@@ -2321,7 +2316,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send root page response: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "Root page sent successfully (%d bytes)", html_size);
+        ESP_LOGD(TAG, "Root page sent successfully (%d bytes)", html_size);
     }
     
     return ret;

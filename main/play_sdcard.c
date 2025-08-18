@@ -727,6 +727,12 @@ void app_main(void)
     esp_log_level_set("AUDIO_PIPELINE", ESP_LOG_ERROR);
     esp_log_level_set("WAV_DECODER", ESP_LOG_ERROR);
     esp_log_level_set("FATFS_STREAM", ESP_LOG_ERROR);
+    esp_log_level_set("CODEC_ELEMENT_HELPER", ESP_LOG_ERROR); 
+    esp_log_level_set("DEC_WAV", ESP_LOG_ERROR);
+
+    // wifis a little chatty too
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+
 
     ESP_LOGI(TAG, "[ 0 ] Create control queue and start audio control task");
     // Create a queue to handle audio control messages
