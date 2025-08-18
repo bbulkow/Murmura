@@ -1,0 +1,60 @@
+curl http://192.168.5.74/api/status
+curl http://192.168.5.74/api/id
+curl http://192.168.5.74/api/wifi/status
+
+curl http://192.168.5.74/api/config/status
+
+
+curl http://192.168.5.74/api/loops
+curl http://192.168.5.74/api/files
+
+curl -X POST http://192.168.5.74/api/loop/file   -d '{"track": 0, "file_index": 0}'
+curl -X POST http://192.168.5.74/api/loop/stop -d '{"track": 1}'
+
+curl -X POST http://192.168.5.74/api/config/save  
+
+curl -X POST http://192.168.5.74/api/global/volume -d '{"volume": 55}'
+
+# FILE UPLOAD COMMANDS
+# Upload a file with explicit filename
+curl -X POST "http://192.168.5.74/api/upload?filename=track1.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @/path/to/local/file.wav
+
+# Upload multiple files (run multiple times with different filenames)
+curl -X POST "http://192.168.5.74/api/upload?filename=loop1.mp3" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @loop1.mp3
+
+curl -X POST "http://192.168.5.74/api/upload?filename=drums.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @drums.wav
+
+# Upload large file with progress bar
+curl -X POST "http://192.168.5.74/api/upload?filename=large_track.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @large_file.wav \
+     --progress-bar
+
+# Upload with verbose output for debugging
+curl -X POST "http://192.168.5.74/api/upload?filename=test.mp3" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @test.mp3 \
+     -v
+
+# Windows PowerShell example
+curl.exe -X POST "http://192.168.5.74/api/upload?filename=track.wav" `
+     -H "Content-Type: application/octet-stream" `
+     --data-binary "@C:\Users\username\Music\track.wav"
+
+# Linux/Mac example with full path
+curl -X POST "http://192.168.5.74/api/upload?filename=bass_loop.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @~/Music/bass_loop.wav
+
+# Upload with timeout for very large files (e.g., 100+ MB)
+curl -X POST "http://192.168.5.74/api/upload?filename=huge_file.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @huge_file.wav \
+     --max-time 600 \
+     --progress-bar
