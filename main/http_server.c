@@ -203,7 +203,7 @@ static esp_err_t loops_get_handler(httpd_req_t *req) {
 
 /**
  * @brief POST /api/loop/file - Set the file for a specific track
- * Body: { "track": 0, "file_index": 0 } or { "track": 0, "file_path": "/sdcard/track1.wav" }
+ * Body: { "track": 0, "file_index": 0 } or { "track": 0, "file_path": "/sdcard/track1.wav" } or { "track": 0, "filename": "track1.wav" }
  */
 static esp_err_t loop_file_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "POST /api/loop/file");
@@ -242,13 +242,29 @@ static esp_err_t loop_file_handler(httpd_req_t *req) {
         return ESP_OK;
     }
     
-    // Get file path or index
+    // Get file path, filename, or index
     char file_path[256] = {0};
     cJSON *file_path_json = cJSON_GetObjectItem(request, "file_path");
+    cJSON *filename_json = cJSON_GetObjectItem(request, "filename");
     cJSON *file_index_json = cJSON_GetObjectItem(request, "file_index");
     
     if (cJSON_IsString(file_path_json)) {
         strncpy(file_path, file_path_json->valuestring, sizeof(file_path) - 1);
+    } else if (cJSON_IsString(filename_json)) {
+        // Handle filename parameter - just add /sdcard/ prefix
+        const char *filename = filename_json->valuestring;
+        
+        // Security check: ensure filename doesn't contain path separators
+        if (strchr(filename, '/') != NULL || strchr(filename, '\\') != NULL) {
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Invalid filename - path separators not allowed");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+        
+        snprintf(file_path, sizeof(file_path), "/sdcard/%s", filename);
     } else if (cJSON_IsNumber(file_index_json)) {
         // Get file by index
         char **music_files = NULL;

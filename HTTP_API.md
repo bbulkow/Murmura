@@ -97,7 +97,7 @@ Returns the complete state of all tracks (always returns all 3 tracks).
 
 Sets the file for a specific track and starts playing it immediately.
 
-**Request Body:**
+**Request Body (Option 1 - using file index):**
 ```json
 {
   "track": 0,
@@ -105,11 +105,19 @@ Sets the file for a specific track and starts playing it immediately.
 }
 ```
 
-**Alternative Request Body:**
+**Request Body (Option 2 - using full path):**
 ```json
 {
   "track": 0,
-  "file_path": "/sdcard/track1.wav"  // Specify path directly
+  "file_path": "/sdcard/track1.wav"  // Specify full path
+}
+```
+
+**Request Body (Option 3 - using filename):**
+```json
+{
+  "track": 0,
+  "filename": "track1.wav"  // Specify filename only (no path)
 }
 ```
 
@@ -853,7 +861,7 @@ Returns comprehensive device status information including MAC address (unique id
   "id": "LOUDFRAME-001",
   "ip_address": "192.168.1.100",
   "wifi_connected": true,
-  "firmware_version": "1.0.3",
+  "firmware_version": "1.0.4",
   "uptime_seconds": 3600,
   "uptime_formatted": "00 01:00:00"
 }

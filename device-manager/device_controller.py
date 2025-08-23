@@ -17,6 +17,7 @@ Commands:
     get-loops   - Get current loop status
     set-file    - Set file for a track
     reboot      - Reboot the device
+    list-files  - List all audio files on the device's SD card
     
 Examples:
     python device_controller.py --id LOUDFRAME-001 --command status
@@ -24,6 +25,7 @@ Examples:
     python device_controller.py --id LOUDFRAME-001 --command set-volume --track 0 --volume 50
     python device_controller.py --id LOUDFRAME-001 --command set-id --new-id STAGE-01
     python device_controller.py --id LOUDFRAME-001 --command reboot
+    python device_controller.py --id LOUDFRAME-001 --command list-files
 """
 
 import asyncio
@@ -331,23 +333,28 @@ class DeviceController:
         else:
             logger.error(f"Failed to get loop status: {result.get('error', 'Unknown error')}")
     
-    async def set_file(self, track: int, file_index: Optional[int], file_path: Optional[str]) -> None:
+    async def set_file(self, track: int, file_index: Optional[int], file_path: Optional[str], filename: Optional[str]) -> None:
         """
         Set file for a track.
         
         Args:
             track: Track number (0-2)
-            file_index: File index from /api/files
-            file_path: Direct file path
+            file_index: File index from /api/files (legacy, prefer filename)
+            file_path: Full file path (e.g., /sdcard/track1.wav)
+            filename: Filename only without path (e.g., track1.wav) - recommended
         """
-        if file_index is not None:
-            logger.info(f"Setting file index {file_index} for track {track} on {self.device_id}")
-            data = {'track': track, 'file_index': file_index}
+        if filename:
+            logger.info(f"Setting file '{filename}' for track {track} on {self.device_id}")
+            data = {'track': track, 'filename': filename}
         elif file_path:
-            logger.info(f"Setting file {file_path} for track {track} on {self.device_id}")
+            logger.info(f"Setting file path '{file_path}' for track {track} on {self.device_id}")
             data = {'track': track, 'file_path': file_path}
+        elif file_index is not None:
+            logger.info(f"Setting file index {file_index} for track {track} on {self.device_id}")
+            logger.warning("Using file_index is deprecated, prefer --filename for better reliability")
+            data = {'track': track, 'file_index': file_index}
         else:
-            logger.error("Either --file-index or --file-path must be specified")
+            logger.error("One of --filename, --file-path, or --file-index must be specified")
             return
         
         result = await self.send_request('POST', '/api/loop/file', data)
@@ -373,6 +380,40 @@ class DeviceController:
             logger.info("Note: Device will be offline for a moment during reboot")
         else:
             logger.error(f"✗ Failed to reboot device: {result.get('error', 'Unknown error')}")
+    
+    async def list_files(self) -> None:
+        """List all audio files on the device's SD card."""
+        logger.info(f"Getting file list for device: {self.device_id}")
+        
+        result = await self.send_request('GET', '/api/files')
+        
+        if result['success'] and result['response']:
+            data = result['response']
+            files = data.get('files', [])
+            
+            print(f"\nFiles on {self.device_id}")
+            print("-" * 60)
+            
+            if files:
+                print(f"Total: {len(files)} file(s)\n")
+                print(f"{'Index':<6} {'Name':<30} {'Type':<5} {'Size (MB)':<10}")
+                print("-" * 60)
+                
+                for file_info in files:
+                    index = file_info.get('index', 0)
+                    name = file_info.get('name', 'UNKNOWN')
+                    file_type = file_info.get('type', '').upper()
+                    size = file_info.get('size', 0)
+                    
+                    if size > 0:
+                        size_mb = size / (1024 * 1024)
+                        print(f"{index:<6} {name:<30} {file_type:<5} {size_mb:>9.2f}")
+                    else:
+                        print(f"{index:<6} {name:<30} {file_type:<5} {'N/A':>10}")
+            else:
+                print("No files found on SD card")
+        else:
+            logger.error(f"Failed to get file list: {result.get('error', 'Unknown error')}")
 
 
 def main():
@@ -406,12 +447,16 @@ Examples:
     # Get loop status
     %(prog)s --id LOUDFRAME-001 --command get-loops
     
-    # Set file for a track
-    %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --file-index 2
+    # Set file for a track (using filename is recommended)
+    %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --filename music.wav
     %(prog)s --id LOUDFRAME-001 --command set-file --track 1 --file-path /sdcard/music.wav
+    %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --file-index 2  # deprecated
     
     # Reboot device
     %(prog)s --id LOUDFRAME-001 --command reboot
+    
+    # List files on device
+    %(prog)s --id LOUDFRAME-001 --command list-files
 
 Commands:
     status       - Show device status
@@ -424,6 +469,7 @@ Commands:
     get-loops    - Get current loop status
     set-file     - Set file for a track
     reboot       - Reboot the device
+    list-files   - List all audio files on the device's SD card
 """
     )
     
@@ -438,7 +484,7 @@ Commands:
     required.add_argument('--command', '-c',
                          required=True,
                          choices=['status', 'stop', 'start', 'set-volume', 'set-id',
-                                 'save-config', 'load-config', 'get-loops', 'set-file', 'reboot'],
+                                 'save-config', 'load-config', 'get-loops', 'set-file', 'reboot', 'list-files'],
                          help='Command to execute on the device')
     
     # Optional arguments
@@ -483,14 +529,18 @@ Commands:
     
     # File control
     file_group = parser.add_argument_group('file control')
-    file_group.add_argument('--file-index', '-x',
-                           type=int,
-                           metavar='INDEX',
-                           help='File index from /api/files for set-file command')
+    file_group.add_argument('--filename',
+                           metavar='NAME',
+                           help='Filename without path (e.g., track1.wav) - recommended')
     
     file_group.add_argument('--file-path', '-p',
                            metavar='PATH',
-                           help='Direct file path for set-file command')
+                           help='Full file path (e.g., /sdcard/track1.wav)')
+    
+    file_group.add_argument('--file-index', '-x',
+                           type=int,
+                           metavar='INDEX',
+                           help='File index from /api/files (deprecated, use --filename instead)')
     
     args = parser.parse_args()
     
@@ -554,10 +604,13 @@ Commands:
             if args.track is None:
                 logger.error("Track number required (use --track)")
                 sys.exit(1)
-            asyncio.run(controller.set_file(args.track, args.file_index, args.file_path))
+            asyncio.run(controller.set_file(args.track, args.file_index, args.file_path, args.filename))
             
         elif args.command == 'reboot':
             asyncio.run(controller.reboot())
+            
+        elif args.command == 'list-files':
+            asyncio.run(controller.list_files())
             
     except KeyboardInterrupt:
         logger.info("\nOperation interrupted by user")
