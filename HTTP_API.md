@@ -34,18 +34,22 @@ Lists all audio files (WAV and MP3) in the SD card root directory.
       "index": 0,
       "name": "track1.wav",
       "type": "wav",
-      "path": "/sdcard/track1.wav"
+      "path": "/sdcard/track1.wav",
+      "size": 1048576
     },
     {
       "index": 1,
       "name": "track2.wav",
       "type": "wav",
-      "path": "/sdcard/track2.wav"
+      "path": "/sdcard/track2.wav",
+      "size": 2097152
     }
   ],
   "count": 2
 }
 ```
+
+**Note:** The `size` field indicates the file size in bytes.
 
 ### List Loop Status
 
@@ -849,7 +853,7 @@ Returns comprehensive device status information including MAC address (unique id
   "id": "LOUDFRAME-001",
   "ip_address": "192.168.1.100",
   "wifi_connected": true,
-  "firmware_version": "1.0.0",
+  "firmware_version": "1.0.3",
   "uptime_seconds": 3600,
   "uptime_formatted": "00 01:00:00"
 }
@@ -859,6 +863,7 @@ Returns comprehensive device status information including MAC address (unique id
 - The MAC address serves as a unique device identifier
 - The `id` field contains the user-configurable device ID
 - `uptime_formatted` is in format: "DD HH:MM:SS"
+- Current firmware version is 1.0.3
 
 ### Get Device ID
 
@@ -909,6 +914,167 @@ Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id
 - The ID is saved to `/sdcard/unit_id.txt` for persistence across reboots
 - Default device ID is "LOUDFRAME-001" if no custom ID is set
 
+## File Management Endpoints
+
+### Upload Audio File
+
+**POST** `/api/upload?filename=track.wav`
+
+Uploads an audio file to the SD card. Supports large files (100+ MB) via streaming.
+
+**Query Parameters:**
+- `filename` - The name to save the file as (optional, auto-generated if not provided)
+
+**Request:**
+- Content-Type: `application/octet-stream`
+- Body: Binary file data
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "filename": "track.wav",
+  "path": "/sdcard/track.wav",
+  "size": 1048576,
+  "message": "File uploaded successfully"
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Failed to create file"
+}
+```
+
+**Upload Examples:**
+
+```bash
+# Using curl
+curl -X POST "http://192.168.1.100/api/upload?filename=track.wav" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @localfile.wav
+```
+
+### Delete Audio File
+
+**DELETE** `/api/file/delete`
+
+Deletes an audio file from the SD card by name.
+
+**Request Body:**
+```json
+{
+  "filename": "track.wav"
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "filename": "track.wav",
+  "message": "File deleted successfully"
+}
+```
+
+**Response (error - file not found):**
+```json
+{
+  "success": false,
+  "error": "File not found"
+}
+```
+
+**Response (error - security violation):**
+```json
+{
+  "success": false,
+  "error": "Invalid filename - path separators not allowed"
+}
+```
+
+**Notes:**
+- Filename must not contain path separators (/ or \) for security
+- Only files in the /sdcard/ root directory can be deleted
+- The operation verifies the file exists and is a regular file before deletion
+
+## System Management Endpoints
+
+### System Reboot
+
+**POST** `/api/system/reboot`
+
+Reboots the device after an optional delay. Useful for testing configuration persistence across reboots.
+
+**Request Body (optional):**
+```json
+{
+  "delay_ms": 1000
+}
+```
+
+**Parameters:**
+- `delay_ms` - Delay in milliseconds before reboot (100-10000, default: 1000)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "System will reboot",
+  "delay_ms": 1000
+}
+```
+
+**Notes:**
+- The delay is clamped between 100ms and 10 seconds
+- The response is sent before the reboot occurs
+- This endpoint is useful for testing if configurations persist across reboots
+
+**Reboot Examples:**
+
+```bash
+# Using curl with default 1 second delay
+curl -X POST http://192.168.1.100/api/system/reboot
+
+# Using curl with custom 2 second delay
+curl -X POST http://192.168.1.100/api/system/reboot \
+  -H "Content-Type: application/json" \
+  -d '{"delay_ms": 2000}'
+```
+
+```javascript
+// Using JavaScript with custom delay
+fetch('http://192.168.1.100/api/system/reboot', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    delay_ms: 3000  // 3 second delay
+  })
+})
+.then(response => response.json())
+.then(data => console.log('Reboot initiated:', data));
+```
+
+```python
+# Using Python
+import requests
+
+# Reboot with default delay
+response = requests.post("http://192.168.1.100/api/system/reboot")
+print(f"Reboot response: {response.json()}")
+
+# Reboot with custom delay
+response = requests.post(
+    "http://192.168.1.100/api/system/reboot",
+    json={"delay_ms": 5000}
+)
+print(f"Reboot with 5s delay: {response.json()}")
+```
+
 ## Device Status Examples
 
 ### Using curl
@@ -924,6 +1090,11 @@ curl http://192.168.1.100/api/id
 curl -X POST http://192.168.1.100/api/id \
   -H "Content-Type: application/json" \
   -d '{"id": "LOUDFRAME-VENUE-01"}'
+
+# Delete a file
+curl -X DELETE http://192.168.1.100/api/file/delete \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "old_track.wav"}'
 ```
 
 ### Using JavaScript/Fetch
@@ -935,6 +1106,7 @@ fetch('http://192.168.1.100/api/status')
   .then(data => {
     console.log('MAC Address:', data.mac_address);
     console.log('Device ID:', data.id);
+    console.log('Firmware:', data.firmware_version);
     console.log('Uptime:', data.uptime_formatted);
   });
 
@@ -955,6 +1127,19 @@ fetch('http://192.168.1.100/api/id', {
 })
 .then(response => response.json())
 .then(data => console.log('Set ID result:', data));
+
+// Delete a file
+fetch('http://192.168.1.100/api/file/delete', {
+  method: 'DELETE',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    filename: 'unwanted.wav'
+  })
+})
+.then(response => response.json())
+.then(data => console.log('Delete result:', data));
 ```
 
 ### Using Python
@@ -970,6 +1155,7 @@ response = requests.get(f"{base_url}/api/status")
 status = response.json()
 print(f"MAC Address: {status['mac_address']}")
 print(f"Device ID: {status['id']}")
+print(f"Firmware: {status['firmware_version']}")
 print(f"Uptime: {status['uptime_formatted']}")
 
 # Get device ID
@@ -983,6 +1169,13 @@ response = requests.post(
     json={"id": "LOUDFRAME-PYTHON-01"}
 )
 print(f"Set ID result: {response.json()}")
+
+# Delete a file
+response = requests.delete(
+    f"{base_url}/api/file/delete",
+    json={"filename": "test.wav"}
+)
+print(f"Delete result: {response.json()}")
 ```
 
 ## Notes
@@ -992,11 +1185,5 @@ print(f"Set ID result: {response.json()}")
 - Maximum request body size is limited by ESP32 memory
 - File paths must exist on the SD card
 - Audio files must be in WAV or MP3 format
-- The `/api/loops` endpoint always returns all 3 tracks for consistent UI state
-- Volume is always specified as 0-100% (not in dB)
-- Global volume corresponds to the same control as the physical Vol+/Vol- buttons on the device
-- The device supports up to 5 WiFi networks in its configuration
-- WiFi operations are performed asynchronously in the background
-- Signal strength is reported as both RSSI (dBm) and percentage (0-100)
-- Adding a new network triggers an immediate connection attempt
-- Device ID is persisted to SD card and survives device reboots
+- The `/api/files` endpoint now includes file sizes in bytes for each file
+- The `/api

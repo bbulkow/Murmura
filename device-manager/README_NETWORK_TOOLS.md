@@ -8,8 +8,10 @@ This repository contains Python tools for discovering and managing multiple ESP3
 - **Batch Controller** (`batch_controller.py`): Performs batch operations on multiple devices
 - **Device Controller** (`device_controller.py`): Controls a single device by ID
 - **File Manager** (`file_manager.py`): Upload, sync, and manage audio files on devices
+- **ID Manager** (`id_manager.py`): Manage device IDs, find duplicates, and identify devices
 - **Asynchronous Operations**: Fast parallel scanning and control of multiple devices
 - **Device Tracking**: Maintains a JSON map of all devices with MAC addresses as unique identifiers
+- **Shortcut Options**: All commands now support single-letter shortcuts for faster command entry
 
 ## Installation
 
@@ -44,16 +46,25 @@ python device_scanner.py --net 192.168.1.0/24 --action update
 python device_scanner.py --help
 
 Required arguments:
-  --net CIDR, --network CIDR
+  --net CIDR, --network CIDR, -n CIDR
                         Network range in CIDR format (e.g., 192.168.1.0/24)
-  --action {create,add,update}, --mode {create,add,update}
+  --action {create,add,update}, --mode {create,add,update}, -a {create,add,update}
                         Scan action: create (new map), add (merge), or update (existing only)
 
 Optional arguments:
-  --timeout SEC         Connection timeout in seconds (default: 2)
-  --concurrent NUM      Maximum concurrent connections (default: 50)
-  --map-file PATH       Path to device map JSON file (default: device_map.json)
-  --verbose, -v         Enable verbose debug logging
+  --timeout SEC, -t SEC         Connection timeout in seconds (default: 2)
+  --concurrent NUM, -c NUM      Maximum concurrent connections (default: 50)
+  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --verbose, -v                 Enable verbose debug logging
+```
+
+#### Shortcut Examples
+
+```bash
+# Using shortcuts for faster command entry
+python device_scanner.py -n 192.168.1.0/24 -a create
+python device_scanner.py -n 192.168.1.0/24 -a add -t 5 -c 100
+python device_scanner.py -n 192.168.1.0/24 -a update -m production.json -v
 ```
 
 #### Scanning Modes Explained
@@ -99,18 +110,29 @@ Required arguments:
                         Command to execute on all devices
 
 Optional arguments:
-  --map-file PATH       Path to device map JSON file (default: device_map.json)
-  --timeout SEC         Request timeout in seconds (default: 5)
-  --concurrent NUM      Maximum concurrent connections (default: 10)
+  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
+  --concurrent NUM, -n NUM      Maximum concurrent connections (default: 10)
 
 Volume control:
-  --track {0,1,2}       Track number for track-specific commands
-  --volume LEVEL        Volume level (0-100)
-  --global              Set global volume instead of track volume
+  --track {0,1,2}, -k {0,1,2}   Track number for track-specific commands
+  --volume LEVEL, -v LEVEL       Volume level (0-100)
+  --global, -g                   Set global volume instead of track volume
 
 Device filters:
-  --all-devices         Include offline devices (default: online only)
-  --filter-id REGEX     Filter devices by ID pattern (regex)
+  --all-devices, -a              Include offline devices (default: online only)
+  --filter-id REGEX, -f REGEX    Filter devices by ID pattern (regex)
+```
+
+#### Shortcut Examples
+
+```bash
+# Using shortcuts
+python batch_controller.py -c status
+python batch_controller.py -c stop-all -a
+python batch_controller.py -c set-volume -k 0 -v 50
+python batch_controller.py -c set-volume -g -v 75
+python batch_controller.py -c status -f "^STAGE"
 ```
 
 ### Device Controller
@@ -149,25 +171,37 @@ python device_controller.py --id LOUDFRAME-001 --command set-file --track 0 --fi
 python device_controller.py --help
 
 Required arguments:
-  --id ID               Device ID to control
+  --id ID, -i ID        Device ID to control
   --command {status,stop,start,set-volume,set-id,save-config,load-config,get-loops,set-file}, -c
                         Command to execute on the device
 
 Optional arguments:
-  --map-file PATH       Path to device map JSON file (default: device_map.json)
-  --timeout SEC         Request timeout in seconds (default: 5)
+  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
+  --force, -f                   Skip device ID verification (not recommended)
 
 Volume control:
-  --track {0,1,2}       Track number for track-specific commands
-  --volume LEVEL        Volume level (0-100)
-  --global              Set global volume instead of track volume
+  --track {0,1,2}, -k {0,1,2}   Track number for track-specific commands
+  --volume LEVEL, -v LEVEL       Volume level (0-100)
+  --global, -g                   Set global volume instead of track volume
 
 Device ID control:
-  --new-id ID           New device ID for set-id command
+  --new-id ID, -n ID             New device ID for set-id command
 
 File control:
-  --file-index INDEX    File index from /api/files for set-file command
-  --file-path PATH      Direct file path for set-file command
+  --file-index INDEX, -x INDEX   File index from /api/files for set-file command
+  --file-path PATH, -p PATH      Direct file path for set-file command
+```
+
+#### Shortcut Examples
+
+```bash
+# Using shortcuts
+python device_controller.py -i LOUDFRAME-001 -c status
+python device_controller.py -i LOUDFRAME-001 -c stop
+python device_controller.py -i LOUDFRAME-001 -c set-volume -k 0 -v 50
+python device_controller.py -i LOUDFRAME-001 -c set-id -n STAGE-01
+python device_controller.py -i LOUDFRAME-001 -c set-file -k 0 -x 2
 ```
 
 ### File Manager
@@ -209,17 +243,30 @@ Required arguments:
                         Command to execute
 
 Optional arguments:
-  --map-file PATH       Path to device map JSON file (default: device_map.json)
-  --timeout SEC         Request timeout in seconds (default: 30)
-  --concurrent NUM      Maximum concurrent uploads (default: 5)
+  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --timeout SEC, -t SEC         Request timeout in seconds (default: 30)
+  --concurrent NUM, -n NUM      Maximum concurrent uploads (default: 5)
 
 Target selection:
-  --id ID               Specific device ID (default: all devices)
+  --id ID, -i ID                Specific device ID (default: all devices)
 
 File operations:
-  --file PATH           File to upload or delete
-  --directory PATH      Directory for sync operation
-  --force               Force upload even if file exists
+  --file PATH, -f PATH          File to upload or delete
+  --directory PATH, -d PATH     Directory for sync operation
+  --force, -F                   Force upload even if file exists
+  --target-name NAME, -r NAME   Custom filename for uploaded file
+```
+
+#### Shortcut Examples
+
+```bash
+# Using shortcuts
+python file_manager.py -c list
+python file_manager.py -c upload -f music.wav
+python file_manager.py -c upload -f music.wav -i LOUDFRAME-001
+python file_manager.py -c upload -f music.wav -F
+python file_manager.py -c sync -d ./loops
+python file_manager.py -c delete -f old_music.wav
 ```
 
 #### Features
@@ -469,10 +516,75 @@ python device_scanner.py --net 192.168.1.0/24 --action update
 
 | Tool | Purpose | Key Commands |
 |------|---------|--------------|
-| `device_scanner.py` | Discover devices on network | `--net 192.168.1.0/24 --action create` |
-| `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` |
-| `device_controller.py` | Control single device by ID | `--id DEVICE --command status/stop/start` |
-| `file_manager.py` | Manage audio files | `--command list/upload/sync/delete` |
+| `device_scanner.py` | Discover devices on network | `--net 192.168.1.0/24 --action create` (or `-n 192.168.1.0/24 -a create`) |
+| `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` (or `-c status/stop-all/start-all`) |
+| `device_controller.py` | Control single device by ID | `--id DEVICE --command status/stop/start` (or `-i DEVICE -c status/stop/start`) |
+| `file_manager.py` | Manage audio files | `--command list/upload/sync/delete` (or `-c list/upload/sync/delete`) |
+| `id_manager.py` | Manage device IDs and identify | `--command find-duplicates/set-id/identify` (or `-c find-duplicates/set-id/identify`) |
+
+### ID Manager
+
+The ID manager handles device ID operations and can help identify specific devices.
+
+#### Basic Usage
+
+```bash
+# Find all devices with duplicate IDs
+python id_manager.py --command find-duplicates
+
+# List all devices with their IDs and MACs
+python id_manager.py --command list-all
+
+# Set device ID based on MAC address
+python id_manager.py --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
+
+# Identify a device by playing a sound
+python id_manager.py --command identify --id LOUDFRAME-001
+python id_manager.py --command identify --mac 34:5F:45:26:76:2C --duration 60
+
+# Auto-assign unique IDs to all devices
+python id_manager.py --command auto-assign --prefix LOUD
+python id_manager.py --command auto-assign --prefix STAGE --start-num 100
+```
+
+#### Command Line Options
+
+```bash
+python id_manager.py --help
+
+Required arguments:
+  --command {find-duplicates,set-id,identify,list-all,auto-assign}, -c
+                        Command to execute
+
+Optional arguments:
+  --map-file PATH, -f PATH      Path to device map JSON file (default: device_map.json)
+  --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
+
+Device identification:
+  --id ID, -i ID                Device ID
+  --mac MAC, -m MAC             Device MAC address (e.g., 34:5F:45:26:76:2C)
+
+ID management:
+  --new-id ID, -n ID            New device ID for set-id command
+
+Identify options:
+  --duration SEC, -d SEC        Duration of identify sound in seconds (default: 30)
+
+Auto-assign options:
+  --prefix PREFIX, -p PREFIX    Prefix for auto-generated IDs (default: LOUD)
+  --start-num NUM, -s NUM       Starting number for auto-generated IDs (default: 1)
+```
+
+#### Shortcut Examples
+
+```bash
+# Using shortcuts
+python id_manager.py -c find-duplicates
+python id_manager.py -c list-all
+python id_manager.py -c set-id -m 34:5F:45:26:76:2C -n STAGE-01
+python id_manager.py -c identify -i LOUDFRAME-001 -d 60
+python id_manager.py -c auto-assign -p STAGE -s 100
+```
 
 ## License
 

@@ -13,12 +13,14 @@ Commands:
     set-volume  - Set volume on all devices
     save-config - Save configuration on all devices
     load-config - Load configuration on all devices
+    reboot-all  - Reboot all devices
     
 Examples:
     python batch_controller.py --command status
     python batch_controller.py --command stop-all
     python batch_controller.py --command set-volume --track 0 --volume 50
     python batch_controller.py --command set-volume --global --volume 75
+    python batch_controller.py --command reboot-all
 """
 
 import asyncio
@@ -270,6 +272,22 @@ class BatchController:
         
         success_count = sum(1 for r in results if r['success'])
         logger.info(f"Configuration loaded on {success_count}/{len(results)} devices")
+    
+    async def reboot_all(self, devices: List[Dict[str, Any]], delay_ms: int = 1000) -> None:
+        """
+        Reboot all devices.
+        
+        Args:
+            devices: List of devices
+            delay_ms: Delay before reboot in milliseconds (default: 1000)
+        """
+        logger.info(f"Rebooting all devices in {delay_ms}ms...")
+        
+        results = await self.batch_request(devices, 'POST', '/api/system/reboot', {'delay_ms': delay_ms})
+        
+        success_count = sum(1 for r in results if r['success'])
+        logger.info(f"✓ Reboot command sent to {success_count}/{len(results)} devices")
+        logger.info("Note: Devices will be offline for a moment during reboot")
 
 
 def main():
@@ -297,6 +315,9 @@ Examples:
     %(prog)s --command save-config
     %(prog)s --command load-config
     
+    # Reboot all devices
+    %(prog)s --command reboot-all
+    
     # Filter devices
     %(prog)s --command status --filter-id "^STAGE"
     %(prog)s --command stop-all --all-devices
@@ -308,6 +329,7 @@ Commands:
     set-volume   - Set volume on all devices
     save-config  - Save current configuration on all devices
     load-config  - Load saved configuration on all devices
+    reboot-all   - Reboot all devices
 """
     )
     
@@ -316,23 +338,23 @@ Commands:
     required.add_argument('--command', '-c',
                          required=True,
                          choices=['status', 'stop-all', 'start-all', 'set-volume', 
-                                 'save-config', 'load-config'],
+                                 'save-config', 'load-config', 'reboot-all'],
                          help='Command to execute on all devices')
     
     # Optional arguments
     optional = parser.add_argument_group('optional arguments')
-    optional.add_argument('--map-file', 
+    optional.add_argument('--map-file', '-m',
                          default='device_map.json',
                          metavar='PATH',
                          help='Path to device map JSON file (default: device_map.json)')
     
-    optional.add_argument('--timeout', 
+    optional.add_argument('--timeout', '-t',
                          type=int, 
                          default=5,
                          metavar='SEC',
                          help='Request timeout in seconds (default: 5)')
     
-    optional.add_argument('--concurrent', 
+    optional.add_argument('--concurrent', '-n',
                          type=int, 
                          default=10,
                          metavar='NUM',
@@ -340,28 +362,28 @@ Commands:
     
     # Volume-specific arguments
     volume_group = parser.add_argument_group('volume control')
-    volume_group.add_argument('--track', 
+    volume_group.add_argument('--track', '-k',
                              type=int, 
                              choices=[0, 1, 2],
                              help='Track number for track-specific commands')
     
-    volume_group.add_argument('--volume', 
+    volume_group.add_argument('--volume', '-v',
                              type=int, 
                              metavar='LEVEL',
                              help='Volume level (0-100)')
     
-    volume_group.add_argument('--global', 
+    volume_group.add_argument('--global', '-g',
                              dest='global_volume',
                              action='store_true',
                              help='Set global volume instead of track volume')
     
     # Filter arguments
     filter_group = parser.add_argument_group('device filters')
-    filter_group.add_argument('--all-devices', 
+    filter_group.add_argument('--all-devices', '-a',
                              action='store_true',
                              help='Include offline devices (default: online only)')
     
-    filter_group.add_argument('--filter-id', 
+    filter_group.add_argument('--filter-id', '-f',
                              metavar='REGEX',
                              help='Filter devices by ID pattern (regex)')
     
@@ -413,6 +435,9 @@ Commands:
             
         elif args.command == 'load-config':
             asyncio.run(controller.load_configs(devices))
+            
+        elif args.command == 'reboot-all':
+            asyncio.run(controller.reboot_all(devices))
             
     except KeyboardInterrupt:
         logger.info("\nOperation interrupted by user")

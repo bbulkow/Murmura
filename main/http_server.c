@@ -14,6 +14,7 @@
 #include "config_manager.h"
 #include "unit_status_manager.h"
 #include <sys/stat.h>
+#include "esp_system.h"
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -47,6 +48,7 @@ static esp_err_t id_get_handler(httpd_req_t *req);
 static esp_err_t id_set_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
 static esp_err_t file_delete_handler(httpd_req_t *req);
+static esp_err_t system_reboot_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -1387,6 +1389,54 @@ static esp_err_t file_delete_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief POST /api/system/reboot - Reboot the system
+ * Body: { "delay_ms": 1000 } (optional, defaults to 1000ms)
+ */
+static esp_err_t system_reboot_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/system/reboot");
+    
+    int delay_ms = 1000; // Default delay
+    
+    // Parse request body if present
+    if (req->content_len > 0) {
+        cJSON *request = parse_json_request(req);
+        if (request) {
+            cJSON *delay_json = cJSON_GetObjectItem(request, "delay_ms");
+            if (cJSON_IsNumber(delay_json)) {
+                delay_ms = delay_json->valueint;
+                // Clamp delay to reasonable range (100ms to 10s)
+                if (delay_ms < 100) delay_ms = 100;
+                if (delay_ms > 10000) delay_ms = 10000;
+            }
+            cJSON_Delete(request);
+        }
+    }
+    
+    // Send response before rebooting
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "message", "System will reboot");
+    cJSON_AddNumberToObject(response, "delay_ms", delay_ms);
+    
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    
+    // Give time for response to be sent
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    ESP_LOGI(TAG, "Rebooting system in %d ms...", delay_ms);
+    
+    // Delay before reboot
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    
+    // Perform system restart
+    esp_restart();
+    
+    // This line will never be reached
+    return ret;
+}
+
+/**
  * @brief GET /api-docs - API documentation handler
  */
 static esp_err_t api_docs_handler(httpd_req_t *req) {
@@ -2453,7 +2503,7 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 26;  // Increased to handle all handlers including file delete
+    config.max_uri_handlers = 27;  // Increased to handle all handlers including reboot endpoint
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     
@@ -2732,6 +2782,18 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     ret = httpd_register_uri_handler(server, &file_delete_uri);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for /api/file/delete: %s", esp_err_to_name(ret));
+    }
+    
+    // Register system reboot endpoint
+    httpd_uri_t system_reboot_uri = {
+        .uri = "/api/system/reboot",
+        .method = HTTP_POST,
+        .handler = system_reboot_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &system_reboot_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/system/reboot: %s", esp_err_to_name(ret));
     }
     
     // Initialize unit status manager

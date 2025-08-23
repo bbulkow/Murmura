@@ -360,13 +360,13 @@ Action Modes:
     
     # Required arguments
     required = parser.add_argument_group('required arguments')
-    required.add_argument('--net', '--network',
+    required.add_argument('--net', '--network', '-n',
                          dest='network_range',
                          required=True,
                          metavar='CIDR',
                          help='Network range in CIDR format (e.g., 192.168.1.0/24)')
     
-    required.add_argument('--action', '--mode',
+    required.add_argument('--action', '--mode', '-a',
                          dest='mode',
                          required=True,
                          choices=['create', 'add', 'update'],
@@ -374,19 +374,19 @@ Action Modes:
     
     # Optional arguments
     optional = parser.add_argument_group('optional arguments')
-    optional.add_argument('--timeout', 
+    optional.add_argument('--timeout', '-t',
                          type=int, 
                          default=2,
                          metavar='SEC',
                          help='Connection timeout in seconds (default: 2)')
     
-    optional.add_argument('--concurrent', 
+    optional.add_argument('--concurrent', '-c',
                          type=int, 
                          default=50,
                          metavar='NUM',
                          help='Maximum concurrent connections (default: 50)')
     
-    optional.add_argument('--map-file', 
+    optional.add_argument('--map-file', '-m',
                          default='device_map.json',
                          metavar='PATH',
                          help='Path to device map JSON file (default: device_map.json)')

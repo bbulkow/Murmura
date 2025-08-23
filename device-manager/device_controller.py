@@ -16,12 +16,14 @@ Commands:
     load-config - Load saved configuration
     get-loops   - Get current loop status
     set-file    - Set file for a track
+    reboot      - Reboot the device
     
 Examples:
     python device_controller.py --id LOUDFRAME-001 --command status
     python device_controller.py --id LOUDFRAME-001 --command stop
     python device_controller.py --id LOUDFRAME-001 --command set-volume --track 0 --volume 50
     python device_controller.py --id LOUDFRAME-001 --command set-id --new-id STAGE-01
+    python device_controller.py --id LOUDFRAME-001 --command reboot
 """
 
 import asyncio
@@ -354,6 +356,23 @@ class DeviceController:
             logger.info(f"✓ File set and loop started on track {track}")
         else:
             logger.error(f"✗ Failed to set file: {result.get('error', 'Unknown error')}")
+    
+    async def reboot(self, delay_ms: int = 1000) -> None:
+        """
+        Reboot the device.
+        
+        Args:
+            delay_ms: Delay before reboot in milliseconds (default: 1000)
+        """
+        logger.info(f"Rebooting device {self.device_id} in {delay_ms}ms...")
+        
+        result = await self.send_request('POST', '/api/system/reboot', {'delay_ms': delay_ms})
+        
+        if result['success']:
+            logger.info(f"✓ Device {self.device_id} will reboot in {delay_ms}ms")
+            logger.info("Note: Device will be offline for a moment during reboot")
+        else:
+            logger.error(f"✗ Failed to reboot device: {result.get('error', 'Unknown error')}")
 
 
 def main():
@@ -390,6 +409,9 @@ Examples:
     # Set file for a track
     %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --file-index 2
     %(prog)s --id LOUDFRAME-001 --command set-file --track 1 --file-path /sdcard/music.wav
+    
+    # Reboot device
+    %(prog)s --id LOUDFRAME-001 --command reboot
 
 Commands:
     status       - Show device status
@@ -401,12 +423,13 @@ Commands:
     load-config  - Load saved configuration
     get-loops    - Get current loop status
     set-file     - Set file for a track
+    reboot       - Reboot the device
 """
     )
     
     # Required arguments
     required = parser.add_argument_group('required arguments')
-    required.add_argument('--id', 
+    required.add_argument('--id', '-i',
                          dest='device_id',
                          required=True,
                          metavar='ID',
@@ -415,57 +438,57 @@ Commands:
     required.add_argument('--command', '-c',
                          required=True,
                          choices=['status', 'stop', 'start', 'set-volume', 'set-id',
-                                 'save-config', 'load-config', 'get-loops', 'set-file'],
+                                 'save-config', 'load-config', 'get-loops', 'set-file', 'reboot'],
                          help='Command to execute on the device')
     
     # Optional arguments
     optional = parser.add_argument_group('optional arguments')
-    optional.add_argument('--map-file', 
+    optional.add_argument('--map-file', '-m',
                          default='device_map.json',
                          metavar='PATH',
                          help='Path to device map JSON file (default: device_map.json)')
     
-    optional.add_argument('--timeout', 
+    optional.add_argument('--timeout', '-t',
                          type=int, 
                          default=5,
                          metavar='SEC',
                          help='Request timeout in seconds (default: 5)')
     
-    optional.add_argument('--force', 
+    optional.add_argument('--force', '-f',
                          action='store_true',
                          help='Skip device ID verification (not recommended)')
     
     # Volume control
     volume_group = parser.add_argument_group('volume control')
-    volume_group.add_argument('--track', 
+    volume_group.add_argument('--track', '-k',
                              type=int, 
                              choices=[0, 1, 2],
                              help='Track number for track-specific commands')
     
-    volume_group.add_argument('--volume', 
+    volume_group.add_argument('--volume', '-v',
                              type=int, 
                              metavar='LEVEL',
                              help='Volume level (0-100)')
     
-    volume_group.add_argument('--global', 
+    volume_group.add_argument('--global', '-g',
                              dest='global_volume',
                              action='store_true',
                              help='Set global volume instead of track volume')
     
     # Device ID change
     id_group = parser.add_argument_group('device ID control')
-    id_group.add_argument('--new-id', 
+    id_group.add_argument('--new-id', '-n',
                          metavar='ID',
                          help='New device ID for set-id command')
     
     # File control
     file_group = parser.add_argument_group('file control')
-    file_group.add_argument('--file-index', 
+    file_group.add_argument('--file-index', '-x',
                            type=int,
                            metavar='INDEX',
                            help='File index from /api/files for set-file command')
     
-    file_group.add_argument('--file-path', 
+    file_group.add_argument('--file-path', '-p',
                            metavar='PATH',
                            help='Direct file path for set-file command')
     
@@ -532,6 +555,9 @@ Commands:
                 logger.error("Track number required (use --track)")
                 sys.exit(1)
             asyncio.run(controller.set_file(args.track, args.file_index, args.file_path))
+            
+        elif args.command == 'reboot':
+            asyncio.run(controller.reboot())
             
     except KeyboardInterrupt:
         logger.info("\nOperation interrupted by user")

@@ -564,18 +564,18 @@ Commands:
     
     # Optional arguments
     optional = parser.add_argument_group('optional arguments')
-    optional.add_argument('--map-file', 
+    optional.add_argument('--map-file', '-m',
                          default='device_map.json',
                          metavar='PATH',
                          help='Path to device map JSON file (default: device_map.json)')
     
-    optional.add_argument('--timeout', 
+    optional.add_argument('--timeout', '-t',
                          type=int, 
                          default=30,
                          metavar='SEC',
                          help='Request timeout in seconds (default: 30)')
     
-    optional.add_argument('--concurrent', 
+    optional.add_argument('--concurrent', '-n',
                          type=int, 
                          default=5,
                          metavar='NUM',
@@ -583,26 +583,26 @@ Commands:
     
     # Target device
     target_group = parser.add_argument_group('target selection')
-    target_group.add_argument('--id', 
+    target_group.add_argument('--id', '-i',
                              dest='device_id',
                              metavar='ID',
                              help='Specific device ID (default: all devices)')
     
     # File operations
     file_group = parser.add_argument_group('file operations')
-    file_group.add_argument('--file', 
+    file_group.add_argument('--file', '-f',
                            metavar='PATH',
                            help='File to upload or delete')
     
-    file_group.add_argument('--directory', 
+    file_group.add_argument('--directory', '-d',
                            metavar='PATH',
                            help='Directory for sync operation')
     
-    file_group.add_argument('--force', 
+    file_group.add_argument('--force', '-F',
                            action='store_true',
                            help='Force upload even if file exists')
     
-    file_group.add_argument('--target-name', 
+    file_group.add_argument('--target-name', '-r',
                            metavar='NAME',
                            help='Custom filename for uploaded file (default: use original filename)')
     
