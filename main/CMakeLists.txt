@@ -16,6 +16,7 @@ set(COMPONENT_PRIV_REQUIRES
     esp_wifi
     esp_netif
     lwip
+    esp-adf-libs
 )
 
 register_component()

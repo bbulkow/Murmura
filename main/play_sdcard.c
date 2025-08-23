@@ -59,8 +59,18 @@
 #include "http_server.h"
 #include "config_manager.h"
 #include <math.h>  // For log10f
+#include "esp_heap_caps.h"
 
 static const char *TAG = "PLAY_SDCARD";
+
+// Helper function to log memory usage
+static void log_memory_info(const char *context) {
+    ESP_LOGI(TAG, "=== Memory Info: %s ===", context);
+    ESP_LOGI(TAG, "Free internal: %d bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    ESP_LOGI(TAG, "Free PSRAM: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Largest free internal block: %d bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    ESP_LOGI(TAG, "Largest free PSRAM block: %d bytes", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
 
 
 // audio element status strings, useful for debugging, see audio_element.h for enum
@@ -459,6 +469,10 @@ void audio_control_task(void *pvParameters)
 
                 case AUDIO_ACTION_START_TRACK: {
                     ESP_LOGI(TAG, "Processing START_TRACK action for track %d", msg.data.start_track.track_index);
+                    
+                    // Log memory before starting track
+                    log_memory_info("Before starting track");
+                    
                     int track = msg.data.start_track.track_index;
                     if (track >= 0 && track < MAX_TRACKS) {
                         // Stop track if already playing
@@ -473,6 +487,9 @@ void audio_control_task(void *pvParameters)
                         // Start the track
                         audio_pipeline_run(stream->tracks[track].pipeline);
                         ESP_LOGI(TAG, "Started track %d with file: %s", track, msg.data.start_track.file_path);
+                        
+                        // Log memory after starting track
+                        log_memory_info("After starting track");
                         
                         // Update loop manager state
                         loop_manager->loops[track].is_playing = true;
@@ -762,7 +779,7 @@ void app_main(void)
         // No networks stored yet, add them for the first time
         ESP_LOGI(TAG, "No WiFi networks found in NVS, adding initial networks...");
         wifi_manager_add_network("medea", "!medea4u");
-        // wifi_manager_add_network("YourOfficeWiFi", "YourOfficePassword");
+        wifi_manager_add_network("flg-haven", "fuckoffanddie");
         // wifi_manager_add_network("YourMobileHotspot", "YourHotspotPassword");
         ESP_LOGI(TAG, "WiFi networks stored in NVS");
     } else {
@@ -775,6 +792,33 @@ void app_main(void)
             if (existing_config.networks[i].auth_fail_count > 0) {
                 has_auth_failures = true;
             }
+        }
+
+        // sometimes we need to add networks when we have some configured.
+        // This is repeditive. Would be better to have a unit in wifi_manager do it
+        bool found = false;
+        for (int i=0; i < existing_config.network_count; i++) {
+            if (strcmp(existing_config.networks[i].ssid, "flg-haven") == 0) { 
+                ESP_LOGI(TAG, " Network: flg-haven found, no need to write");
+                found = true;
+                break;
+            }
+        }
+        if (found == false) {
+            ESP_LOGI(TAG, " Network: flg-haven NOT found, adding");
+            wifi_manager_add_network("flg-haven", "fuckoffanddie");
+        }
+        found = false;
+        for (int i=0; i < existing_config.network_count; i++) {
+            if (strcmp(existing_config.networks[i].ssid, "medea") == 0) { 
+                ESP_LOGI(TAG, " Network: medea found, no need to write");
+                found = true;
+                break;
+            }
+        }
+        if (found == false) {
+            ESP_LOGI(TAG, " Network: medea NOT found, writing");
+            wifi_manager_add_network("medea", "!medea4u");
         }
         
         // Clear auth failures if any exist (allows retry after password change or temporary issues)

@@ -2,8 +2,38 @@
 #include "play_sdcard.h"
 #include "raw_stream.h"
 #include "filter_resample.h"
+#include "esp_decoder.h"
+#include "mp3_decoder.h"
+#include "wav_decoder.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 
 static const char *TAG = "PLAY_SDCARD_PASSTHROUGH";
+
+// Custom allocation functions for MP3 decoder to use PSRAM
+static void* mp3_malloc_psram(size_t size) {
+    void* ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (ptr) {
+        ESP_LOGI(TAG, "MP3: Allocated %d bytes in PSRAM at %p", size, ptr);
+    } else {
+        // Fallback to internal memory if PSRAM allocation fails
+        ptr = malloc(size);
+        ESP_LOGW(TAG, "MP3: PSRAM allocation failed for %d bytes, using internal memory at %p", size, ptr);
+    }
+    return ptr;
+}
+
+static void mp3_free_psram(void* ptr) {
+    free(ptr);
+}
+
+// Helper function to log memory usage
+static void log_memory_info(const char *context) {
+    ESP_LOGI(TAG, "=== Memory Info: %s ===", context);
+    ESP_LOGI(TAG, "Free internal: %d bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    ESP_LOGI(TAG, "Free PSRAM: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Largest free internal block: %d bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
 
 // Alternative initialization using passthrough elements
 esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
@@ -97,18 +127,42 @@ esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o) {
         fatfs_cfg.type = AUDIO_STREAM_READER;
         fatfs_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
         fatfs_cfg.task_prio = 19; // Lower than decoder but still high
+        fatfs_cfg.task_stack = 3584;  // Increased to 3.5KB to prevent stack overflow
+        fatfs_cfg.buf_sz = 2048;  // Keep buffer at 2KB (must be internal for DMA)
+        fatfs_cfg.out_rb_size = 2048;  // Reduce output ringbuffer to save memory
         stream->tracks[i].fatfs_e = fatfs_stream_init(&fatfs_cfg);
         
-        // Create WAV decoder - Pin to Core 1 (APP CPU)
-        wav_decoder_cfg_t wav_dec_cfg = DEFAULT_WAV_DECODER_CONFIG();
-        wav_dec_cfg.task_core = 1;  // Pin to Core 1 (APP CPU)
-        wav_dec_cfg.task_prio = 20; // Decoder priority
-        stream->tracks[i].decode_e = wav_decoder_init(&wav_dec_cfg);
+        // Log memory before creating decoder
+        log_memory_info("Before decoder creation");
+        
+        // Create auto decoder that supports multiple formats
+        ESP_LOGI(TAG, "Creating auto decoder for track %d (supports MP3, WAV, etc.)", i);
+        
+        // Configure the supported decoders
+        audio_decoder_t auto_decode[] = {
+            DEFAULT_ESP_WAV_DECODER_CONFIG(),
+            DEFAULT_ESP_MP3_DECODER_CONFIG(),
+            // Can add more formats here: OGG, AAC, FLAC, etc.
+        };
+        
+        // Configure esp_decoder with memory optimization
+        esp_decoder_cfg_t auto_dec_cfg = DEFAULT_ESP_DECODER_CONFIG();
+        auto_dec_cfg.task_stack = 4096;  // 4KB stack for auto decoder
+        auto_dec_cfg.task_core = 1;       // Pin to Core 1 (APP CPU)
+        auto_dec_cfg.task_prio = 20;      // Decoder priority
+        auto_dec_cfg.out_rb_size = 3072;  // 3KB output buffer (slightly larger for MP3)
+        auto_dec_cfg.stack_in_ext = true; // Try to use PSRAM for stack
+        
+        stream->tracks[i].decode_e = esp_decoder_init(&auto_dec_cfg, auto_decode, 
+                                                      sizeof(auto_decode) / sizeof(audio_decoder_t));
+        
+        // Log memory after creating decoder
+        log_memory_info("After decoder creation");
 
-        // Create a raw stream element as passthrough
+        // Create a raw stream element with reduced buffer
         raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
         raw_cfg.type = AUDIO_STREAM_WRITER;
-        raw_cfg.out_rb_size = 4096;
+        raw_cfg.out_rb_size = 2 * 1024;  // Reduce from 4KB to 2KB
         // Note: raw_stream doesn't support direct task_core configuration
         stream->tracks[i].raw_write_e = raw_stream_init(&raw_cfg);
 
