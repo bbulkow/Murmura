@@ -13,6 +13,7 @@
 #include "esp_wifi.h"
 #include "config_manager.h"
 #include "unit_status_manager.h"
+#include <sys/stat.h>
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -45,6 +46,7 @@ static esp_err_t unit_status_handler(httpd_req_t *req);
 static esp_err_t id_get_handler(httpd_req_t *req);
 static esp_err_t id_set_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
+static esp_err_t file_delete_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response
@@ -93,7 +95,7 @@ static cJSON* parse_json_request(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/files - List all audio files in root directory
+ * @brief GET /api/files - List all audio files in root directory with file sizes
  */
 static esp_err_t files_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "GET /api/files");
@@ -122,6 +124,14 @@ static esp_err_t files_get_handler(httpd_req_t *req) {
             char full_path[256];
             snprintf(full_path, sizeof(full_path), "/sdcard/%s", music_files[i]);
             cJSON_AddStringToObject(file_obj, "path", full_path);
+            
+            // Get file size
+            struct stat file_stat;
+            if (stat(full_path, &file_stat) == 0) {
+                cJSON_AddNumberToObject(file_obj, "size", file_stat.st_size);
+            } else {
+                cJSON_AddNumberToObject(file_obj, "size", 0);
+            }
             
             cJSON_AddItemToArray(files_array, file_obj);
         }
@@ -1290,6 +1300,93 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief DELETE /api/file/delete - Delete an audio file from SD card
+ * Body: { "filename": "track.wav" }
+ */
+static esp_err_t file_delete_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "DELETE /api/file/delete");
+    
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+    
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    
+    cJSON *response = cJSON_CreateObject();
+    
+    // Get filename from request
+    cJSON *filename_json = cJSON_GetObjectItem(request, "filename");
+    if (!cJSON_IsString(filename_json) || strlen(filename_json->valuestring) == 0) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid filename");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    char *filename = filename_json->valuestring;
+    
+    // Security check: ensure filename doesn't contain path separators
+    if (strchr(filename, '/') != NULL || strchr(filename, '\\') != NULL) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Invalid filename - path separators not allowed");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Build full path
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
+    
+    // Check if file exists
+    struct stat file_stat;
+    if (stat(filepath, &file_stat) != 0) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "File not found");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Check if it's a regular file (not a directory)
+    if (!S_ISREG(file_stat.st_mode)) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Not a regular file");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    
+    // Delete the file
+    if (remove(filepath) == 0) {
+        ESP_LOGI(TAG, "File deleted successfully: %s", filename);
+        cJSON_AddBoolToObject(response, "success", true);
+        cJSON_AddStringToObject(response, "filename", filename);
+        cJSON_AddStringToObject(response, "message", "File deleted successfully");
+    } else {
+        ESP_LOGE(TAG, "Failed to delete file: %s", filename);
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Failed to delete file");
+    }
+    
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    
+    return ret;
+}
+
+/**
  * @brief GET /api-docs - API documentation handler
  */
 static esp_err_t api_docs_handler(httpd_req_t *req) {
@@ -1604,6 +1701,24 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "  \"filename\": \"track.wav\",\n"
         "  \"path\": \"/sdcard/track.wav\",\n"
         "  \"size\": 1048576\n"
+        "}</pre>"
+        "</div>"
+        
+        "<div class='endpoint'>"
+        "<span class='method method-delete'>DELETE</span>"
+        "<span class='path'>/api/file/delete</span>"
+        "<p class='description'>Delete an audio file from the SD card by name.</p>"
+        "<pre>"
+        "Request:\n"
+        "{\n"
+        "  \"filename\": \"track.wav\"\n"
+        "}\n"
+        "\n"
+        "Response:\n"
+        "{\n"
+        "  \"success\": true,\n"
+        "  \"filename\": \"track.wav\",\n"
+        "  \"message\": \"File deleted successfully\"\n"
         "}</pre>"
         "</div>"
         "</div>"
@@ -2338,7 +2453,7 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 25;  // Increased from 20 to handle all 22 handlers with buffer
+    config.max_uri_handlers = 26;  // Increased to handle all handlers including file delete
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     
@@ -2606,6 +2721,17 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     ret = httpd_register_uri_handler(server, &upload_uri);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for /api/upload: %s", esp_err_to_name(ret));
+    }
+    
+    httpd_uri_t file_delete_uri = {
+        .uri = "/api/file/delete",
+        .method = HTTP_DELETE,
+        .handler = file_delete_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &file_delete_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/file/delete: %s", esp_err_to_name(ret));
     }
     
     // Initialize unit status manager

@@ -7,6 +7,7 @@ This repository contains Python tools for discovering and managing multiple ESP3
 - **Network Scanner** (`device_scanner.py`): Discovers all ESP32 devices on your network
 - **Batch Controller** (`batch_controller.py`): Performs batch operations on multiple devices
 - **Device Controller** (`device_controller.py`): Controls a single device by ID
+- **File Manager** (`file_manager.py`): Upload, sync, and manage audio files on devices
 - **Asynchronous Operations**: Fast parallel scanning and control of multiple devices
 - **Device Tracking**: Maintains a JSON map of all devices with MAC addresses as unique identifiers
 
@@ -169,6 +170,65 @@ File control:
   --file-path PATH      Direct file path for set-file command
 ```
 
+### File Manager
+
+The file manager handles uploading, syncing, and managing audio files on devices.
+
+#### Basic Usage
+
+```bash
+# List files on all devices
+python file_manager.py --command list
+
+# List files on a specific device
+python file_manager.py --command list --id LOUDFRAME-001
+
+# Upload a file to all devices (skips if already exists)
+python file_manager.py --command upload --file music.wav
+
+# Upload a file to a specific device
+python file_manager.py --command upload --file music.wav --id LOUDFRAME-001
+
+# Force upload (overwrite even if exists)
+python file_manager.py --command upload --file music.wav --force
+
+# Sync all audio files from a directory
+python file_manager.py --command sync --directory ./loops
+
+# Delete a file from all devices
+python file_manager.py --command delete --file old_music.wav
+```
+
+#### Command Line Options
+
+```bash
+python file_manager.py --help
+
+Required arguments:
+  --command {list,upload,sync,delete}, -c
+                        Command to execute
+
+Optional arguments:
+  --map-file PATH       Path to device map JSON file (default: device_map.json)
+  --timeout SEC         Request timeout in seconds (default: 30)
+  --concurrent NUM      Maximum concurrent uploads (default: 5)
+
+Target selection:
+  --id ID               Specific device ID (default: all devices)
+
+File operations:
+  --file PATH           File to upload or delete
+  --directory PATH      Directory for sync operation
+  --force               Force upload even if file exists
+```
+
+#### Features
+
+- **Smart Upload**: Checks if files already exist (by name and size) before uploading
+- **Batch Upload**: Upload to multiple devices concurrently (limited to 5 by default for stability)
+- **Directory Sync**: Sync all audio files (WAV, MP3, M4A, AAC, FLAC) from a directory
+- **Progress Tracking**: Shows upload progress and summary statistics
+
 ## Device Map Format
 
 The device map is stored as a JSON file with the following structure:
@@ -253,7 +313,42 @@ python batch_controller.py --command status
 python device_controller.py --id UNKNOWN --command set-id --new-id "LOUDFRAME-003"
 ```
 
+3. **Upload audio files** to the devices:
+```bash
+# Upload a single file to all devices
+python file_manager.py --command upload --file loop1.wav
+
+# Sync entire directory of loops
+python file_manager.py --command sync --directory ./audio_loops
+```
+
 ## Advanced Usage
+
+### File Management Workflow
+
+1. **Check what files are on devices**:
+```bash
+python file_manager.py --command list
+```
+
+2. **Upload new loops to all devices**:
+```bash
+# Upload single file
+python file_manager.py --command upload --file new_loop.wav
+
+# Sync entire folder (only uploads new/changed files)
+python file_manager.py --command sync --directory ./loops
+```
+
+3. **Clean up old files**:
+```bash
+python file_manager.py --command delete --file old_loop.wav
+```
+
+4. **Upload to specific device only**:
+```bash
+python file_manager.py --command upload --file special_loop.wav --id STAGE-CENTER
+```
 
 ### Filtering Devices
 
@@ -368,7 +463,16 @@ python device_scanner.py --net 192.168.1.0/24 --action update
 - Python 3.7+
 - aiohttp library
 - Network access to ESP32 devices on port 80
-- Devices must be running the ESP32 Audio Loop Controller firmware
+- Devices must be running the ESP32 Audio Loop Controller firmware with file upload API support
+
+## Tool Summary
+
+| Tool | Purpose | Key Commands |
+|------|---------|--------------|
+| `device_scanner.py` | Discover devices on network | `--net 192.168.1.0/24 --action create` |
+| `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` |
+| `device_controller.py` | Control single device by ID | `--id DEVICE --command status/stop/start` |
+| `file_manager.py` | Manage audio files | `--command list/upload/sync/delete` |
 
 ## License
 

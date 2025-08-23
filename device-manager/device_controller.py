@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 class DeviceController:
     """Controller for operations on a single ESP32 device."""
     
-    def __init__(self, device_id: str, map_file: str = "device_map.json", timeout: int = 5):
+    def __init__(self, device_id: str, map_file: str = "device_map.json", timeout: int = 5, force: bool = False):
         """
         Initialize the controller.
         
@@ -53,10 +53,12 @@ class DeviceController:
             device_id: ID of the device to control
             map_file: Path to device map JSON file
             timeout: Request timeout in seconds
+            force: Skip device ID verification
         """
         self.device_id = device_id
         self.map_file = Path(map_file)
         self.timeout = timeout
+        self.force = force
         self.device = None
         
     def load_device(self) -> Optional[Dict[str, Any]]:
@@ -95,6 +97,53 @@ class DeviceController:
         except Exception as e:
             logger.error(f"Error loading device map: {e}")
             return None
+    
+    async def verify_device_id(self) -> bool:
+        """
+        Verify that the device at the stored IP address has the expected ID.
+        
+        Returns:
+            True if ID matches or force mode is enabled, False otherwise
+        """
+        if self.force:
+            logger.warning("⚠ Skipping device ID verification (--force enabled)")
+            return True
+            
+        if not self.device:
+            return False
+            
+        ip = self.device['ip_address']
+        logger.info(f"Verifying device ID at {ip}...")
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"http://{ip}/api/status"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        actual_id = data.get('id', 'UNKNOWN')
+                        
+                        if actual_id == self.device_id:
+                            logger.info(f"✓ Device ID verified: {self.device_id} at {ip}")
+                            return True
+                        else:
+                            logger.error(f"✗ ID MISMATCH! Expected '{self.device_id}' but found '{actual_id}' at {ip}")
+                            logger.error(f"The device map may be outdated. Please run:")
+                            logger.error(f"  python device_scanner.py --net <your_network> --action update")
+                            logger.error(f"Or use --force to bypass this check (not recommended)")
+                            return False
+                    else:
+                        logger.error(f"Failed to verify device ID: HTTP {response.status}")
+                        return False
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout verifying device ID at {ip}")
+            logger.error("Device may be offline or network may be slow")
+            logger.error("Use --force to bypass verification (not recommended)")
+            return False
+        except Exception as e:
+            logger.error(f"Error verifying device ID: {e}")
+            return False
     
     async def send_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -382,6 +431,10 @@ Commands:
                          metavar='SEC',
                          help='Request timeout in seconds (default: 5)')
     
+    optional.add_argument('--force', 
+                         action='store_true',
+                         help='Skip device ID verification (not recommended)')
+    
     # Volume control
     volume_group = parser.add_argument_group('volume control')
     volume_group.add_argument('--track', 
@@ -422,7 +475,8 @@ Commands:
     controller = DeviceController(
         device_id=args.device_id,
         map_file=args.map_file,
-        timeout=args.timeout
+        timeout=args.timeout,
+        force=args.force
     )
     
     # Load device
@@ -434,6 +488,12 @@ Commands:
     if not device.get('online', False):
         logger.warning(f"Device {args.device_id} is marked as offline in the device map")
         logger.warning("Commands may fail if the device is not reachable")
+    
+    # Verify device ID before proceeding
+    if device.get('online', False):  # Only verify if device is supposedly online
+        if not asyncio.run(controller.verify_device_id()):
+            logger.error("Device ID verification failed. Aborting operation.")
+            sys.exit(1)
     
     # Execute command
     try:
