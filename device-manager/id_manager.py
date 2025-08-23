@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 class IDManager:
     """Manager for ESP32 device IDs and identification."""
     
-    def __init__(self, map_file: str = "device_map.json", timeout: int = 5):
+    def __init__(self, map_file: str = "device_map.json", timeout: int = 2):
         """
         Initialize the ID manager.
         
@@ -448,17 +448,26 @@ class IDManager:
                         'id': data.get('id', 'UNKNOWN'),
                         'wifi_connected': data.get('wifi_connected', False),
                         'firmware_version': data.get('firmware_version', 'UNKNOWN'),
-                        'uptime_seconds': data.get('uptime_seconds', 0)
+                        'uptime_seconds': data.get('uptime_seconds', 0),
+                        'last_seen': datetime.now().isoformat(),
+                        'online': True
                     }
                     
                     return device_info
                     
-        except:
-            pass  # Timeout or error is expected for most IPs
+        except asyncio.TimeoutError:
+            # Timeout is expected for most IPs, don't log
+            pass
+        except aiohttp.ClientError:
+            # Connection errors are expected for non-device IPs
+            pass
+        except Exception as e:
+            logger.debug(f"Unexpected error scanning {ip}: {e}")
             
         return None
     
-    async def provision_single_device(self, network_range: str, new_id: str) -> bool:
+    async def provision_single_device(self, network_range: str, new_id: str, 
+                                     concurrent_limit: int = 50) -> bool:
         """
         Scan network and set ID if exactly one device is found.
         Perfect for provisioning a single device on the network.
@@ -466,6 +475,7 @@ class IDManager:
         Args:
             network_range: Network range in CIDR format (e.g., 192.168.1.0/24)
             new_id: New ID to set on the device
+            concurrent_limit: Maximum concurrent connections
             
         Returns:
             True if successful, False otherwise
@@ -476,30 +486,56 @@ class IDManager:
             logger.error(f"Invalid network range: {e}")
             return False
         
-        logger.info(f"Scanning network {network} for devices...")
+        logger.info(f"Starting network scan of {network}")
+        logger.info(f"Mode: PROVISION-SINGLE, Timeout: {self.timeout}s, "
+                   f"Concurrent limit: {concurrent_limit}")
         logger.info("This is designed for provisioning a single device on the network")
         
         # Generate all IP addresses in the network
         all_ips = [str(ip) for ip in network.hosts()]
-        logger.info(f"Scanning {len(all_ips)} IP addresses...")
+        total_ips = len(all_ips)
+        
+        # Initialize scan statistics
+        scan_stats = {
+            'total_ips': total_ips,
+            'scanned': 0,
+            'found': 0,
+            'start_time': datetime.now()
+        }
+        
+        logger.info(f"Scanning {total_ips} IP addresses...")
         
         # Scan the network
         found_devices = []
-        connector = aiohttp.TCPConnector(limit=50, force_close=True)
+        connector = aiohttp.TCPConnector(limit=concurrent_limit, force_close=True)
         async with aiohttp.ClientSession(connector=connector) as session:
             # Process IPs in batches
-            batch_size = 50
+            batch_size = concurrent_limit
             for i in range(0, len(all_ips), batch_size):
                 batch = all_ips[i:i + batch_size]
                 tasks = [self.scan_single_device(session, ip) for ip in batch]
                 results = await asyncio.gather(*tasks)
                 
-                # Collect found devices
+                # Update progress and collect found devices
+                scan_stats['scanned'] += len(batch)
                 for device in results:
                     if device:
                         found_devices.append(device)
-                        logger.info(f"Found device at {device['ip_address']}: "
+                        scan_stats['found'] += 1
+                        logger.info(f"✓ Found device at {device['ip_address']}: "
                                   f"ID={device['id']}, MAC={device['mac_address']}")
+                
+                # Report progress
+                progress = (scan_stats['scanned'] / scan_stats['total_ips']) * 100
+                logger.info(f"Progress: {scan_stats['scanned']}/{scan_stats['total_ips']} "
+                          f"({progress:.1f}%) - Found: {scan_stats['found']} devices")
+        
+        scan_duration = (datetime.now() - scan_stats['start_time']).total_seconds()
+        
+        logger.info(f"Scan completed in {scan_duration:.2f} seconds")
+        logger.info(f"Total IPs scanned: {scan_stats['scanned']}")
+        logger.info(f"Devices found: {scan_stats['found']}")
+        logger.info("=" * 60)
         
         # Check results
         if len(found_devices) == 0:
@@ -519,9 +555,11 @@ class IDManager:
             logger.info(f"  MAC: {mac}")
             logger.info(f"  Current ID: {old_id}")
             logger.info(f"  New ID: {new_id}")
+            logger.info("-" * 60)
             
             # Set the new ID
             try:
+                logger.info(f"Setting device ID to '{new_id}'...")
                 async with aiohttp.ClientSession() as session:
                     url = f"http://{ip}/api/id"
                     data = {'id': new_id}
@@ -529,8 +567,11 @@ class IDManager:
                     async with session.post(url, json=data, 
                                            timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                         if response.status == 200:
-                            logger.info(f"✅ Successfully set device ID to '{new_id}'")
-                            logger.info(f"   Device at {ip} (MAC: {mac}) now has ID: {new_id}")
+                            logger.info("=" * 60)
+                            logger.info(f"✅ PROVISIONING SUCCESSFUL!")
+                            logger.info(f"   Device at {ip} (MAC: {mac})")
+                            logger.info(f"   ID changed from '{old_id}' to '{new_id}'")
+                            logger.info("=" * 60)
                             return True
                         else:
                             logger.error(f"Failed to set ID: HTTP {response.status}")
@@ -547,12 +588,14 @@ class IDManager:
             # Multiple devices found
             logger.error(f"❌ Found {len(found_devices)} devices on the network!")
             logger.error("This command is designed for provisioning a single device.")
+            logger.error("-" * 60)
             logger.error("Found devices:")
-            for device in found_devices:
-                logger.error(f"  - IP: {device['ip_address']:<15} "
+            for i, device in enumerate(found_devices, 1):
+                logger.error(f"  {i}. IP: {device['ip_address']:<15} "
                            f"ID: {device['id']:<20} "
                            f"MAC: {device['mac_address']}")
-            logger.error("\nPlease ensure only ONE device is on the network, or use the")
+            logger.error("-" * 60)
+            logger.error("Please ensure only ONE device is on the network, or use the")
             logger.error("'set-id' command with --mac to target a specific device.")
             return False
 
@@ -616,9 +659,9 @@ Commands:
     
     optional.add_argument('--timeout', '-t',
                          type=int,
-                         default=5,
+                         default=2,
                          metavar='SEC',
-                         help='Request timeout in seconds (default: 5)')
+                         help='Request timeout in seconds (default: 2)')
     
     # Device identification
     id_group = parser.add_argument_group('device identification')
