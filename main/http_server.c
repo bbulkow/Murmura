@@ -15,6 +15,7 @@
 #include "unit_status_manager.h"
 #include <sys/stat.h>
 #include "esp_system.h"
+#include "esp_timer.h"
 
 static const char *TAG = "HTTP_SERVER";
 
@@ -1251,6 +1252,7 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
     // Read and write data in chunks
     size_t total_received = 0;
     size_t remaining = req->content_len;
+    int64_t last_log_time = 0;  // Track last log time for progress updates
     
     while (remaining > 0) {
         // Determine how much to read this iteration
@@ -1287,12 +1289,14 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
         total_received += received;
         remaining -= received;
         
-        // Log progress for large files
+        // Log progress for large files (at most once every 10 seconds)
         if (req->content_len > 1024 * 1024) {  // If larger than 1MB
-            int percent = (total_received * 100) / req->content_len;
-            if (percent % 10 == 0) {  // Log every 10%
+            int64_t current_time = esp_timer_get_time() / 1000000;  // Convert to seconds
+            if (current_time - last_log_time >= 10) {  // Log every 10 seconds
+                int percent = (total_received * 100) / req->content_len;
                 ESP_LOGI(TAG, "Upload progress: %d%% (%d/%d bytes)", 
                          percent, total_received, req->content_len);
+                last_log_time = current_time;
             }
         }
     }

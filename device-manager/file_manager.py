@@ -205,7 +205,7 @@ class FileManager:
                          file_path: Path, skip_existing: bool = True, 
                          target_filename: Optional[str] = None) -> Dict[str, Any]:
         """
-        Upload a file to a device.
+        Upload a file to a device with progress tracking.
         
         Args:
             session: aiohttp session
@@ -255,49 +255,97 @@ class FileManager:
             logger.info(f"⬆ {device_id} ({ip}): Uploading {filename} ({file_size_mb:.2f} MB)...")
             start_time = time.time()
             
-            # Read the entire file into memory
-            # ESP32's embedded HTTP server doesn't support chunked transfer encoding
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
+            # Progress tracking class for chunked upload
+            class ProgressTracker:
+                def __init__(self, total_size):
+                    self.bytes_uploaded = 0
+                    self.total_size = total_size
+                    self.last_progress_bytes = 0
+                    self.last_progress_time = time.time()
+                    self.last_report_time = time.time()
+                    self.no_progress_timeout = 60  # Timeout if no progress for 60 seconds
+                    self.report_interval = 5  # Report progress every 5 seconds
+                    
+                def update(self, bytes_sent):
+                    """Update progress and check for timeout conditions"""
+                    self.bytes_uploaded += bytes_sent
+                    current_time = time.time()
+                    
+                    # Check if we should report progress
+                    if current_time - self.last_report_time >= self.report_interval:
+                        elapsed = current_time - start_time
+                        percent = (self.bytes_uploaded / self.total_size) * 100
+                        speed_mbps = ((self.bytes_uploaded - self.last_progress_bytes) / 
+                                     (1024 * 1024)) / (current_time - self.last_report_time)
+                        bytes_mb = self.bytes_uploaded / (1024 * 1024)
+                        total_mb = self.total_size / (1024 * 1024)
+                        
+                        logger.info(f"  {device_id} ({ip}): Progress: {bytes_mb:.1f}/{total_mb:.1f} MB "
+                                  f"({percent:.1f}%) - {speed_mbps:.2f} MB/s")
+                        self.last_report_time = current_time
+                    
+                    # Update last progress if bytes were sent
+                    if bytes_sent > 0:
+                        self.last_progress_bytes = self.bytes_uploaded
+                        self.last_progress_time = current_time
+                    
+                    # Check for no-progress timeout
+                    if current_time - self.last_progress_time > self.no_progress_timeout:
+                        raise TimeoutError(f"No upload progress for {self.no_progress_timeout} seconds")
             
-            # Use timeout that's appropriate for large files
-            # Socket timeout will trigger if no data is received for the specified time
-            # This allows large uploads to complete as long as data keeps flowing
-            if file_size_mb > 100:  # For files over 100MB
-                timeout = aiohttp.ClientTimeout(
-                    total=None,           # No total timeout for large files
-                    sock_read=30,         # Timeout if no data received for 30 seconds
-                    sock_connect=10,      # Connection timeout
-                )
-            else:  # For smaller files
-                timeout = aiohttp.ClientTimeout(
-                    total=max(60, file_size_mb * 2),  # At least 60 seconds, or 2 seconds per MB
-                    sock_connect=10,      # Connection timeout
-                )
+            # Create progress tracker
+            progress = ProgressTracker(file_size)
             
-            # Send as raw binary data with Content-Type header
-            headers = {'Content-Type': 'application/octet-stream'}
+            # Create a generator that yields chunks and tracks progress
+            async def file_generator():
+                chunk_size = 64 * 1024  # 64KB chunks
+                with open(file_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        progress.update(len(chunk))
+                        yield chunk
             
-            async with session.post(url, data=file_data, headers=headers, timeout=timeout) as response:
-                if response.status == 200:
-                    result['success'] = True
-                    elapsed = time.time() - start_time
-                    avg_speed = (file_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                    logger.info(f"✓ {device_id} ({ip}): {filename} uploaded successfully in {elapsed:.1f}s ({avg_speed:.2f} MB/s avg)")
-                else:
-                    result['error'] = f"HTTP {response.status}"
-                    error_text = await response.text()
-                    logger.error(f"✗ {device_id} ({ip}): Upload failed with HTTP {response.status}: {error_text}")
+            # Set up headers
+            headers = {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': str(file_size)
+            }
+            
+            # Use a very long total timeout since we're tracking progress ourselves
+            # The progress tracker will raise TimeoutError if no progress is made
+            timeout = aiohttp.ClientTimeout(
+                total=None,  # No total timeout
+                sock_connect=10,  # Connection timeout
+                sock_read=30  # Individual read timeout
+            )
+            
+            try:
+                async with session.post(url, data=file_generator(), headers=headers, timeout=timeout) as response:
+                    if response.status == 200:
+                        result['success'] = True
+                        elapsed = time.time() - start_time
+                        avg_speed = (file_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                        logger.info(f"✓ {device_id} ({ip}): {filename} uploaded successfully in {elapsed:.1f}s ({avg_speed:.2f} MB/s avg)")
+                    else:
+                        result['error'] = f"HTTP {response.status}"
+                        error_text = await response.text()
+                        logger.error(f"✗ {device_id} ({ip}): Upload failed with HTTP {response.status}: {error_text}")
+            
+            except TimeoutError as e:
+                result['error'] = 'No progress timeout'
+                logger.error(f"✗ {device_id} ({ip}): Upload failed - {str(e)}")
                     
         except asyncio.TimeoutError:
-            result['error'] = 'Timeout'
-            logger.error(f"✗ {device_id} ({ip}): Upload timeout (file too large or connection too slow)")
+            result['error'] = 'Connection timeout'
+            logger.error(f"✗ {device_id} ({ip}): Connection timeout")
         except FileNotFoundError:
             result['error'] = 'File not found'
             logger.error(f"✗ Local file not found: {file_path}")
         except MemoryError:
-            result['error'] = 'File too large to load into memory'
-            logger.error(f"✗ {device_id} ({ip}): File too large to load into memory ({file_size_mb:.2f} MB)")
+            result['error'] = 'File too large'
+            logger.error(f"✗ {device_id} ({ip}): File too large ({file_size_mb:.2f} MB)")
         except Exception as e:
             result['error'] = str(e)
             logger.error(f"✗ {device_id} ({ip}): Error uploading {filename}: {e}")
