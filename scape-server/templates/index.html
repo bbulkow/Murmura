@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scape Device Manager Server</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Scape Device Manager</h1>
+        </header>
+
+        <!-- Network Management Panel -->
+        <div class="controls" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <h2 style="margin-top: 0; margin-bottom: 15px; color: #2a5298; font-size: 24px;">Network Management</h2>
+            <button id="scanBtn" class="btn btn-primary">Scan Network</button>
+            <button id="autoScanBtn" class="btn btn-secondary">Start Auto Scan</button>
+            <button id="refreshBtn" class="btn btn-secondary">Refresh</button>
+            <button id="configBtn" class="btn btn-info">Network Config</button>
+            <button id="deleteAllBtn" class="btn btn-danger">Delete All Devices</button>
+        </div>
+        
+        <!-- Batch Operations Panel -->
+        <div class="controls" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+            <h2 style="margin-top: 0; margin-bottom: 15px; color: #2a5298; font-size: 24px;">Batch Operations</h2>
+            
+            <div class="batch-controls">
+                <div class="batch-selection-controls" style="padding-bottom: 15px; margin-bottom: 15px; border-bottom: 2px solid #c1dce5;">
+                    <button id="selectAllBtn" class="btn btn-secondary btn-small">Select All</button>
+                    <button id="deselectAllBtn" class="btn btn-secondary btn-small">Deselect All</button>
+                    <span id="selectedCount" class="selected-count" style="margin-left: 15px; font-weight: 500;">0 devices selected</span>
+                </div>
+                
+                <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button id="batchPlayBtn" class="btn btn-batch btn-success" style="padding: 8px 15px; font-size: 14px;">
+                        <span class="btn-icon">▶</span>
+                        Start
+                    </button>
+                    <button id="batchStopBtn" class="btn btn-batch btn-danger" style="padding: 8px 15px; font-size: 14px;">
+                        <span class="btn-icon">■</span>
+                        Stop
+                    </button>
+                    
+                    <div class="batch-volume-control" style="display: inline-flex; align-items: center; gap: 8px; background: #e8f4f8; padding: 8px 12px; border-radius: 6px;">
+                        <button id="batchVolumeBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                            <span class="btn-icon">🔊</span>
+                            Set Volume
+                        </button>
+                        <input type="range" id="batchVolume" min="0" max="100" value="50" style="width: 100px;">
+                        <span id="batchVolumeValue" class="volume-display" style="min-width: 35px;">50%</span>
+                    </div>
+                    
+                    <button id="batchSaveConfigBtn" class="btn btn-batch btn-warning" style="padding: 8px 15px; font-size: 14px;">
+                        <span class="btn-icon">💾</span>
+                        Save Config
+                    </button>
+                    
+                    <button id="batchRebootBtn" class="btn btn-batch btn-danger" style="padding: 8px 15px; font-size: 14px;">
+                        <span class="btn-icon">🔄</span>
+                        Reboot
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="scanProgress" class="progress-bar" style="display: none;">
+            <div class="progress-fill"></div>
+            <span class="progress-text">Scanning...</span>
+            <div class="scan-network-info"></div>
+        </div>
+        
+        <div id="scanError" class="error-message" style="display: none;">
+            <span class="error-text"></span>
+            <button class="btn btn-small" onclick="this.parentElement.style.display='none'">✕</button>
+        </div>
+
+        <div class="status-bar">
+            <span id="deviceCount">Devices: 0</span>
+            <span id="onlineCount">Online: 0</span>
+            <span id="connectionStatus" class="connection-status">
+                <span class="status-indicator"></span>
+                <span class="status-text">Disconnected</span>
+            </span>
+        </div>
+
+        <div id="deviceList" class="device-list">
+            <div class="loading">
+                <p>No devices found. Click "Scan Network" to discover devices.</p>
+            </div>
+        </div>
+
+        <!-- Device Detail Modal -->
+        <div id="deviceModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2 id="modalDeviceId">Device Details</h2>
+                
+                <div class="device-info">
+                    <div class="info-row">
+                        <span class="info-label">IP Address:</span>
+                        <a id="modalIp" href="#" target="_blank" style="color: #007bff; text-decoration: underline;"></a>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">MAC Address:</span>
+                        <span id="modalMac"></span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Status:</span>
+                        <span id="modalStatus"></span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">SSID:</span>
+                        <span id="modalSsid"></span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Global Volume:</span>
+                        <input type="range" id="modalVolume" min="0" max="100">
+                        <span id="modalVolumeValue">0</span>%
+                    </div>
+                </div>
+
+                <div class="modal-controls">
+                    <button id="modalStartBtn" class="btn btn-success">Start</button>
+                    <button id="modalStopBtn" class="btn btn-danger">Stop</button>
+                    <button id="modalSaveConfigBtn" class="btn btn-warning">Save Config</button>
+                    <button id="modalRebootBtn" class="btn btn-danger">Reboot</button>
+                    <button id="modalFilesBtn" class="btn btn-info">View Files</button>
+                </div>
+
+                <div id="filesSection" class="files-section" style="display: none;">
+                    <h3>Files on Device</h3>
+                    <div id="filesList" class="files-list"></div>
+                </div>
+
+                <div id="loopsSection" class="loops-section" style="display: none;">
+                    <h3>Loop Configuration</h3>
+                    <div id="loopsConfig" class="loops-config"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network Configuration Modal -->
+        <div id="networkModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <span class="close-network">&times;</span>
+                <h2>Network Configuration</h2>
+                
+                <div class="config-section">
+                    <h3>Scan Mode</h3>
+                    <label>
+                        <input type="radio" name="scanMode" value="all" id="scanAll" checked>
+                        Scan All Networks
+                    </label>
+                    <label>
+                        <input type="radio" name="scanMode" value="selected" id="scanSelected">
+                        Scan Selected Networks Only
+                    </label>
+                </div>
+
+                <div class="config-section">
+                    <h3>Available Network Interfaces</h3>
+                    <div id="interfacesList" class="interfaces-list">
+                        <p>Loading interfaces...</p>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>Scan Settings</h3>
+                    <div class="setting-row">
+                        <label for="scanTimeout">Network Scan Timeout (seconds):</label>
+                        <input type="number" id="scanTimeout" min="1" max="10" value="2">
+                        <small style="margin-left: 10px;">For discovering new devices</small>
+                    </div>
+                    <div class="setting-row">
+                        <label for="probeTimeout">Device Probe Timeout (seconds):</label>
+                        <input type="number" id="probeTimeout" min="0.1" max="5" step="0.1" value="0.5">
+                        <small style="margin-left: 10px;">For checking if device is online</small>
+                    </div>
+                    <div class="setting-row">
+                        <label for="refreshInterval">Auto-Refresh Interval (seconds):</label>
+                        <input type="number" id="refreshInterval" min="5" max="60" value="10">
+                        <small style="margin-left: 10px;">How often to check device status</small>
+                    </div>
+                    <div class="setting-row">
+                        <label for="concurrentLimit">Concurrent Connections:</label>
+                        <input type="number" id="concurrentLimit" min="10" max="200" value="50">
+                        <small style="margin-left: 10px;">For network scanning</small>
+                    </div>
+                </div>
+
+                <div class="modal-controls">
+                    <button id="saveNetworkConfig" class="btn btn-success">Save Configuration</button>
+                    <button id="cancelNetworkConfig" class="btn btn-secondary">Cancel</button>
+                </div>
+
+                <div class="config-info">
+                    <p><strong>Note:</strong> Selecting specific interfaces will limit scanning to those networks only, which can significantly speed up the scan process.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

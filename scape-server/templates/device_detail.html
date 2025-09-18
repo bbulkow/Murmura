@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if device %}Device: {{ device.id }}{% else %}Device Not Found{% endif %} - Scape Device Manager</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        /* Device detail page specific styles */
+        .device-detail-container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        
+        .device-detail-header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .device-detail-content {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #2a5298;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        
+        .device-controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }
+        
+        .track-detail-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        
+        .error-container {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="device-detail-container">
+        {% if error %}
+        <div class="error-container">
+            <h2>{{ error }}</h2>
+            <p>The requested device could not be found.</p>
+        </div>
+        {% elif device %}
+        <div class="device-detail-header">
+            <h1><span id="deviceId">{{ device.id }}</span></h1>
+            <div class="device-info" style="margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">IP Address:</span>
+                        <a href="http://{{ device.ip }}" target="_blank" style="color: #007bff; text-decoration: underline;">
+                            <span id="deviceIp">{{ device.ip }}</span>
+                        </a>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">MAC Address:</span>
+                        <span id="deviceMac">{{ device.mac_address }}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">Status:</span>
+                        <span id="deviceStatus" class="device-status {{ device.status }}">{{ device.status|upper }}</span>
+                    </div>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">SSID:</span>
+                        <span id="deviceSsid">{{ device.ssid }}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">Firmware:</span>
+                        <span id="deviceFirmware">{{ device.firmware_version if device.firmware_version else 'Unknown' }}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label" style="display: inline-block; width: 120px;">Uptime:</span>
+                        <span id="deviceUptime">{{ device.uptime }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="info-row" style="margin-top: 15px;">
+                <span class="info-label">Global Volume:</span>
+                <input type="range" id="globalVolume" min="0" max="100" value="0">
+                <span id="globalVolumeValue">0</span>%
+            </div>
+        </div>
+        
+        <div class="device-detail-content">
+            <div class="device-controls-grid">
+                <button id="startBtn" class="btn btn-success">Start</button>
+                <button id="stopBtn" class="btn btn-danger">Stop</button>
+                <button id="saveConfigBtn" class="btn btn-warning">Save Config</button>
+                <button id="rebootBtn" class="btn btn-danger">Reboot</button>
+                <button id="viewFilesBtn" class="btn btn-info">View Files</button>
+            </div>
+            
+            <div id="loopsSection" class="loops-section">
+                <h3>Track Configuration</h3>
+                <div id="loopsConfig" class="loops-config">
+                    <p>Loading track configuration...</p>
+                </div>
+            </div>
+            
+            <div id="filesSection" class="files-section" style="display: none;">
+                <h3>Files on Device</h3>
+                <div id="filesList" class="files-list"></div>
+            </div>
+            
+            <div id="messageArea" style="display: none; margin-top: 20px;" class="error-message">
+                <span class="message-text"></span>
+            </div>
+            
+            <!-- File Selection Panel -->
+            <div id="fileSelectionPanel" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                 background: white; border: 2px solid #2a5298; border-radius: 10px; padding: 20px; 
+                 max-width: 500px; max-height: 400px; overflow-y: auto; z-index: 1000; box-shadow: 0 8px 16px rgba(0,0,0,0.2);">
+                <h3 style="margin-top: 0; color: #2a5298;">Select File for <span id="fileSelectionTrack"></span></h3>
+                <div id="fileSelectionList" style="margin: 15px 0;">
+                    <!-- Files will be populated here -->
+                </div>
+                <button onclick="closeFileSelection()" class="btn btn-secondary" style="margin-top: 10px;">Cancel</button>
+            </div>
+            
+            <!-- Overlay for file selection -->
+            <div id="fileSelectionOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+                 background: rgba(0,0,0,0.5); z-index: 999;" onclick="closeFileSelection()"></div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="/" class="btn btn-secondary" style="padding: 10px 30px; font-size: 16px; text-decoration: none;">
+                ← Back to Dashboard
+            </a>
+        </div>
+        {% endif %}
+    </div>
+    
+    <script>
+        // Store device info from server
+        const deviceInfo = {% if device %}{{ device|tojson|safe }}{% else %}null{% endif %};
+    </script>
+    <script src="{{ url_for('static', filename='js/device_detail.js') }}"></script>
+</body>
+</html>
