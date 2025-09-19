@@ -16,12 +16,36 @@
 #include <sys/stat.h>
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "HTTP_SERVER";
 
 // Global variables
 static httpd_handle_t server = NULL;
 static loop_manager_t *g_loop_manager = NULL;
+
+// Custom cJSON memory hooks for SPIRAM usage
+static void* cjson_malloc_spiram(size_t size) {
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (ptr == NULL) {
+        // Fallback to default if SPIRAM allocation fails
+        ptr = malloc(size);
+    }
+    return ptr;
+}
+
+static void cjson_free_spiram(void *ptr) {
+    free(ptr);
+}
+
+// Initialize cJSON to use SPIRAM
+static void init_cjson_spiram(void) {
+    static cJSON_Hooks hooks = {
+        .malloc_fn = cjson_malloc_spiram,
+        .free_fn = cjson_free_spiram
+    };
+    cJSON_InitHooks(&hooks);
+}
 
 // Forward declarations
 static esp_err_t files_get_handler(httpd_req_t *req);
@@ -52,20 +76,24 @@ static esp_err_t file_delete_handler(httpd_req_t *req);
 static esp_err_t system_reboot_handler(httpd_req_t *req);
 
 /**
- * @brief Send JSON response
+ * @brief Send JSON response (uses SPIRAM via cJSON hooks)
  */
 static esp_err_t send_json_response(httpd_req_t *req, cJSON *json) {
+    // Get formatted JSON string - this allocates from SPIRAM via our custom hooks
     char *json_str = cJSON_Print(json);
     if (json_str == NULL) {
+        ESP_LOGE(TAG, "cJSON_Print failed");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to generate JSON");
         return ESP_FAIL;
     }
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    
     esp_err_t ret = httpd_resp_send(req, json_str, strlen(json_str));
     
     free(json_str);
+    
     return ret;
 }
 
@@ -99,6 +127,7 @@ static cJSON* parse_json_request(httpd_req_t *req) {
 
 /**
  * @brief GET /api/files - List all audio files in root directory with file sizes
+ * Uses SPIRAM optimization to avoid DMA memory exhaustion
  */
 static esp_err_t files_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "GET /api/files");
@@ -2515,6 +2544,10 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         ESP_LOGW(TAG, "HTTP server already initialized");
         return ESP_OK;
     }
+    
+    // Initialize cJSON to use SPIRAM for all allocations
+    init_cjson_spiram();
+    ESP_LOGI(TAG, "cJSON configured to use SPIRAM");
     
     // Note: loop manager will be set by audio_control_task via http_server_set_loop_manager
     // We don't create one here - we'll use the shared one from audio control task

@@ -146,16 +146,15 @@ int music_filename_get( char **file_o, enum FILETYPE_ENUM *filetype_o) {
 // get an array of all the valid music filenames on the root of the SD card
 // 
 esp_err_t music_filenames_get(char ***file_array_o) {
-        // let's see if I can autodetect the file format of the test stream on the sd card
+    // FIRST PASS: Count files
     DIR *dir = opendir(PATH_PREFIX);
     if (!dir) {
         ESP_LOGI(TAG, "[E] can't open sd card for autodetect");
         return(ESP_FAIL);
     }
-
+    
     struct dirent *ent;
-    ESP_LOGI(TAG, "[ MFG ] enumerate SDcard");
-
+    
     // first pass, determine how many files we have
     int n_files = 0;
     while ((ent = readdir(dir)) != NULL) {
@@ -164,19 +163,41 @@ esp_err_t music_filenames_get(char ***file_array_o) {
             n_files++;
         }
     }
-    n_files++; // let's put a null at the end
+    
+    // CLOSE directory after first pass to free DMA resources
+    closedir(dir);
 
+    // Allocate array for file names (add one for NULL terminator)
+    n_files++; // let's put a null at the end
     char **files = heap_caps_malloc(n_files * sizeof(void *), MALLOC_CAP_SPIRAM);
-    // char **files = malloc(n_files * sizeof(void *));
     if (files == NULL) return(ESP_FAIL);
-    rewinddir(dir);
+    
+    // SECOND PASS: Collect file names - REOPEN directory
+    dir = opendir(PATH_PREFIX);
+    if (!dir) {
+        ESP_LOGE(TAG, "[E] can't reopen sd card for second pass");
+        free(files);
+        return(ESP_FAIL);
+    }
 
     n_files = 0;
     while ((ent = readdir(dir)) != NULL) {
         enum FILETYPE_ENUM filetype;
         if (ESP_OK == music_determine_filetype( ent->d_name, &filetype)) {
-            char *fn = strdup( ent->d_name);
-            if (fn == NULL) return(ESP_FAIL); // be leaking memory here
+            // Use SPIRAM instead of strdup() to avoid internal RAM exhaustion
+            size_t len = strlen(ent->d_name) + 1;
+            char *fn = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+            if (fn == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate filename in SPIRAM");
+                closedir(dir);
+                // Free already allocated filenames
+                for (int i = 0; i < n_files; i++) {
+                    free(files[i]);
+                }
+                free(files);
+                return(ESP_FAIL);
+            }
+            memcpy(fn, ent->d_name, len);
             files[n_files] = fn;
             n_files++;
         }
@@ -184,8 +205,8 @@ esp_err_t music_filenames_get(char ***file_array_o) {
     files[n_files] = NULL;
 
     closedir(dir);
+    
     *file_array_o = files;
 
     return(ESP_OK);
-
 }
