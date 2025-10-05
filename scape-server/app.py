@@ -311,7 +311,7 @@ def start_scan():
                     'current': current,
                     'total': total,
                     'percent': percent
-                })
+                }, namespace='/')
                 logger.info(f"!!! scan_progress EVENT EMITTED !!!")
             
             def network_callback(network, current, total):
@@ -321,7 +321,7 @@ def start_scan():
                     'network': network,
                     'current': current,
                     'total': total
-                })
+                }, namespace='/')
                 logger.info(f"!!! scanning_network EVENT EMITTED !!!")
             
             scanner = DeviceScannerWrapper(network_config, progress_callback)
@@ -334,7 +334,7 @@ def start_scan():
                 'devices': devices,
                 'count': len(devices),
                 'status': 'success'
-            })
+            }, namespace='/')
             
             logger.info(f"Manual scan complete: {len(devices)} devices found")
             
@@ -343,7 +343,7 @@ def start_scan():
             socketio.emit('scan_error', {
                 'error': str(e),
                 'message': 'Network scan failed'
-            })
+            }, namespace='/')
     
     # Start scan in background thread
     thread = threading.Thread(target=scan_with_progress)
