@@ -1,5 +1,5 @@
 [Unit]
-Description=Loudframe Scape Server - ESP32 Device Management Web Interface
+Description=Scape Server - ESP32 Device Management Web Interface
 After=network.target
 
 [Service]

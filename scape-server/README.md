@@ -283,19 +283,19 @@ Quick installation:
 
 1. Copy the service file:
 ```bash
-sudo cp /home/pi/loudframe/play_sdcard_multi/scape-server/loudframe-scape-server.service /etc/systemd/system/
+sudo cp /home/pi/loudframe/play_sdcard_multi/scape-server/scape-server.service /etc/systemd/system/
 ```
 
 2. Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable loudframe-scape-server.service
-sudo systemctl start loudframe-scape-server.service
+sudo systemctl enable scape-server.service
+sudo systemctl start scape-server.service
 ```
 
 3. Check status:
 ```bash
-sudo systemctl status loudframe-scape-server.service
+sudo systemctl status scape-server.service
 ```
 
 The service includes:

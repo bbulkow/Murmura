@@ -364,7 +364,14 @@ function hideScanProgress() {
     const progressBar = document.getElementById('scanProgress');
     progressBar.style.display = 'none';
     const fill = progressBar.querySelector('.progress-fill');
+    const text = progressBar.querySelector('.progress-text');
+    const networkInfo = progressBar.querySelector('.scan-network-info');
+    
     fill.style.width = '0%';
+    text.textContent = 'Scanning...';
+    if (networkInfo) {
+        networkInfo.textContent = '';
+    }
 }
 
 // Update scan progress
@@ -373,18 +380,28 @@ function updateScanProgress(percent) {
     const fill = progressBar.querySelector('.progress-fill');
     const text = progressBar.querySelector('.progress-text');
     
+    // Ensure progress bar is visible
+    progressBar.style.display = 'block';
+    
     fill.style.width = `${percent}%`;
     text.textContent = `Scanning... ${Math.round(percent)}%`;
 }
 
 // Update network info during scan
 function updateNetworkInfo(network, current, total) {
-    const networkInfo = document.querySelector('.scan-network-info');
+    const progressBar = document.getElementById('scanProgress');
+    const networkInfo = progressBar.querySelector('.scan-network-info');
+    
+    // Ensure progress bar is visible
+    progressBar.style.display = 'block';
+    
     if (networkInfo) {
         networkInfo.textContent = `Scanning network ${current}/${total}: ${network}`;
+        networkInfo.style.display = 'block';
         networkInfo.style.marginTop = '10px';
         networkInfo.style.fontSize = '14px';
         networkInfo.style.color = '#666';
+        networkInfo.style.fontWeight = '500';
     }
 }
 
