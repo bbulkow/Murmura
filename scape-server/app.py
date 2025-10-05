@@ -34,7 +34,7 @@ logger = logging.getLogger('scape_server')
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'loudframe-scape-server-2025'
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Initialize components
 network_config = NetworkConfig()
@@ -311,8 +311,14 @@ def start_scan():
                     'current': current,
                     'total': total,
                     'percent': percent
-                }, namespace='/')
+                })
                 logger.info(f"!!! scan_progress EVENT EMITTED !!!")
+                
+                # Check if scan is complete
+                if percent >= 100:
+                    logger.info(f"!!! SCAN REACHED 100% - PREPARING TO EMIT COMPLETE EVENT !!!")
+                    # Sleep briefly to ensure last progress update is processed
+                    socketio.sleep(0.1)
             
             def network_callback(network, current, total):
                 logger.info(f"!!! NETWORK CALLBACK IN APP.PY: {current}/{total}: {network} !!!")
@@ -321,7 +327,7 @@ def start_scan():
                     'network': network,
                     'current': current,
                     'total': total
-                }, namespace='/')
+                })
                 logger.info(f"!!! scanning_network EVENT EMITTED !!!")
             
             scanner = DeviceScannerWrapper(network_config, progress_callback)
@@ -330,20 +336,24 @@ def start_scan():
             # Reload registry
             registry.load_registry()
             
+            logger.info(f"!!! SCAN COMPLETE - EMITTING scan_complete EVENT !!!")
             socketio.emit('scan_complete', {
                 'devices': devices,
                 'count': len(devices),
                 'status': 'success'
-            }, namespace='/')
+            })
+            logger.info(f"!!! scan_complete EVENT EMITTED !!!")
             
             logger.info(f"Manual scan complete: {len(devices)} devices found")
             
         except Exception as e:
             logger.error(f"Scan failed: {e}")
+            logger.info(f"!!! SCAN ERROR - EMITTING scan_error EVENT !!!")
             socketio.emit('scan_error', {
                 'error': str(e),
                 'message': 'Network scan failed'
-            }, namespace='/')
+            })
+            logger.info(f"!!! scan_error EVENT EMITTED !!!")
     
     # Start scan in background thread
     thread = threading.Thread(target=scan_with_progress)
