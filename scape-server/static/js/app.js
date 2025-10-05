@@ -980,13 +980,6 @@ async function openNetworkConfig() {
         const configResponse = await fetch('/api/network/config');
         const config = await configResponse.json();
         
-        // Set scan mode
-        if (config.scan_all) {
-            document.getElementById('scanAll').checked = true;
-        } else {
-            document.getElementById('scanSelected').checked = true;
-        }
-        
         // Set timeout and concurrent limit
         document.getElementById('scanTimeout').value = config.timeout || 2;
         document.getElementById('probeTimeout').value = config.probe_timeout || 0.5;
@@ -1044,21 +1037,16 @@ function displayInterfaces(interfaces, selectedInterfaces) {
 async function saveNetworkConfig() {
     console.log('Saving network configuration');
     
-    // Gather configuration
-    const scanAll = document.getElementById('scanAll').checked;
+    // DWIM: Gather selected interfaces
     const selectedInterfaces = [];
+    document.querySelectorAll('input[name="interface"]:checked').forEach(checkbox => {
+        selectedInterfaces.push(checkbox.value);
+    });
     
-    if (!scanAll) {
-        // Get selected interfaces
-        document.querySelectorAll('input[name="interface"]:checked').forEach(checkbox => {
-            selectedInterfaces.push(checkbox.value);
-        });
-        
-        if (selectedInterfaces.length === 0) {
-            alert('Please select at least one network interface');
-            return;
-        }
-    }
+    // DWIM logic: If no interfaces selected, scan all. If some selected, scan only those.
+    const scanAll = selectedInterfaces.length === 0;
+    
+    console.log(`Network config: ${scanAll ? 'Scanning all networks' : `Scanning ${selectedInterfaces.length} selected interface(s)`}`);
     
     const config = {
         scan_all: scanAll,
@@ -1084,13 +1072,14 @@ async function saveNetworkConfig() {
         if (response.ok) {
             const result = await response.json();
             console.log('Configuration saved:', result);
-            closeNetworkModal();
             
-            // Show feedback
-            const statusText = scanAll ? 
-                'Scanning all networks' : 
-                `Scanning ${selectedInterfaces.length} selected network(s)`;
-            console.log(statusText);
+            // Show feedback message
+            const statusText = config.scan_all ? 
+                'Configuration saved: Scanning all networks' : 
+                `Configuration saved: Scanning ${selectedInterfaces.length} selected network(s)`;
+            showSuccess(statusText);
+            
+            closeNetworkModal();
         } else {
             alert('Failed to save configuration');
         }

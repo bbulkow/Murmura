@@ -14,6 +14,15 @@ from flask_cors import CORS
 import requests
 from network_wrapper import NetworkConfig, DeviceScannerWrapper, DeviceRegistry
 
+# ============================================================================
+# SERVER CONFIGURATION
+# ============================================================================
+# Default port for the web server (chosen to avoid common port conflicts)
+# Override by setting the SCAPE_SERVER_PORT environment variable
+DEFAULT_PORT = 8765
+SERVER_PORT = int(os.environ.get('SCAPE_SERVER_PORT', DEFAULT_PORT))
+# ============================================================================
+
 # Configure logging with detailed output
 logging.basicConfig(
     level=logging.INFO,
@@ -867,8 +876,8 @@ if __name__ == '__main__':
     else:
         logger.info("Running in PRODUCTION mode")
     
-    logger.info("Access the web interface at: http://localhost:5000")
-    logger.info("Or from network: http://<your-ip>:5000")
+    logger.info(f"Access the web interface at: http://localhost:{SERVER_PORT}")
+    logger.info(f"Or from network: http://<your-ip>:{SERVER_PORT}")
     logger.info("=" * 60)
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode)
+    socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=debug_mode)

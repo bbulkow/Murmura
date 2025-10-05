@@ -127,8 +127,10 @@ python3 app.py
 ### Accessing the Server
 
 Once running, the server will be accessible at:
-- Local machine: `http://localhost:5000`
-- Network access: `http://<your-ip>:5000`
+- Local machine: `http://localhost:8765`
+- Network access: `http://<your-ip>:8765`
+
+**Note**: The default port was changed from 5000 to 8765 to avoid conflicts with commonly used applications. You can override this by setting the `SCAPE_SERVER_PORT` environment variable.
 
 To find your IP address:
 - **Windows**: `ipconfig` in PowerShell
@@ -223,9 +225,25 @@ Edit `network_scanner.py` to adjust:
 ### Server Settings
 
 Edit `app.py` to modify:
-- `port`: Server port (default: 5000)
+- `DEFAULT_PORT`: Server port (default: 8765)
+- `SERVER_PORT`: Override using `SCAPE_SERVER_PORT` environment variable
 - `host`: Server host (default: 0.0.0.0 for network access)
 - `debug`: Flask debug mode (default: True)
+
+#### Changing the Port
+
+You can override the default port in several ways:
+
+1. **Environment variable** (recommended):
+   ```bash
+   export SCAPE_SERVER_PORT=9000
+   python3 app.py
+   ```
+
+2. **Edit DEFAULT_PORT in app.py** (at the top of the file):
+   ```python
+   DEFAULT_PORT = 9000  # Change this value
+   ```
 
 ## Device Registry
 
@@ -244,7 +262,7 @@ The server maintains a persistent registry of discovered devices in `device_regi
 4. Try increasing the timeout in `network_scanner.py`
 
 ### Connection Issues
-1. Check that port 5000 is not blocked by firewall
+1. Check that port 8765 is not blocked by firewall (or your custom port if changed)
 2. Verify the server is running with `ps aux | grep app.py`
 3. Check server logs for error messages
 
@@ -255,42 +273,36 @@ The server maintains a persistent registry of discovered devices in `device_regi
 
 ## Running on Raspberry Pi
 
-### Auto-start on Boot
+### Auto-start on Boot with Systemd
 
-Create a systemd service file:
+The scape-server includes a pre-configured systemd service file for easy installation on Raspberry Pi.
 
-1. Create the service file:
+**For detailed installation instructions, see [SYSTEMD_INSTALL.md](SYSTEMD_INSTALL.md)**
+
+Quick installation:
+
+1. Copy the service file:
 ```bash
-sudo nano /etc/systemd/system/scape-server.service
+sudo cp /home/pi/loudframe/play_sdcard_multi/scape-server/loudframe-scape-server.service /etc/systemd/system/
 ```
 
-2. Add the following content:
-```ini
-[Unit]
-Description=Scape Device Manager Server
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/loudframe/play_sdcard_multi/scape_server
-ExecStart=/usr/bin/python3 /home/pi/loudframe/play_sdcard_multi/scape_server/app.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-3. Enable and start the service:
+2. Enable and start:
 ```bash
-sudo systemctl enable scape-server.service
-sudo systemctl start scape-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable loudframe-scape-server.service
+sudo systemctl start loudframe-scape-server.service
 ```
 
-4. Check service status:
+3. Check status:
 ```bash
-sudo systemctl status scape-server.service
+sudo systemctl status loudframe-scape-server.service
 ```
+
+The service includes:
+- Automatic restart on failure
+- Proper environment configuration
+- Easy port customization via environment variable
+- Full logging to systemd journal
 
 ## Security Considerations
 
