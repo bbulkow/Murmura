@@ -305,20 +305,24 @@ def start_scan():
     def scan_with_progress():
         try:
             def progress_callback(current, total, percent):
-                logger.debug(f"Scan progress: {current}/{total} ({percent:.1f}%)")
+                logger.info(f"!!! PROGRESS CALLBACK IN APP.PY: {current}/{total} ({percent:.1f}%) !!!")
+                logger.info(f"!!! EMITTING scan_progress EVENT !!!")
                 socketio.emit('scan_progress', {
                     'current': current,
                     'total': total,
                     'percent': percent
                 })
+                logger.info(f"!!! scan_progress EVENT EMITTED !!!")
             
             def network_callback(network, current, total):
-                logger.info(f"Scanning network {current}/{total}: {network}")
+                logger.info(f"!!! NETWORK CALLBACK IN APP.PY: {current}/{total}: {network} !!!")
+                logger.info(f"!!! EMITTING scanning_network EVENT !!!")
                 socketio.emit('scanning_network', {
                     'network': network,
                     'current': current,
                     'total': total
                 })
+                logger.info(f"!!! scanning_network EVENT EMITTED !!!")
             
             scanner = DeviceScannerWrapper(network_config, progress_callback)
             devices = scanner.scan_all_networks(progress_callback, network_callback)
