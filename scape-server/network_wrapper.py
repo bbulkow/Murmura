@@ -195,9 +195,9 @@ class DeviceScannerWrapper:
                     logger.info(f"Scanner: {line}")
                     
                     # Parse progress if possible
-                    if "Progress:" in line:
+                    if "Progress:" in line and self.progress_callback:
                         try:
-                            # Extract progress numbers
+                            # Extract progress numbers from format "Progress: 50/254 (19.7%)"
                             parts = line.split()
                             for i, part in enumerate(parts):
                                 if part == "Progress:":
@@ -205,11 +205,12 @@ class DeviceScannerWrapper:
                                     current, total = progress_str.split('/')
                                     self.scanned_hosts = int(current)
                                     
-                                    if self.progress_callback:
-                                        percent = (self.scanned_hosts / self.total_hosts) * 100 if self.total_hosts > 0 else 0
-                                        self.progress_callback(self.scanned_hosts, self.total_hosts, percent)
-                        except (IndexError, ValueError):
-                            pass
+                                    percent = (self.scanned_hosts / self.total_hosts) * 100 if self.total_hosts > 0 else 0
+                                    logger.debug(f"Calling progress_callback: {self.scanned_hosts}/{self.total_hosts} = {percent:.1f}%")
+                                    self.progress_callback(self.scanned_hosts, self.total_hosts, percent)
+                                    break
+                        except (IndexError, ValueError) as e:
+                            logger.warning(f"Failed to parse progress from line: {line} - {e}")
             
             process.wait()
             elapsed = time.time() - start_time
