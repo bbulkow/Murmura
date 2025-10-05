@@ -39,14 +39,17 @@ function initializeSocket() {
     });
     
     socket.on('scan_progress', function(data) {
+        console.log('[WEBSOCKET] scan_progress event received:', data);
         updateScanProgress(data.percent);
     });
     
     socket.on('scanning_network', function(data) {
+        console.log('[WEBSOCKET] scanning_network event received:', data);
         updateNetworkInfo(data.network, data.current, data.total);
     });
     
     socket.on('scan_complete', function(data) {
+        console.log('[WEBSOCKET] scan_complete event received:', data);
         console.log(`Scan complete: found ${data.count} devices`);
         hideScanProgress();
         hideError();
