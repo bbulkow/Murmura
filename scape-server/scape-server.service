@@ -1,0 +1,22 @@
+[Unit]
+Description=Loudframe Scape Server - ESP32 Device Management Web Interface
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/loudframe/play_sdcard_multi/scape-server
+Environment="PATH=/home/pi/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="FLASK_ENV=production"
+# Optionally override the default port (8765) by uncommenting and changing:
+# Environment="SCAPE_SERVER_PORT=8765"
+ExecStart=/usr/bin/python3 /home/pi/loudframe/play_sdcard_multi/scape-server/app.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scape-server
+
+[Install]
+WantedBy=multi-user.target
