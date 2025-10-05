@@ -305,30 +305,24 @@ def start_scan():
     def scan_with_progress():
         try:
             def progress_callback(current, total, percent):
-                logger.info(f"!!! PROGRESS CALLBACK IN APP.PY: {current}/{total} ({percent:.1f}%) !!!")
-                logger.info(f"!!! EMITTING scan_progress EVENT !!!")
                 socketio.emit('scan_progress', {
                     'current': current,
                     'total': total,
                     'percent': percent
                 })
-                logger.info(f"!!! scan_progress EVENT EMITTED !!!")
                 
                 # Check if scan is complete
                 if percent >= 100:
-                    logger.info(f"!!! SCAN REACHED 100% - PREPARING TO EMIT COMPLETE EVENT !!!")
                     # Sleep briefly to ensure last progress update is processed
                     socketio.sleep(0.1)
             
             def network_callback(network, current, total):
-                logger.info(f"!!! NETWORK CALLBACK IN APP.PY: {current}/{total}: {network} !!!")
-                logger.info(f"!!! EMITTING scanning_network EVENT !!!")
+                logger.debug(f"Scanning network {current}/{total}: {network}")
                 socketio.emit('scanning_network', {
                     'network': network,
                     'current': current,
                     'total': total
                 })
-                logger.info(f"!!! scanning_network EVENT EMITTED !!!")
             
             scanner = DeviceScannerWrapper(network_config, progress_callback)
             devices = scanner.scan_all_networks(progress_callback, network_callback)
@@ -336,24 +330,20 @@ def start_scan():
             # Reload registry
             registry.load_registry()
             
-            logger.info(f"!!! SCAN COMPLETE - EMITTING scan_complete EVENT !!!")
             socketio.emit('scan_complete', {
                 'devices': devices,
                 'count': len(devices),
                 'status': 'success'
             })
-            logger.info(f"!!! scan_complete EVENT EMITTED !!!")
             
             logger.info(f"Manual scan complete: {len(devices)} devices found")
             
         except Exception as e:
             logger.error(f"Scan failed: {e}")
-            logger.info(f"!!! SCAN ERROR - EMITTING scan_error EVENT !!!")
             socketio.emit('scan_error', {
                 'error': str(e),
                 'message': 'Network scan failed'
             })
-            logger.info(f"!!! scan_error EVENT EMITTED !!!")
     
     # Start scan in background thread
     thread = threading.Thread(target=scan_with_progress)

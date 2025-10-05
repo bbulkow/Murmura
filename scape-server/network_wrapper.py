@@ -196,9 +196,7 @@ class DeviceScannerWrapper:
                     
                     # Parse progress if possible
                     if "Progress:" in line:
-                        logger.info(f"=== PROGRESS LINE DETECTED: {line} ===")
                         if self.progress_callback:
-                            logger.info("=== PROGRESS CALLBACK IS SET ===")
                             try:
                                 # Extract progress numbers from format "Progress: 50/254 (19.7%)"
                                 parts = line.split()
@@ -209,14 +207,10 @@ class DeviceScannerWrapper:
                                         self.scanned_hosts = int(current)
                                         
                                         percent = (self.scanned_hosts / self.total_hosts) * 100 if self.total_hosts > 0 else 0
-                                        logger.info(f"=== CALLING PROGRESS CALLBACK: {self.scanned_hosts}/{self.total_hosts} = {percent:.1f}% ===")
                                         self.progress_callback(self.scanned_hosts, self.total_hosts, percent)
-                                        logger.info("=== PROGRESS CALLBACK COMPLETED ===")
                                         break
                             except (IndexError, ValueError) as e:
-                                logger.error(f"=== FAILED TO PARSE PROGRESS: {line} - {e} ===")
-                        else:
-                            logger.warning("=== PROGRESS CALLBACK IS NONE ===")
+                                logger.error(f"Failed to parse progress: {line} - {e}")
             
             process.wait()
             elapsed = time.time() - start_time
