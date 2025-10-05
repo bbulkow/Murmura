@@ -884,4 +884,4 @@ if __name__ == '__main__':
     logger.info(f"Or from network: http://<your-ip>:{SERVER_PORT}")
     logger.info("=" * 60)
     
-    socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=debug_mode)
+    socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=debug_mode, allow_unsafe_werkzeug=True)
