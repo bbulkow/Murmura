@@ -4,14 +4,16 @@ This guide explains how to install and configure the Loudframe Scape Server as a
 
 ## Features Added
 
-1. **Changed default port from 5000 to 8765** - Port 5000 is commonly used by many applications. The new default port 8765 is less likely to conflict.
+1. **Runs on port 80 by default** - The service file is configured to run on port 80 for easier access (no port number needed in URLs).
 2. **Easy port override** - You can change the port using the `SCAPE_SERVER_PORT` environment variable.
 3. **Systemd service file** - Automatically start the server on boot and restart on failure.
+4. **Privileged port support** - Uses systemd capabilities to allow binding to port 80 without running as root.
 
 ## Port Configuration
 
 ### Default Port
-The server now runs on port **8765** by default (changed from 5000).
+- **In service**: The systemd service runs on port **80** (configured in service file)
+- **Manual run**: When run manually, defaults to port **8765** (unless overridden)
 
 ### Overriding the Port
 
@@ -83,9 +85,15 @@ To change the port when running as a systemd service:
    sudo nano /etc/systemd/system/scape-server.service
    ```
 
-2. **Uncomment and modify the port environment variable**:
+2. **Modify the port environment variable**:
    ```ini
-   Environment="SCAPE_SERVER_PORT=9000"
+   Environment="SCAPE_SERVER_PORT=8765"  # or any port you prefer
+   ```
+
+   **Note**: For ports below 1024 (privileged ports), ensure these lines are present:
+   ```ini
+   AmbientCapabilities=CAP_NET_BIND_SERVICE
+   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
    ```
 
 3. **Reload and restart**:
@@ -111,8 +119,10 @@ To change the port when running as a systemd service:
 
 Once the service is running:
 
-- **From the Raspberry Pi**: http://localhost:8765
-- **From other devices on the network**: http://[raspberry-pi-ip]:8765
+- **From the Raspberry Pi**: http://localhost (port 80 is default)
+- **From other devices on the network**: http://[raspberry-pi-ip]
+
+No port number is needed in the URL since it runs on port 80!
 
 To find your Raspberry Pi's IP address:
 ```bash
@@ -128,12 +138,13 @@ hostname -I
 
 ### Port already in use
 If you get a "port already in use" error:
-1. Check what's using the port: `sudo lsof -i :8765`
-2. Change the port using the environment variable method above
+1. Check what's using the port: `sudo lsof -i :80` (or your configured port)
+2. For port 80, check if Apache or nginx is running: `sudo systemctl status apache2 nginx`
+3. Stop conflicting services or change the port using the environment variable method above
 
 ### Can't access from network
 1. Check firewall settings: `sudo ufw status`
-2. If firewall is active, allow the port: `sudo ufw allow 8765/tcp`
+2. If firewall is active, allow the port: `sudo ufw allow 80/tcp`
 
 ## Uninstalling
 
