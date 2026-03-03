@@ -1,5 +1,5 @@
 /* Alternative approach using passthrough elements */
-#include "play_sdcard.h"
+#include "murmura.h"
 #include "raw_stream.h"
 #include "filter_resample.h"
 #include "esp_decoder.h"
@@ -8,9 +8,11 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
-static const char *TAG = "PLAY_SDCARD_PASSTHROUGH";
+static const char *TAG = "MURMURA_PASSTHROUGH";
 
 // Custom allocation functions for MP3 decoder to use PSRAM
+// Currently unused - kept for future use when custom MP3 memory allocation is needed
+#if 0
 static void* mp3_malloc_psram(size_t size) {
     void* ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (ptr) {
@@ -26,6 +28,7 @@ static void* mp3_malloc_psram(size_t size) {
 static void mp3_free_psram(void* ptr) {
     free(ptr);
 }
+#endif
 
 // Helper function to log memory usage
 static void log_memory_info(const char *context) {

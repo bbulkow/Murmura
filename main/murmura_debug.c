@@ -1,4 +1,4 @@
-/* Debug additions for play_sdcard_music_example.c */
+/* Murmura debug additions (originally from play_sdcard_music_example) */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -44,9 +44,9 @@
 #include "fatfs_stream.h"
 #include <sys/stat.h>
 
-#include "play_sdcard.h"
+#include "murmura.h"
 
-static const char *TAG = "PLAY_SDCARD_DEBUG";
+static const char *TAG = "MURMURA_DEBUG";
 
 // Function to check if file exists and get its size
 esp_err_t check_file_exists(const char *path) {

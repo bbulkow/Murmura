@@ -8,7 +8,7 @@
 #include "cJSON.h"
 #include "http_server.h"
 #include "music_files.h"
-#include "play_sdcard.h"
+#include "murmura.h"
 #include "wifi_manager.h"
 #include "esp_wifi.h"
 #include "config_manager.h"
@@ -1155,7 +1155,7 @@ static esp_err_t id_get_handler(httpd_req_t *req) {
 
 /**
  * @brief POST /api/id - Set the ID
- * Body: { "id": "LOUDFRAME-001" }
+ * Body: { "id": "MURMURA-001" }
  */
 static esp_err_t id_set_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "POST /api/id");
@@ -1495,7 +1495,7 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "<!DOCTYPE html>"
         "<html>"
         "<head>"
-        "<title>Loudframe API Documentation</title>"
+        "<title>Murmura API Documentation</title>"
         "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
         "<style>"
         "* { box-sizing: border-box; margin: 0; padding: 0; }"
@@ -1582,7 +1582,7 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "<body>"
         "<div class='container'>"
         "<div class='header'>"
-        "<h1>Loudframe API Documentation</h1>"
+        "<h1>Murmura API Documentation</h1>"
         "<a href='/'>Back to Controller</a>"
         "</div>"
         
@@ -1687,7 +1687,7 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "Response:\n"
         "{\n"
         "  \"mac_address\": \"AA:BB:CC:DD:EE:FF\",\n"
-        "  \"id\": \"LOUDFRAME-001\",\n"
+        "  \"id\": \"MURMURA-001\",\n"
         "  \"ip_address\": \"192.168.1.100\",\n"
         "  \"wifi_connected\": true,\n"
         "  \"firmware_version\": \"1.0.0\",\n"
@@ -1709,7 +1709,7 @@ static esp_err_t api_docs_handler(httpd_req_t *req) {
         "<pre>"
         "Request:\n"
         "{\n"
-        "  \"id\": \"LOUDFRAME-001\"\n"
+        "  \"id\": \"MURMURA-001\"\n"
         "}</pre>"
         "</div>"
         "</div>"
@@ -1862,7 +1862,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "<!DOCTYPE html>"
         "<html>"
         "<head>"
-        "<title>Loudframe Settings</title>"
+        "<title>Murmura Settings</title>"
         "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
         "<style>"
         "* { box-sizing: border-box; margin: 0; padding: 0; }"
@@ -2004,7 +2004,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "</head>"
         "<body>"
         "<div class='container'>"
-        "<h1>Loudframe Settings</h1>"
+        "<h1>Murmura Settings</h1>"
         
         "<div class='menu-bar'>"
         "<a href='/' class='menu-btn'>Status</a>"
@@ -2018,7 +2018,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "<div class='current-value'>Current ID: <span id='current-id'>Loading...</span></div>"
         "<div class='form-group'>"
         "<label for='device-id'>ID:</label>"
-        "<input type='text' id='device-id' placeholder='Enter device ID (e.g., LOUDFRAME-001)' maxlength='32'>"
+        "<input type='text' id='device-id' placeholder='Enter device ID (e.g., MURMURA-001)' maxlength='32'>"
         "</div>"
         "<button class='btn-primary' onclick='updateDeviceId()'>Update ID</button>"
         "<button class='btn-secondary' onclick='loadCurrentId()'>Refresh</button>"
@@ -2138,7 +2138,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "<!DOCTYPE html>"
         "<html>"
         "<head>"
-        "<title>Loudframe Controller</title>"
+        "<title>Murmura Controller</title>"
         "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
         "<style>"
         "* { box-sizing: border-box; margin: 0; padding: 0; }"
@@ -2300,7 +2300,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</head>"
         "<body>"
         "<div class='container'>"
-        "<h1>Loudframe Controller</h1>"
+        "<h1>Murmura Controller</h1>"
         
         "<div class='menu-bar'>"
         "<a href='/' class='menu-btn active'>Status</a>"

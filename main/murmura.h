@@ -1,5 +1,5 @@
-#ifndef PLAY_SDCARD_H
-#define PLAY_SDCARD_H
+#ifndef MURMURA_H
+#define MURMURA_H
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -113,4 +113,4 @@ void debug_downmix_element(audio_stream_t *stream);
 // Alternative initialization with passthrough elements
 esp_err_t audio_stream_init_with_passthrough(audio_stream_t **stream_o);
 
-#endif // PLAY_SDCARD_H
+#endif // MURMURA_H

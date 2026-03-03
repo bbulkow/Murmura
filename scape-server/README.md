@@ -34,9 +34,9 @@ A web-based fleet management server for Brian's soundscape devicies, designed to
 
 ### Setup
 
-1. Navigate to the scape_server directory:
+1. Navigate to the scape-server directory:
 ```bash
-cd scape_server
+cd scape-server
 ```
 
 2. Install the required Python packages:
@@ -49,9 +49,9 @@ pip install -r requirements.txt
 ### Windows (PowerShell 7)
 
 1. Open PowerShell 7 as Administrator (for network scanning capabilities)
-2. Navigate to the scape_server directory:
+2. Navigate to the scape-server directory:
 ```powershell
-cd C:\Users\<username>\dev\esp\loudframe\play_sdcard_multi\scape_server
+cd C:\Users\<username>\dev\esp\Murmura\scape-server
 ```
 
 3. **Option A: Using Virtual Environment (Recommended)**
@@ -87,9 +87,9 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### macOS (Terminal)
 
 1. Open Terminal
-2. Navigate to the scape_server directory:
+2. Navigate to the scape-server directory:
 ```bash
-cd ~/dev/esp/loudframe/play_sdcard_multi/scape_server
+cd ~/dev/esp/Murmura/scape-server
 ```
 
 3. **Option A: Using Virtual Environment (Recommended)**
@@ -109,9 +109,9 @@ cd ~/dev/esp/loudframe/play_sdcard_multi/scape_server
 ### Linux/Raspberry Pi
 
 1. Open terminal
-2. Navigate to the scape_server directory:
+2. Navigate to the scape-server directory:
 ```bash
-cd ~/loudframe/play_sdcard_multi/scape_server
+cd ~/Murmura/scape-server
 ```
 
 3. Install dependencies:
@@ -283,7 +283,7 @@ Quick installation:
 
 1. Copy the service file:
 ```bash
-sudo cp /home/pi/loudframe/play_sdcard_multi/scape-server/scape-server.service /etc/systemd/system/
+sudo cp /home/pi/Murmura/scape-server/scape-server.service /etc/systemd/system/
 ```
 
 2. Enable and start:
@@ -328,4 +328,4 @@ Planned features for future versions:
 
 ## Support
 
-For issues or questions, please refer to the main Loudframe project documentation.
+For issues or questions, please refer to the main Murmura project documentation.

@@ -1,5 +1,5 @@
 """
-Flask web application for managing ESP32 Loudframe devices.
+Flask web application for managing ESP32 Murmura devices.
 Uses device-manager scripts for efficient network scanning.
 """
 import os
@@ -29,10 +29,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%H:%M:%S'
 )
-logger = logging.getLogger('scape_server')
+logger = logging.getLogger('murmura_server')
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'loudframe-scape-server-2025'
+app.config['SECRET_KEY'] = 'murmura-server-2025'
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -833,7 +833,7 @@ def batch_control_playback():
 def handle_connect():
     """Handle client connection."""
     logger.info(f"Client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to Scape Server'})
+    emit('connected', {'message': 'Connected to Murmura Device Manager'})
 
 @socketio.on('disconnect')
 def handle_disconnect():

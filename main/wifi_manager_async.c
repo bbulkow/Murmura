@@ -50,7 +50,6 @@ static uint32_t s_reconnect_interval_ms = 10000;  // Start with 10 seconds
 static const uint32_t MAX_RECONNECT_INTERVAL_MS = 120000;  // Max 2 minutes
 
 // Forward declarations
-static esp_err_t wifi_manager_try_next_network(void);
 static esp_err_t wifi_manager_scan_networks(void);
 static int wifi_manager_find_best_network(void);
 static void wifi_manager_background_task(void *pvParameters);
@@ -266,6 +265,9 @@ static int wifi_manager_find_best_network(void)
     return best_index;
 }
 
+// Currently unused - background task handles network selection directly
+// Kept for potential future use
+#if 0
 static esp_err_t wifi_manager_try_next_network(void)
 {
     // Find next available network
@@ -273,14 +275,12 @@ static esp_err_t wifi_manager_try_next_network(void)
     int8_t best_rssi = -127;
     
     for (int i = 0; i < s_stored_config.network_count; i++) {
-        // Skip current network and networks with high auth failure count or not available
         if (i == s_current_network_index || 
             s_stored_config.networks[i].auth_fail_count >= 10 ||
             !s_stored_config.networks[i].available) {
             continue;
         }
         
-        // Find the strongest available network
         if (s_stored_config.networks[i].rssi > best_rssi) {
             best_rssi = s_stored_config.networks[i].rssi;
             next_index = i;
@@ -292,7 +292,6 @@ static esp_err_t wifi_manager_try_next_network(void)
         return ESP_FAIL;
     }
     
-    // Configure and connect to the next network
     s_current_network_index = next_index;
     wifiman_network_entry_t *network = &s_stored_config.networks[next_index];
     
@@ -321,6 +320,7 @@ static esp_err_t wifi_manager_try_next_network(void)
     
     return esp_wifi_connect();
 }
+#endif
 
 static void wifi_manager_background_task(void *pvParameters)
 {

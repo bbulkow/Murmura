@@ -1,216 +1,173 @@
+# Murmura
 
-# Play multiple format music from microSD card
+Murmura is a low-cost, scalable platform for creating large installations of independent networked sound devices. Each unit plays audio loops from an SD card while being remotely controllable over WiFi, enabling sound artists to deploy dozens of autonomous speakers across an installation space and manage them from a single dashboard.
 
-- [中文版本](./README_CN.md)
-- Basic Example: ![alt text](../../../docs/_static/level_basic.png "Basic Example")
+First deployed at **Burning Man 2025** as part of [Flaming Lotus Girls](https://flaminglotus.com/)' **Haven**.
 
-## Example Brief
+## How It Works
 
-This example uses the fatfs element to read the music file from microSD card, the decoder element to decode it, and then the I2S element to output the music.
+Each Murmura unit is a self-contained audio player built on an ESP32 board with an SD card slot and audio output. On power-up it mounts the SD card, connects to WiFi, loads its saved configuration, and begins looping audio. A JSON HTTP API on each device allows remote control of playback, volume, and file management. A companion fleet management server running on a Raspberry Pi (or any machine on the network) provides a web dashboard to discover, monitor, and control all units simultaneously.
 
-This example supports MP3, OPUS, OGG, FLAC, AAC, M4A, TS, MP4, AMRNB and AMRWB audio formats, MP3 format is selected by default.
+## Features
 
-The audio source referenced in the example can be obtained through [Audio Samples/Short Samples](https://docs.espressif.com/projects/esp-adf/en/latest/design-guide/audio-samples.html#short-samples) and downloaded to the microSD card.
+- **Multi-track looping** -- up to 3 simultaneous audio loops per device, mixed via hardware downmix
+- **Per-track and global volume control** with real-time adjustment
+- **WAV and MP3 playback** from SD card
+- **WiFi with multi-network failover** -- stores up to 10 networks, auto-selects the strongest available signal
+- **HTTP API** for full remote control (playback, volume, files, configuration, WiFi, device identity, reboot)
+- **Configuration persistence** -- loop assignments, volumes, and play states saved to SD card and restored on boot
+- **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
+- **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
+- **Fleet management server** (scape-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
+- **CLI device tools** (device-manager) -- Python scripts for batch file upload, scanning, ID assignment, and device control
 
-The following table lists the music formats supported by this example:
+## Hardware
 
-|NO.|music format|file name|
-|-|-|-|
-|1|MP3|test.mp3|
-|2|AMRNB|test.amr|
-|3|AMRWB|test.Wamr|
-|4|OPUS|test.opus|
-|5|FLAC|test.flac|
-|6|WAV|test.wav|
-|7|AAC|test.aac|
-|8|M4A|test.m4a|
-|9|TS|test.ts|
-|10|MP4|test.mp4|
+The current hardware platform is the **AI Thinker ESP32 Audio Kit (Rev B)**:
 
-## Environment Setup
+- ESP32 with PSRAM
+- ES8388 audio codec
+- SD card slot
+- 3.5mm headphone/line output
+- Onboard buttons and LEDs
 
-### Hardware Required
+**Note:** The AI Thinker board is no longer available through any channel. It appears to be discontinued -- possibly due to difficulty of use and its large form factor. This codebase is built exclusively for it, and the project currently relies on approximately 40 units in stock. A new hardware platform will be needed for future deployments.
 
-This example runs on the boards that are marked with a green checkbox in the [table](../../README.md#compatibility-of-examples-with-espressif-audio-boards). Please remember to select the board in menuconfig as discussed in Section [Configuration](#configuration) below.
+### Potential Replacement Boards
 
-## Example Set Up
+- **Espressif LyraT Mini** -- in stock and produced by Espressif, ~$20 on Digi-Key
+- **Waveshare ESP32-S3-Audio** -- ~$15, very similar form factor to the AI Thinker
+- **Sonatino** -- currently out of stock (designer lost interest), but design files are published and could be manufactured with an updated audio chip
 
-### Default IDF Branch
-This example supports IDF release/v3.3 and later branches. By default, it runs on ADF's built-in branch `$ADF_PATH/esp-idf`.
+See [aithinker-adf/README.md](aithinker-adf/README.md) for board setup instructions including DIP switch configuration, efuse settings, and ESP-ADF overlay files.
 
-### Configuration
+## Repository Structure
 
-Prepare a microSD card, and download [Audio Samples/Short Samples](https://docs.espressif.com/projects/esp-adf/en/latest/design-guide/audio-samples.html#short-samples) audio music to the microSD card. Of course it can also be user-supplied music.
-
-> In this example, the file name to be played is fixed, starting with `test` and ending with the format name suffix, such as `test.mp3`.
-
-The default board for this example is `ESP32-Lyrat V4.3`, if you need to run this example on other development boards, you need to select the configuration of the development board in menuconfig, for example, select `ESP32-Lyrat-Mini V1.1`.
-
-```c
-menuconfig > Audio HAL > ESP32-Lyrat-Mini V1.1
+```
+main/                   ESP32 firmware source
+  murmura.c/h             Audio pipeline and multi-track looper
+  http_server.c/h         HTTP API server
+  config_manager.c/h      Configuration persistence (JSON on SD card)
+  wifi_manager_async.c    WiFi manager with multi-network support
+  wifi_manager.h          WiFi manager API
+  music_files.c/h         SD card file enumeration
+  unit_status_manager.c/h Device identity and status
+aithinker-adf/          Board support overlay files and build instructions
+scape-server/           Flask web server for fleet management (Python)
+device-manager/         CLI tools for batch device operations (Python)
 ```
 
-This example needs to enable FATFS long file name support also.
+## Building the Firmware
 
-```c
-menuconfig > Component config > FAT Filesystem support > Long filename support
-```
+### Prerequisites
+
+- ESP-ADF v2.7 (includes ESP-IDF v5.3.1)
+- Python 3.x (for ESP-IDF tools)
+
+### Setup
+
+1. Clone ESP-ADF and apply the required patches. See [aithinker-adf/README.md](aithinker-adf/README.md) for step-by-step instructions.
+
+2. Set environment variables:
+   ```bash
+   export ADF_PATH=/path/to/esp-adf
+   export IDF_PATH=$ADF_PATH/esp-idf
+   ```
+
+3. Install ESP-IDF tools:
+   ```bash
+   cd $IDF_PATH
+   ./install.sh    # or install.ps1 on Windows
+   source export.sh # or export.ps1 on Windows
+   ```
+
+4. Copy the AI Thinker board overlay files into ESP-ADF (see [aithinker-adf/README.md](aithinker-adf/README.md)).
 
 ### Build and Flash
-Build the project and flash it to the board, then run monitor tool to view serial output (replace `PORT` with your board's serial port name):
 
-```c
-idf.py -p PORT flash monitor
+```bash
+cd /path/to/Murmura
+idf.py build
+idf.py -p <PORT> flash monitor
 ```
 
-To exit the serial monitor, type ``Ctrl-]``.
+The `sdkconfig.defaults` file provides the required configuration for the AI Thinker board. Run `idf.py menuconfig` if you need to adjust settings.
 
-See the Getting Started Guide for full steps to configure and use  [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/release-v4.2/esp32/index.html) to build projects.
+### VSCode ESP-IDF Extension
 
-## How to use the Example
+This project was developed using the **ESP-IDF v2.0 extension for VSCode**. To use it with a custom ESP-ADF/ESP-IDF installation (rather than one managed by the extension):
 
-### Example Functionality
-- After the routine starts to run, it will automatically play the SmicroSD card music.
+1. Set up the `ESP_TOOLS_PATH` directory to point to your toolchain installation.
+2. Edit the `esp_idf.json` configuration file to include a pointer to the custom ESP-IDF installation you created above.
+3. **Do not use the ESP-IDF version manager** built into the extension. It will download a fresh ESP-IDF version and attempt to update it, which will overwrite the overlay files and patches that this project requires.
 
-```c
-I (29) SDCARD_MUSIC_EXAMPLE: [ 1 ] Mount sdcard
-I (529) SDCARD_MUSIC_EXAMPLE: [ 2 ] Start codec chip
-E (529) gpio: gpio_install_isr_service(412): GPIO isr service already installed
-I (549) SDCARD_MUSIC_EXAMPLE: [3.0] Create audio pipeline for playback
-I (549) SDCARD_MUSIC_EXAMPLE: [3.1] Create fatfs stream to read data from sdcard
-I (559) SDCARD_MUSIC_EXAMPLE: [3.2] Create i2s stream to write data to codec chip
-I (569) SDCARD_MUSIC_EXAMPLE: [3.3] Create mp3 decoder
-I (569) SDCARD_MUSIC_EXAMPLE: [3.4] Register all elements to audio pipeline
-I (579) SDCARD_MUSIC_EXAMPLE: [3.5] Link it together [sdcard]-->fatfs_stream-->music_decoder-->i2s_stream-->[codec_chip]
-I (589) SDCARD_MUSIC_EXAMPLE: [3.6] Set up uri: /sdcard/test.mp3
-I (599) SDCARD_MUSIC_EXAMPLE: [ 4 ] Set up  event listener
-I (599) SDCARD_MUSIC_EXAMPLE: [4.1] Listening event from all elements of pipeline
-I (609) SDCARD_MUSIC_EXAMPLE: [4.2] Listening event from peripherals
-I (619) SDCARD_MUSIC_EXAMPLE: [ 5 ] Start audio_pipeline
-I (629) SDCARD_MUSIC_EXAMPLE: [ 6 ] Listen for all pipeline events
-I (639) SDCARD_MUSIC_EXAMPLE: [ * ] Receive music info from mp3 decoder, sample_rates=44100, bits=16, ch=2
-W (15869) FATFS_STREAM: No more data, ret:0
-W (16579) SDCARD_MUSIC_EXAMPLE: [ * ] Stop event received
-I (16579) SDCARD_MUSIC_EXAMPLE: [ 7 ] Stop audio_pipeline
-E (16579) AUDIO_ELEMENT: [file] Element already stopped
-E (16589) AUDIO_ELEMENT: [dec] Element already stopped
-E (16599) AUDIO_ELEMENT: [i2s] Element already stopped
-W (16599) AUDIO_PIPELINE: There are no listener registered
-W (16609) AUDIO_ELEMENT: [file] Element has not create when AUDIO_ELEMENT_TERMINATE
-W (16619) AUDIO_ELEMENT: [i2s] Element has not create when AUDIO_ELEMENT_TERMINATE
-W (16619) AUDIO_ELEMENT: [dec] Element has not create when AUDIO_ELEMENT_TERMINATE
+## Running the Fleet Management Server
+
+The scape-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
+
+```bash
+cd scape-server
+pip install -r requirements.txt
+python app.py
 ```
 
-### Example Logs
-A complete log is as follows:
+Access the dashboard at `http://localhost:8765`. See [scape-server/README.md](scape-server/README.md) for full documentation including systemd auto-start setup.
 
-```c
-rst:0x1 (POWERON_RESET),boot:0x1f (SPI_FAST_FLASH_BOOT)
-configsip: 0, SPIWP:0xee
-clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
-mode:DIO, clock div:2
-load:0x3fff0018,len:4
-load:0x3fff001c,len:6840
-load:0x40078000,len:12072
-load:0x40080400,len:6708
-entry 0x40080778
-I (73) boot: Chip Revision: 3
-I (73) boot_comm: chip revision: 3, min. bootloader chip revision: 0
-I (40) boot: ESP-IDF v3.3.2-107-g722043f73 2nd stage bootloader
-I (40) boot: compile time 17:56:08
-I (40) boot: Enabling RNG early entropy source...
-I (46) boot: SPI Speed      : 40MHz
-I (50) boot: SPI Mode       : DIO
-I (54) boot: SPI Flash Size : 8MB
-I (58) boot: Partition Table:
-I (62) boot: ## Label            Usage          Type ST Offset   Length
-I (69) boot:  0 nvs              WiFi data        01 02 00009000 00006000
-I (76) boot:  1 phy_init         RF data          01 01 0000f000 00001000
-I (84) boot:  2 factory          factory app      00 00 00010000 00100000
-I (91) boot: End of partition table
-I (95) boot_comm: chip revision: 3, min. application chip revision: 0
-I (103) esp_image: segment 0: paddr=0x00010020 vaddr=0x3f400020 size=0x18028 ( 98344) map
-I (146) esp_image: segment 1: paddr=0x00028050 vaddr=0x3ffb0000 size=0x01f64 (  8036) load
-I (150) esp_image: segment 2: paddr=0x00029fbc vaddr=0x40080000 size=0x00400 (  1024) load
-0x40080000: _WindowOverflow4 at /repo/adfs/bugfix/esp-adf-internal/esp-idf/components/freertos/xtensa_vectors.S:1779
+## Device Manager CLI Tools
 
-I (153) esp_image: segment 3: paddr=0x0002a3c4 vaddr=0x40080400 size=0x05c4c ( 23628) load
-I (172) esp_image: segment 4: paddr=0x00030018 vaddr=0x400d0018 size=0x2f65c (194140) map
-0x400d0018: _flash_cache_start at ??:?
+The device-manager directory contains Python scripts for command-line batch operations:
 
-I (240) esp_image: segment 5: paddr=0x0005f67c vaddr=0x4008604c size=0x05940 ( 22848) load
-0x4008604c: prvReceiveGeneric at /repo/adfs/bugfix/esp-adf-internal/esp-idf/components/esp_ringbuf/ringbuf.c:969
+- **device_scanner.py** -- discover devices on the network
+- **device_controller.py** -- control individual devices
+- **batch_controller.py** -- batch operations across multiple devices
+- **file_manager.py** -- upload, download, and manage audio files
+- **id_manager.py** -- assign and manage device IDs
 
-I (257) boot: Loaded app from partition at offset 0x10000
-I (257) boot: Disabling RNG early entropy source...
-I (257) cpu_start: Pro cpu up.
-I (261) cpu_start: Application information:
-I (266) cpu_start: Project name:     play_sdcard_music
-I (272) cpu_start: App version:      v2.2-103-g33721b98-dirty
-I (278) cpu_start: Compile time:     Apr 27 2021 19:37:04
-I (284) cpu_start: ELF file SHA256:  5d6c86d684a92743...
-I (290) cpu_start: ESP-IDF:          v3.3.2-107-g722043f73
-I (296) cpu_start: Starting app cpu, entry point is 0x40081200
-0x40081200: call_start_cpu1 at /repo/adfs/bugfix/esp-adf-internal/esp-idf/components/esp32/cpu_start.c:268
-
-I (0) cpu_start: App cpu up.
-I (307) heap_init: Initializing. RAM available for dynamic allocation:
-I (314) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM
-I (320) heap_init: At 3FFB30C0 len 0002CF40 (179 KiB): DRAM
-I (326) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
-I (332) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
-I (339) heap_init: At 4008B98C len 00014674 (81 KiB): IRAM
-I (345) cpu_start: Pro cpu start user code
-I (27) cpu_start: Starting scheduler on PRO CPU.
-I (0) cpu_start: Starting scheduler on APP CPU.
-I (29) SDCARD_MUSIC_EXAMPLE: [ 1 ] Mount sdcard
-I (529) SDCARD_MUSIC_EXAMPLE: [ 2 ] Start codec chip
-E (529) gpio: gpio_install_isr_service(412): GPIO isr service already installed
-I (549) SDCARD_MUSIC_EXAMPLE: [3.0] Create audio pipeline for playback
-I (549) SDCARD_MUSIC_EXAMPLE: [3.1] Create fatfs stream to read data from sdcard
-I (559) SDCARD_MUSIC_EXAMPLE: [3.2] Create i2s stream to write data to codec chip
-I (569) SDCARD_MUSIC_EXAMPLE: [3.3] Create mp3 decoder
-I (569) SDCARD_MUSIC_EXAMPLE: [3.4] Register all elements to audio pipeline
-I (579) SDCARD_MUSIC_EXAMPLE: [3.5] Link it together [sdcard]-->fatfs_stream-->music_decoder-->i2s_stream-->[codec_chip]
-I (589) SDCARD_MUSIC_EXAMPLE: [3.6] Set up uri: /sdcard/test.mp3
-I (599) SDCARD_MUSIC_EXAMPLE: [ 4 ] Set up  event listener
-I (599) SDCARD_MUSIC_EXAMPLE: [4.1] Listening event from all elements of pipeline
-I (609) SDCARD_MUSIC_EXAMPLE: [4.2] Listening event from peripherals
-I (619) SDCARD_MUSIC_EXAMPLE: [ 5 ] Start audio_pipeline
-I (629) SDCARD_MUSIC_EXAMPLE: [ 6 ] Listen for all pipeline events
-I (639) SDCARD_MUSIC_EXAMPLE: [ * ] Receive music info from mp3 decoder, sample_rates=44100, bits=16, ch=2
-W (15869) FATFS_STREAM: No more data, ret:0
-W (16579) SDCARD_MUSIC_EXAMPLE: [ * ] Stop event received
-I (16579) SDCARD_MUSIC_EXAMPLE: [ 7 ] Stop audio_pipeline
-E (16579) AUDIO_ELEMENT: [file] Element already stopped
-E (16589) AUDIO_ELEMENT: [dec] Element already stopped
-E (16599) AUDIO_ELEMENT: [i2s] Element already stopped
-W (16599) AUDIO_PIPELINE: There are no listener registered
-W (16609) AUDIO_ELEMENT: [file] Element has not create when AUDIO_ELEMENT_TERMINATE
-W (16619) AUDIO_ELEMENT: [i2s] Element has not create when AUDIO_ELEMENT_TERMINATE
-W (16619) AUDIO_ELEMENT: [dec] Element has not create when AUDIO_ELEMENT_TERMINATE
+```bash
+cd device-manager
+pip install -r requirements.txt
+python device_scanner.py
 ```
 
-## Troubleshooting
-If your log has the following error message, this is because the audio file that needs to be played is not found in the microSD card, please follow the above *Configuration* section to rename the file.
+See [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) for usage details.
 
-```c
-I (608) SDCARD_MUSIC_EXAMPLE: [4.2] Listening event from peripherals
-I (618) SDCARD_MUSIC_EXAMPLE: [ 5 ] Start audio_pipeline
-E (628) FATFS_STREAM: Failed to open. File name: /sdcard/gs-16b-2c-44100hz.mp3, error message: No such file or directory, line: 116
-E (638) AUDIO_ELEMENT: [file] AEL_STATUS_ERROR_OPEN,-1
-W (638) AUDIO_ELEMENT: [file] audio_element_on_cmd_error,7
-W (648) AUDIO_ELEMENT: IN-[dec] AEL_IO_ABORT
-E (648) MP3_DECODER: failed to read audio data (line 118)
-W (658) AUDIO_ELEMENT: [dec] AEL_IO_ABORT, -3
-W (658) AUDIO_ELEMENT: IN-[i2s] AEL_IO_ABORT
-```
+## HTTP API
 
-## Technical support and feedback
+Each device exposes a JSON API on port 80. Key endpoints:
 
-Please use the following feedback channels:
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/files` | GET | List audio files on SD card |
+| `/api/loops` | GET | Get status of all tracks |
+| `/api/loop/file` | POST | Set file for a track (starts playing) |
+| `/api/loop/start` | POST | Start/restart a track |
+| `/api/loop/stop` | POST | Stop a track |
+| `/api/loop/volume` | POST | Set per-track volume (0-100%) |
+| `/api/global/volume` | POST | Set master volume (0-100%) |
+| `/api/config/save` | POST | Save configuration to SD card |
+| `/api/config/load` | POST | Load and apply saved configuration |
+| `/api/upload` | POST | Upload audio file to SD card |
+| `/api/status` | GET | Device status (MAC, IP, uptime, firmware) |
+| `/api/id` | GET/POST | Get or set device ID |
+| `/api/wifi/status` | GET | WiFi connection status |
+| `/api/wifi/add` | POST | Add a WiFi network |
+| `/api/system/reboot` | POST | Reboot the device |
 
-* For technical queries, go to the [esp32.com](https://esp32.com/viewforum.php?f=20) forum
-* For a feature request or bug report, create a [GitHub issue](https://github.com/espressif/esp-adf/issues)
+See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response examples.
 
-We will get back to you as soon as possible.
+## Documentation
+
+- [HTTP_API.md](HTTP_API.md) -- complete HTTP API reference
+- [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
+- [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions
+- [scape-server/README.md](scape-server/README.md) -- fleet management server documentation
+- [scape-server/SYSTEMD_INSTALL.md](scape-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
+- [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) -- CLI tools reference
+
+## License
+
+This project is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
+## Author
+
+Brian Bulkowski (brian@bulkowski.org)

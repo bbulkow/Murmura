@@ -17,7 +17,7 @@ Commands:
 Examples:
     python id_manager.py --command find-duplicates
     python id_manager.py --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
-    python id_manager.py --command identify --id LOUDFRAME-001
+    python id_manager.py --command identify --id MURMURA-001
     python id_manager.py --command identify --mac 34:5F:45:26:76:2C
     python id_manager.py --command list-all
     python id_manager.py --command auto-assign --prefix LOUD
@@ -615,13 +615,13 @@ Examples:
     %(prog)s --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
     
     # Identify a device by ID (will play a sound)
-    %(prog)s --command identify --id LOUDFRAME-001
+    %(prog)s --command identify --id MURMURA-001
     
     # Identify a device by MAC address
     %(prog)s --command identify --mac 34:5F:45:26:76:2C
     
     # Identify with custom duration
-    %(prog)s --command identify --id LOUDFRAME-001 --duration 60
+    %(prog)s --command identify --id MURMURA-001 --duration 60
     
     # List all devices
     %(prog)s --command list-all

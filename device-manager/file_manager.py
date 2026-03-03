@@ -20,7 +20,7 @@ Examples:
     python file_manager.py --command upload --file music.wav
     
     # Upload a file to a specific device
-    python file_manager.py --command upload --file music.wav --id LOUDFRAME-001
+    python file_manager.py --command upload --file music.wav --id MURMURA-001
     
     # Upload a file with a different name on the device
     python file_manager.py --command upload --file music.wav --target-name loop1.wav
@@ -575,13 +575,13 @@ Examples:
     %(prog)s --command list
     
     # List files on a specific device
-    %(prog)s --command list --id LOUDFRAME-001
+    %(prog)s --command list --id MURMURA-001
     
     # Upload a file to all devices
     %(prog)s --command upload --file music.wav
     
     # Upload a file to a specific device
-    %(prog)s --command upload --file music.wav --id LOUDFRAME-001
+    %(prog)s --command upload --file music.wav --id MURMURA-001
     
     # Upload a file with a different name on the device
     %(prog)s --command upload --file music.wav --target-name loop1.wav

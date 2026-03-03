@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class NetworkScanner:
-    """Scans local network for ESP32 devices running the loudframe software."""
+    """Scans local network for ESP32 devices running the Murmura software."""
     
     def __init__(self, timeout: float = 0.5):
         self.timeout = timeout
@@ -64,7 +64,7 @@ class NetworkScanner:
                 data = response.json()
                 return {
                     'ip': ip,
-                    'type': 'ESP32 Loudframe',
+                    'type': 'ESP32 Murmura',
                     'status': 'online',
                     'playing': data.get('playing', False),
                     'volume': data.get('volume', 0),
@@ -80,7 +80,7 @@ class NetworkScanner:
             response = requests.get(f"http://{ip}/", timeout=self.timeout)
             if response.status_code == 200:
                 # Check if response contains ESP32 indicators
-                if 'esp32' in response.text.lower() or 'loudframe' in response.text.lower():
+                if 'esp32' in response.text.lower() or 'murmura' in response.text.lower():
                     return {
                         'ip': ip,
                         'type': 'ESP32 Device',

@@ -1,6 +1,6 @@
 # Scape Server Systemd Installation Guide
 
-This guide explains how to install and configure the Loudframe Scape Server as a systemd service on Raspberry Pi (Bookworm or similar).
+This guide explains how to install and configure the Murmura Scape Server as a systemd service on Raspberry Pi (Bookworm or similar).
 
 ## Features Added
 
@@ -38,7 +38,7 @@ You can override the port in several ways:
 
 1. Ensure Python 3 and required dependencies are installed:
    ```bash
-   cd /home/pi/loudframe/play_sdcard_multi/scape-server
+   cd /home/pi/Murmura/scape-server
    pip3 install -r requirements.txt
    ```
 
@@ -46,7 +46,7 @@ You can override the port in several ways:
 
 1. **Copy the service file to systemd directory**:
    ```bash
-   sudo cp /home/pi/loudframe/play_sdcard_multi/scape-server/scape-server.service /etc/systemd/system/
+   sudo cp /home/pi/Murmura/scape-server/scape-server.service /etc/systemd/system/
    ```
 
 2. **Reload systemd to recognize the new service**:
@@ -134,7 +134,7 @@ hostname -I
 ### Service won't start
 1. Check the logs: `sudo journalctl -u scape-server.service -n 50`
 2. Verify Python dependencies are installed: `pip3 list`
-3. Check file permissions: `ls -l /home/pi/loudframe/play_sdcard_multi/scape-server/`
+3. Check file permissions: `ls -l /home/pi/Murmura/scape-server/`
 
 ### Port already in use
 If you get a "port already in use" error:

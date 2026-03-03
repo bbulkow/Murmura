@@ -1,4 +1,4 @@
-// Scape Device Manager Server Frontend Application
+// Murmura Device Manager Frontend Application
 
 // Global variables
 let socket = null;

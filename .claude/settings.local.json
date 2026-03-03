@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"Murmura\\\\|murmura\" /d/dev/esp/Solume --include=\"*.md\" --include=\"*.txt\" --include=\"*.json\" -not -path \"*/build/*\" -not -path \"*/.git/*\")"
+    ]
+  }
+}

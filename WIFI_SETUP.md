@@ -18,7 +18,7 @@ The system now includes an advanced WiFi manager that:
 - `main/wifi_manager.h` - WiFi manager API declarations
 - `main/wifi_manager.c` - WiFi manager implementation
 - `main/wifi_config_util.h` - Utility functions for WiFi configuration
-- `main/play_sdcard.c` - Modified to initialize WiFi on startup
+- `main/murmura.c` - Modified to initialize WiFi on startup
 
 ## How to Configure WiFi
 

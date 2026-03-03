@@ -3,7 +3,7 @@
 
 #include "esp_err.h"
 #include "http_server.h"
-#include "play_sdcard.h"
+#include "murmura.h"
 
 // Configuration file path on SD card
 #define CONFIG_FILE_PATH "/sdcard/loop_config.json"

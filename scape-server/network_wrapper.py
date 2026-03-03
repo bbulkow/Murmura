@@ -1,5 +1,5 @@
 """
-Wrapper for device-manager scripts to integrate with Scape Server.
+Wrapper for device-manager scripts to integrate with Murmura Device Manager server.
 Uses the existing proven device_scanner.py for efficient network scanning.
 """
 
@@ -26,7 +26,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%H:%M:%S'
 )
-logger = logging.getLogger('scape_server.network')
+logger = logging.getLogger('murmura_server.network')
 
 
 class NetworkConfig:

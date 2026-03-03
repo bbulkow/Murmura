@@ -20,12 +20,12 @@ Commands:
     list-files  - List all audio files on the device's SD card
     
 Examples:
-    python device_controller.py --id LOUDFRAME-001 --command status
-    python device_controller.py --id LOUDFRAME-001 --command stop
-    python device_controller.py --id LOUDFRAME-001 --command set-volume --track 0 --volume 50
-    python device_controller.py --id LOUDFRAME-001 --command set-id --new-id STAGE-01
-    python device_controller.py --id LOUDFRAME-001 --command reboot
-    python device_controller.py --id LOUDFRAME-001 --command list-files
+    python device_controller.py --id MURMURA-001 --command status
+    python device_controller.py --id MURMURA-001 --command stop
+    python device_controller.py --id MURMURA-001 --command set-volume --track 0 --volume 50
+    python device_controller.py --id MURMURA-001 --command set-id --new-id STAGE-01
+    python device_controller.py --id MURMURA-001 --command reboot
+    python device_controller.py --id MURMURA-001 --command list-files
 """
 
 import asyncio
@@ -425,38 +425,38 @@ def main():
         epilog="""
 Examples:
     # Show device status
-    %(prog)s --id LOUDFRAME-001 --command status
+    %(prog)s --id MURMURA-001 --command status
     
     # Stop all loops
-    %(prog)s --id LOUDFRAME-001 --command stop
+    %(prog)s --id MURMURA-001 --command stop
     
     # Start configured loops
-    %(prog)s --id LOUDFRAME-001 --command start
+    %(prog)s --id MURMURA-001 --command start
     
     # Set volume
-    %(prog)s --id LOUDFRAME-001 --command set-volume --track 0 --volume 50
-    %(prog)s --id LOUDFRAME-001 --command set-volume --global --volume 75
+    %(prog)s --id MURMURA-001 --command set-volume --track 0 --volume 50
+    %(prog)s --id MURMURA-001 --command set-volume --global --volume 75
     
     # Change device ID
-    %(prog)s --id LOUDFRAME-001 --command set-id --new-id STAGE-01
+    %(prog)s --id MURMURA-001 --command set-id --new-id STAGE-01
     
     # Save/load configuration
-    %(prog)s --id LOUDFRAME-001 --command save-config
-    %(prog)s --id LOUDFRAME-001 --command load-config
+    %(prog)s --id MURMURA-001 --command save-config
+    %(prog)s --id MURMURA-001 --command load-config
     
     # Get loop status
-    %(prog)s --id LOUDFRAME-001 --command get-loops
+    %(prog)s --id MURMURA-001 --command get-loops
     
     # Set file for a track (using filename is recommended)
-    %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --filename music.wav
-    %(prog)s --id LOUDFRAME-001 --command set-file --track 1 --file-path /sdcard/music.wav
-    %(prog)s --id LOUDFRAME-001 --command set-file --track 0 --file-index 2  # deprecated
+    %(prog)s --id MURMURA-001 --command set-file --track 0 --filename music.wav
+    %(prog)s --id MURMURA-001 --command set-file --track 1 --file-path /sdcard/music.wav
+    %(prog)s --id MURMURA-001 --command set-file --track 0 --file-index 2  # deprecated
     
     # Reboot device
-    %(prog)s --id LOUDFRAME-001 --command reboot
+    %(prog)s --id MURMURA-001 --command reboot
     
     # List files on device
-    %(prog)s --id LOUDFRAME-001 --command list-files
+    %(prog)s --id MURMURA-001 --command list-files
 
 Commands:
     status       - Show device status

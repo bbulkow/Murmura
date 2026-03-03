@@ -1,5 +1,5 @@
-/* Based on the esp-adf play_sdcard_music_example,
-   But re-written as a looper. The goal is:
+/* Murmura - based on the esp-adf play_sdcard_music_example,
+   but re-written as a looper. The goal is:
    * multiple simultaneous loops
    * each with dynamic gain controls
    * the ability to add independing, or group, eq
@@ -53,7 +53,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 
-#include "play_sdcard.h"
+#include "murmura.h"
 #include "music_files.h"
 #include "wifi_manager.h"
 #include "http_server.h"
@@ -61,7 +61,7 @@
 #include <math.h>  // For log10f
 #include "esp_heap_caps.h"
 
-static const char *TAG = "PLAY_SDCARD";
+static const char *TAG = "MURMURA";
 
 // Helper function to log memory usage
 static void log_memory_info(const char *context) {
@@ -250,7 +250,7 @@ esp_err_t audio_stream_init(audio_stream_t **stream_o) {
     return ESP_OK;
 }
 
-// This function is now replaced with the debug version from play_sdcard_debug.c
+// This function is now replaced with the debug version from murmura_debug.c
 void audio_control_start(audio_stream_t *stream) {
     // Use the enhanced debug version to diagnose the audio playback issue
     audio_control_start_debug_v2(stream);
@@ -599,7 +599,7 @@ void audio_control_task(void *pvParameters)
                 // Check all element states
                 audio_element_state_t fatfs_state = audio_element_get_state(stream->tracks[i].fatfs_e);
                 audio_element_state_t decode_state = audio_element_get_state(stream->tracks[i].decode_e);
-                audio_element_state_t raw_state = audio_element_get_state(stream->tracks[i].raw_write_e);
+                (void)audio_element_get_state(stream->tracks[i].raw_write_e);  // Keep polling state but don't store unused
                 
                 // Check file position to detect end of file
                 audio_element_info_t info;

@@ -143,26 +143,26 @@ The device controller performs operations on a single device by its ID.
 
 ```bash
 # Show device status
-python device_controller.py --id LOUDFRAME-001 --command status
+python device_controller.py --id MURMURA-001 --command status
 
 # Stop all loops on a device
-python device_controller.py --id LOUDFRAME-001 --command stop
+python device_controller.py --id MURMURA-001 --command stop
 
 # Start configured loops
-python device_controller.py --id LOUDFRAME-001 --command start
+python device_controller.py --id MURMURA-001 --command start
 
 # Set volume on a specific device
-python device_controller.py --id LOUDFRAME-001 --command set-volume --track 0 --volume 50
-python device_controller.py --id LOUDFRAME-001 --command set-volume --global --volume 75
+python device_controller.py --id MURMURA-001 --command set-volume --track 0 --volume 50
+python device_controller.py --id MURMURA-001 --command set-volume --global --volume 75
 
 # Change device ID (unique operation)
-python device_controller.py --id LOUDFRAME-001 --command set-id --new-id STAGE-01
+python device_controller.py --id MURMURA-001 --command set-id --new-id STAGE-01
 
 # Get loop status
-python device_controller.py --id LOUDFRAME-001 --command get-loops
+python device_controller.py --id MURMURA-001 --command get-loops
 
 # Set file for a track
-python device_controller.py --id LOUDFRAME-001 --command set-file --track 0 --file-index 2
+python device_controller.py --id MURMURA-001 --command set-file --track 0 --file-index 2
 ```
 
 #### Command Line Options
@@ -197,11 +197,11 @@ File control:
 
 ```bash
 # Using shortcuts
-python device_controller.py -i LOUDFRAME-001 -c status
-python device_controller.py -i LOUDFRAME-001 -c stop
-python device_controller.py -i LOUDFRAME-001 -c set-volume -k 0 -v 50
-python device_controller.py -i LOUDFRAME-001 -c set-id -n STAGE-01
-python device_controller.py -i LOUDFRAME-001 -c set-file -k 0 -x 2
+python device_controller.py -i MURMURA-001 -c status
+python device_controller.py -i MURMURA-001 -c stop
+python device_controller.py -i MURMURA-001 -c set-volume -k 0 -v 50
+python device_controller.py -i MURMURA-001 -c set-id -n STAGE-01
+python device_controller.py -i MURMURA-001 -c set-file -k 0 -x 2
 ```
 
 ### File Manager
@@ -215,13 +215,13 @@ The file manager handles uploading, syncing, and managing audio files on devices
 python file_manager.py --command list
 
 # List files on a specific device
-python file_manager.py --command list --id LOUDFRAME-001
+python file_manager.py --command list --id MURMURA-001
 
 # Upload a file to all devices (skips if already exists)
 python file_manager.py --command upload --file music.wav
 
 # Upload a file to a specific device
-python file_manager.py --command upload --file music.wav --id LOUDFRAME-001
+python file_manager.py --command upload --file music.wav --id MURMURA-001
 
 # Force upload (overwrite even if exists)
 python file_manager.py --command upload --file music.wav --force
@@ -263,7 +263,7 @@ File operations:
 # Using shortcuts
 python file_manager.py -c list
 python file_manager.py -c upload -f music.wav
-python file_manager.py -c upload -f music.wav -i LOUDFRAME-001
+python file_manager.py -c upload -f music.wav -i MURMURA-001
 python file_manager.py -c upload -f music.wav -F
 python file_manager.py -c sync -d ./loops
 python file_manager.py -c delete -f old_music.wav
@@ -290,7 +290,7 @@ The device map is stored as a JSON file with the following structure:
     {
       "ip_address": "192.168.1.100",
       "mac_address": "AA:BB:CC:DD:EE:FF",
-      "id": "LOUDFRAME-001",
+      "id": "MURMURA-001",
       "wifi_connected": true,
       "firmware_version": "1.0.0",
       "uptime_seconds": 3600,
@@ -317,8 +317,8 @@ python batch_controller.py --command status
 
 3. **Assign unique IDs** to each device individually:
 ```bash
-python device_controller.py --id LOUDFRAME-001 --command set-id --new-id "STAGE-01"
-python device_controller.py --id LOUDFRAME-002 --command set-id --new-id "STAGE-02"
+python device_controller.py --id MURMURA-001 --command set-id --new-id "STAGE-01"
+python device_controller.py --id MURMURA-002 --command set-id --new-id "STAGE-02"
 # etc...
 ```
 
@@ -357,7 +357,7 @@ python device_scanner.py --net 192.168.1.0/24 --action add
 python batch_controller.py --command status
 
 # Set ID for each new device
-python device_controller.py --id UNKNOWN --command set-id --new-id "LOUDFRAME-003"
+python device_controller.py --id UNKNOWN --command set-id --new-id "MURMURA-003"
 ```
 
 3. **Upload audio files** to the devices:
@@ -464,9 +464,9 @@ Device IDs must be set individually using the device controller to ensure unique
 python device_controller.py --id OLD-ID --command set-id --new-id NEW-ID
 
 # Examples
-python device_controller.py --id LOUDFRAME-001 --command set-id --new-id "STAGE-CENTER"
-python device_controller.py --id LOUDFRAME-002 --command set-id --new-id "STAGE-LEFT"
-python device_controller.py --id LOUDFRAME-003 --command set-id --new-id "STAGE-RIGHT"
+python device_controller.py --id MURMURA-001 --command set-id --new-id "STAGE-CENTER"
+python device_controller.py --id MURMURA-002 --command set-id --new-id "STAGE-LEFT"
+python device_controller.py --id MURMURA-003 --command set-id --new-id "STAGE-RIGHT"
 ```
 
 After changing device IDs, rescan the network to update the device map:
@@ -539,7 +539,7 @@ python id_manager.py --command list-all
 python id_manager.py --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
 
 # Identify a device by playing a sound
-python id_manager.py --command identify --id LOUDFRAME-001
+python id_manager.py --command identify --id MURMURA-001
 python id_manager.py --command identify --mac 34:5F:45:26:76:2C --duration 60
 
 # Auto-assign unique IDs to all devices
@@ -582,7 +582,7 @@ Auto-assign options:
 python id_manager.py -c find-duplicates
 python id_manager.py -c list-all
 python id_manager.py -c set-id -m 34:5F:45:26:76:2C -n STAGE-01
-python id_manager.py -c identify -i LOUDFRAME-001 -d 60
+python id_manager.py -c identify -i MURMURA-001 -d 60
 python id_manager.py -c auto-assign -p STAGE -s 100
 ```
 

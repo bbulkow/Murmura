@@ -17,7 +17,7 @@ static const char *TAG = "UNIT_STATUS";
 #define FIRMWARE_VERSION "1.1"
 
 // Static storage for unit ID
-static char g_id[MAX_UNIT_ID_LEN] = "LOUDFRAME-001";  // Default unit ID
+static char g_id[MAX_UNIT_ID_LEN] = "MURMURA-001";  // Default unit ID
 static bool g_initialized = false;
 
 esp_err_t unit_status_init(void)

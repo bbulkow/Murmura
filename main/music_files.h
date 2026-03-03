@@ -1,5 +1,5 @@
-/* Based on the esp-adf play_sdcard_music_example,
-   But re-written as a looper. The goal is:
+/* Murmura - based on the esp-adf play_sdcard_music_example,
+   but re-written as a looper. The goal is:
    * multiple simultaneous loops
    * each with dynamic gain controls
    * the ability to add independing, or group, eq

@@ -858,7 +858,7 @@ Returns comprehensive device status information including MAC address (unique id
 ```json
 {
   "mac_address": "AA:BB:CC:DD:EE:FF",
-  "id": "LOUDFRAME-001",
+  "id": "MURMURA-001",
   "ip_address": "192.168.1.100",
   "wifi_connected": true,
   "firmware_version": "1.0.4",
@@ -882,7 +882,7 @@ Returns the current device ID.
 **Response:**
 ```json
 {
-  "id": "LOUDFRAME-001",
+  "id": "MURMURA-001",
   "success": true
 }
 ```
@@ -896,7 +896,7 @@ Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id
 **Request Body:**
 ```json
 {
-  "id": "LOUDFRAME-STAGE-01"
+  "id": "MURMURA-STAGE-01"
 }
 ```
 
@@ -905,7 +905,7 @@ Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id
 {
   "success": true,
   "message": "Unit ID updated successfully",
-  "id": "LOUDFRAME-STAGE-01"
+  "id": "MURMURA-STAGE-01"
 }
 ```
 
@@ -920,7 +920,7 @@ Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id
 **Notes:**
 - The device ID can be up to 63 characters long
 - The ID is saved to `/sdcard/unit_id.txt` for persistence across reboots
-- Default device ID is "LOUDFRAME-001" if no custom ID is set
+- Default device ID is "MURMURA-001" if no custom ID is set
 
 ## File Management Endpoints
 
@@ -1097,7 +1097,7 @@ curl http://192.168.1.100/api/id
 # Set a custom device ID
 curl -X POST http://192.168.1.100/api/id \
   -H "Content-Type: application/json" \
-  -d '{"id": "LOUDFRAME-VENUE-01"}'
+  -d '{"id": "MURMURA-VENUE-01"}'
 
 # Delete a file
 curl -X DELETE http://192.168.1.100/api/file/delete \
@@ -1130,7 +1130,7 @@ fetch('http://192.168.1.100/api/id', {
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({
-    id: 'LOUDFRAME-CUSTOM-01'
+    id: 'MURMURA-CUSTOM-01'
   })
 })
 .then(response => response.json())
@@ -1174,7 +1174,7 @@ print(f"Current device ID: {device_id['id']}")
 # Set device ID
 response = requests.post(
     f"{base_url}/api/id",
-    json={"id": "LOUDFRAME-PYTHON-01"}
+    json={"id": "MURMURA-PYTHON-01"}
 )
 print(f"Set ID result: {response.json()}")
 
