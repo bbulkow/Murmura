@@ -1,0 +1,35 @@
+# ESP-IDF / ESP-ADF build output
+build/
+sdkconfig
+sdkconfig.old
+
+# ESP-IDF managed components (downloaded automatically)
+managed_components/
+dependencies.lock
+
+# ESP-IDF / CMake generated files
+.cmake/
+CMakeFiles/
+
+# Partition tables (generated)
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment / secrets
+*.env
+envs.local.ps1
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+*.swp
+*.swo
