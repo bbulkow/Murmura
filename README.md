@@ -2,14 +2,51 @@
 
 Murmura is a low-cost, scalable platform for creating large installations of independent networked sound devices. Each unit plays audio loops from an SD card while being remotely controllable over WiFi, enabling sound artists to deploy dozens of autonomous speakers across an installation space and manage them from a single dashboard.
 
-First deployed at **Burning Man 2025** as part of [Flaming Lotus Girls](https://flaminglotus.com/)' **Haven**.
+A key feature is the distributed nature and lack of reliance on anything besides power. After configuration, it will do its thing.
+There is no required configuration server - the configuration server exists to find and configure Murs, but then configuration
+is stored locally. The configuration is stored on the SD card so can be updated with a laptop.
+
+It is designed to work with 20 to 40 to 100 individual units simultaenously. Systems that use wireless streaming speakers
+simply don't work at that scale, as networks saturate. Murmura has all sound files local - commands pass over wifi (and files can be updated).
+
+Low cost is also a goal. By using ESP32, a powerful but cheap DAC, and an SD card, per unit price is plausibly around $10 plus an SD card ($4) and a speaker ($5). Current hardware boards are closer to $17.
+
+First deployed at **Burning Man 2025** as part of [Flaming Lotus Girls](https://flaminglotus.com/)' **Haven**. The initial configuration ended
+up at about 18 units. The speaker chosen was a remaindered unit from Sony, installed in a custom 3d printed enclosure.
+
+## Using Murmura
+
+For instructions on operating deployed devices — WiFi setup, file management, playback and volume control — see [USE.md](USE.md).
+
+## Future
+
+Three current problems exist.
+
+### hardware update
+
+The AI Thinker Audiokit board appears to have vanished from all availability, including at Alibaba.
+
+### Interaction
+
+It is desired to press a button and have some sound.
+
+### Synchronization
+
+It would be great to have multiple controllers act close enough in sync that a multi-speaker effect can be created, but wirelessly.
+
+It is believed that using the timing information in Wifi beacon packets, even without any form of central time server, tight
+synchronization could be attained.
 
 ## How It Works
 
-Each Murmura unit is a self-contained audio player built on an ESP32 board with an SD card slot and audio output. On power-up it mounts the SD card, connects to WiFi, loads its saved configuration, and begins looping audio. A JSON HTTP API on each device allows remote control of playback, volume, and file management. A companion fleet management server running on a Raspberry Pi (or any machine on the network) provides a web dashboard to discover, monitor, and control all units simultaneously.
+Each Murmura unit (a Mur) is a self-contained audio player built on an ESP32 board with an SD card slot and audio output. On power-up it mounts the SD card, connects to WiFi, loads its saved configuration, and begins looping audio. A JSON HTTP API on each device allows remote control of playback, volume, and file management. A companion fleet management server running on a Raspberry Pi (or any machine on the network) provides a web dashboard to discover, monitor, and control all units simultaneously.
+
+The ESP-ADF codebase was chosen. It supports multiple decoders, looping, mixing, and eq. However, its not simple, and it's
+not clear Espressif's desire to continue with updates. THe last label was 2024.
 
 ## Features
 
+- **Serverless distributed** -- acts alone after configuration.
 - **Multi-track looping** -- up to 3 simultaneous audio loops per device, mixed via hardware downmix
 - **Per-track and global volume control** with real-time adjustment
 - **WAV and MP3 playback** from SD card
@@ -57,7 +94,7 @@ scape-server/           Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 ```
 
-## Building the Firmware
+## Building and Running a Mur
 
 ### Prerequisites
 
@@ -67,6 +104,8 @@ device-manager/         CLI tools for batch device operations (Python)
 ### Setup
 
 1. Clone ESP-ADF and apply the required patches. See [aithinker-adf/README.md](aithinker-adf/README.md) for step-by-step instructions.
+
+Note that you will be using the esp-idf that is within the esp-adf project.
 
 2. Set environment variables:
    ```bash
@@ -85,6 +124,9 @@ device-manager/         CLI tools for batch device operations (Python)
 
 ### Build and Flash
 
+Note that there is a sdkconfig.defaults with quite a few key elements. These will get picked up
+as part of the standard build below.
+
 ```bash
 cd /path/to/Murmura
 idf.py build
@@ -101,7 +143,17 @@ This project was developed using the **ESP-IDF v2.0 extension for VSCode**. To u
 2. Edit the `esp_idf.json` configuration file to include a pointer to the custom ESP-IDF installation you created above.
 3. **Do not use the ESP-IDF version manager** built into the extension. It will download a fresh ESP-IDF version and attempt to update it, which will overwrite the overlay files and patches that this project requires.
 
-## Running the Fleet Management Server
+## Fleet Management
+
+Murmura provides robust fleet management, through two components.
+
+There are a set of python commands which can be used without UI to identify boards and name them, and also to do
+the commands in the fleet management web server. They were built before, and will be preferred in some cases.
+
+However, given that hardware is no longer available, and the initial 40 are already in cases appropriately labeled,
+it's unlikely that they should be used again.
+
+### Running the fleet management server
 
 The scape-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
 
@@ -113,7 +165,7 @@ python app.py
 
 Access the dashboard at `http://localhost:8765`. See [scape-server/README.md](scape-server/README.md) for full documentation including systemd auto-start setup.
 
-## Device Manager CLI Tools
+### Device Manager CLI Tools
 
 The device-manager directory contains Python scripts for command-line batch operations:
 
@@ -129,7 +181,7 @@ pip install -r requirements.txt
 python device_scanner.py
 ```
 
-See [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) for usage details.
+See [device-manager/README.md](device-manager/README.md) for usage details.
 
 ## HTTP API
 

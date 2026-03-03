@@ -30,97 +30,40 @@ A web-based fleet management server for Brian's soundscape devicies, designed to
 ### Prerequisites
 
 - Python 3.7 or higher
-- pip (Python package manager)
 
 ### Setup
 
-1. Navigate to the scape-server directory:
 ```bash
 cd scape-server
-```
-
-2. Install the required Python packages:
-```bash
 pip install -r requirements.txt
 ```
 
 ## Running the Server
 
-### Windows (PowerShell 7)
-
-1. Open PowerShell 7 as Administrator (for network scanning capabilities)
-2. Navigate to the scape-server directory:
-```powershell
-cd C:\Users\<username>\dev\esp\Murmura\scape-server
+```bash
+python app.py
 ```
 
-3. **Option A: Using Virtual Environment (Recommended)**
-   
-   Virtual environments are recommended but **not required**. They provide:
-   - **Isolation**: Keeps project dependencies separate from system Python packages
-   - **Version Control**: Ensures specific package versions don't conflict with other projects
-   - **Clean Uninstall**: Easy to remove all project dependencies by deleting the venv folder
-   - **Reproducibility**: Guarantees the same environment across different machines
-   
-   ```powershell
-   python -m venv venv
-   .\venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   python app.py
-   ```
+### Windows
 
-4. **Option B: Direct Installation (Simpler)**
-   
-   If you prefer to skip the virtual environment:
-   ```powershell
-   pip install -r requirements.txt
-   python app.py
-   ```
-   
-   Note: This installs packages globally, which may conflict with other Python projects.
+Open PowerShell 7 as Administrator (required for network scanning), then:
+
+```powershell
+cd C:\Users\<username>\dev\esp\Murmura\scape-server
+pip install -r requirements.txt
+python app.py
+```
 
 If you encounter execution policy issues:
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### macOS (Terminal)
+### macOS / Linux / Raspberry Pi
 
-1. Open Terminal
-2. Navigate to the scape-server directory:
-```bash
-cd ~/dev/esp/Murmura/scape-server
-```
-
-3. **Option A: Using Virtual Environment (Recommended)**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   python3 app.py
-   ```
-
-4. **Option B: Direct Installation (Simpler)**
-   ```bash
-   pip3 install -r requirements.txt
-   python3 app.py
-   ```
-
-### Linux/Raspberry Pi
-
-1. Open terminal
-2. Navigate to the scape-server directory:
 ```bash
 cd ~/Murmura/scape-server
-```
-
-3. Install dependencies:
-```bash
 pip3 install -r requirements.txt
-```
-
-4. Run the server:
-```bash
 python3 app.py
 ```
 

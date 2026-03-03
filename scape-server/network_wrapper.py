@@ -142,6 +142,7 @@ class DeviceScannerWrapper:
         self.config = config
         self.progress_callback = progress_callback
         self.device_map_file = Path('scape_server/device_map.json')
+        self.device_map_file.parent.mkdir(parents=True, exist_ok=True)
         self.total_hosts = 0
         self.scanned_hosts = 0
         

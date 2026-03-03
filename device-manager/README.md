@@ -5,10 +5,10 @@ This repository contains Python tools for discovering and managing multiple ESP3
 ## Features
 
 - **Network Scanner** (`device_scanner.py`): Discovers all ESP32 devices on your network
-- **Batch Controller** (`batch_controller.py`): Performs batch operations on multiple devices
+- **ID Manager** (`id_manager.py`): Manage device IDs, find duplicates, and identify devices
 - **Device Controller** (`device_controller.py`): Controls a single device by ID
 - **File Manager** (`file_manager.py`): Upload, sync, and manage audio files on devices
-- **ID Manager** (`id_manager.py`): Manage device IDs, find duplicates, and identify devices
+- **Batch Controller** (`batch_controller.py`): Performs batch operations on multiple devices
 - **Asynchronous Operations**: Fast parallel scanning and control of multiple devices
 - **Device Tracking**: Maintains a JSON map of all devices with MAC addresses as unique identifiers
 - **Shortcut Options**: All commands now support single-letter shortcuts for faster command entry
@@ -21,13 +21,23 @@ This repository contains Python tools for discovering and managing multiple ESP3
 pip install -r requirements.txt
 ```
 
-## Usage
+## Use
+
+### General pattern
+
+Most commands take an 'id'. To avoid needing to find and remember dynamic IP addresses,
+a device scan can be done to create a map of IDs to IPs. Dynamic IPs are generally stable, although
+they are not guarenteed.
+
+After a scan, you can query or update an individual deivce using its IDs.
+
+Some batch operations are allowed on all scanned devices.
 
 ### Device Scanner
 
-The scanner discovers ESP32 devices on your network and creates/maintains a device map JSON file.
+The scanner discovers ESP32 devices on your network and creates/maintains a device map JSON file. **All other tools depend on this file**, so run the scanner first.
 
-#### Basic Usage
+#### Basic Use
 
 ```bash
 # Create a new device map (overwrites existing)
@@ -73,73 +83,97 @@ python device_scanner.py -n 192.168.1.0/24 -a update -m production.json -v
 - **`add`**: Adds new devices and updates existing ones (by MAC address), marks offline devices
 - **`update`**: Only updates devices already in the map, ignores new devices
 
-### Batch Controller
+---
 
-The batch controller performs operations on all devices in the device map simultaneously.
+### ID Manager
 
-#### Basic Usage
+The ID manager handles device identification and ID assignment. Use this after scanning to name devices and verify uniqueness before doing any other configuration.
+
+#### Basic Use
 
 ```bash
-# Show status of all devices
-python batch_controller.py --command status
+# List all devices with their IDs and MACs
+python id_manager.py --command list-all
 
-# Stop all loops on all devices
-python batch_controller.py --command stop-all
+# Find all devices with duplicate IDs
+python id_manager.py --command find-duplicates
 
-# Start all configured loops
-python batch_controller.py --command start-all
+# Identify a specific device by playing a sound on it
+python id_manager.py --command identify --id MURMURA-001
+python id_manager.py --command identify --mac 34:5F:45:26:76:2C --duration 60
 
-# Set volume on all devices
-python batch_controller.py --command set-volume --track 0 --volume 50
-python batch_controller.py --command set-volume --global --volume 75
+# Set device ID based on MAC address
+python id_manager.py --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
 
-# Save current configuration on all devices
-python batch_controller.py --command save-config
+# Auto-assign unique IDs to all devices
+python id_manager.py --command auto-assign --prefix LOUD
+python id_manager.py --command auto-assign --prefix STAGE --start-num 100
 
-# Load saved configuration on all devices
-python batch_controller.py --command load-config
+# Scan network and set ID if exactly one device is found
+python id_manager.py --command provision-single
+```
+
+#### Changing IDs via Device Controller
+
+When you already know a device's current ID, you can rename it directly with the device controller:
+
+```bash
+python device_controller.py --id MURMURA-001 --command set-id --new-id "STAGE-CENTER"
+python device_controller.py --id MURMURA-002 --command set-id --new-id "STAGE-LEFT"
+python device_controller.py --id MURMURA-003 --command set-id --new-id "STAGE-RIGHT"
+```
+
+After changing IDs, rescan to update the device map:
+
+```bash
+python device_scanner.py --net 192.168.1.0/24 --action update
 ```
 
 #### Command Line Options
 
 ```bash
-python batch_controller.py --help
+python id_manager.py --help
 
 Required arguments:
-  --command {status,stop-all,start-all,set-volume,save-config,load-config}, -c
-                        Command to execute on all devices
+  --command {find-duplicates,set-id,identify,list-all,auto-assign}, -c
+                        Command to execute
 
 Optional arguments:
-  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --map-file PATH, -f PATH      Path to device map JSON file (default: device_map.json)
   --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
-  --concurrent NUM, -n NUM      Maximum concurrent connections (default: 10)
 
-Volume control:
-  --track {0,1,2}, -k {0,1,2}   Track number for track-specific commands
-  --volume LEVEL, -v LEVEL       Volume level (0-100)
-  --global, -g                   Set global volume instead of track volume
+Device identification:
+  --id ID, -i ID                Device ID
+  --mac MAC, -m MAC             Device MAC address (e.g., 34:5F:45:26:76:2C)
 
-Device filters:
-  --all-devices, -a              Include offline devices (default: online only)
-  --filter-id REGEX, -f REGEX    Filter devices by ID pattern (regex)
+ID management:
+  --new-id ID, -n ID            New device ID for set-id command
+
+Identify options:
+  --duration SEC, -d SEC        Duration of identify sound in seconds (default: 30)
+
+Auto-assign options:
+  --prefix PREFIX, -p PREFIX    Prefix for auto-generated IDs (default: LOUD)
+  --start-num NUM, -s NUM       Starting number for auto-generated IDs (default: 1)
 ```
 
 #### Shortcut Examples
 
 ```bash
-# Using shortcuts
-python batch_controller.py -c status
-python batch_controller.py -c stop-all -a
-python batch_controller.py -c set-volume -k 0 -v 50
-python batch_controller.py -c set-volume -g -v 75
-python batch_controller.py -c status -f "^STAGE"
+python id_manager.py -c find-duplicates
+python id_manager.py -c list-all
+python id_manager.py -c set-id -m 34:5F:45:26:76:2C -n STAGE-01
+python id_manager.py -c identify -i MURMURA-001 -d 60
+python id_manager.py -c auto-assign -p STAGE -s 100
 ```
+
+---
 
 ### Device Controller
 
 The device controller performs operations on a single device by its ID.
 
-#### Basic Usage
+#### Basic Use
 
 ```bash
 # Show device status
@@ -155,14 +189,18 @@ python device_controller.py --id MURMURA-001 --command start
 python device_controller.py --id MURMURA-001 --command set-volume --track 0 --volume 50
 python device_controller.py --id MURMURA-001 --command set-volume --global --volume 75
 
-# Change device ID (unique operation)
-python device_controller.py --id MURMURA-001 --command set-id --new-id STAGE-01
-
 # Get loop status
 python device_controller.py --id MURMURA-001 --command get-loops
 
 # Set file for a track
 python device_controller.py --id MURMURA-001 --command set-file --track 0 --file-index 2
+
+# Save / load configuration
+python device_controller.py --id MURMURA-001 --command save-config
+python device_controller.py --id MURMURA-001 --command load-config
+
+# Reboot the device
+python device_controller.py --id MURMURA-001 --command reboot
 ```
 
 #### Command Line Options
@@ -172,7 +210,7 @@ python device_controller.py --help
 
 Required arguments:
   --id ID, -i ID        Device ID to control
-  --command {status,stop,start,set-volume,set-id,save-config,load-config,get-loops,set-file}, -c
+  --command {status,stop,start,set-volume,set-id,save-config,load-config,get-loops,set-file,reboot}, -c
                         Command to execute on the device
 
 Optional arguments:
@@ -196,32 +234,34 @@ File control:
 #### Shortcut Examples
 
 ```bash
-# Using shortcuts
 python device_controller.py -i MURMURA-001 -c status
 python device_controller.py -i MURMURA-001 -c stop
 python device_controller.py -i MURMURA-001 -c set-volume -k 0 -v 50
 python device_controller.py -i MURMURA-001 -c set-id -n STAGE-01
 python device_controller.py -i MURMURA-001 -c set-file -k 0 -x 2
+python device_controller.py -i MURMURA-001 -c reboot
 ```
+
+---
 
 ### File Manager
 
-The file manager handles uploading, syncing, and managing audio files on devices.
+The file manager handles uploading, syncing, and managing audio files on devices. Operations default to all devices; use `--id` to target a single device.
 
-#### Basic Usage
+#### Basic Use
 
 ```bash
-# List files on all devices
-python file_manager.py --command list
-
 # List files on a specific device
 python file_manager.py --command list --id MURMURA-001
 
-# Upload a file to all devices (skips if already exists)
-python file_manager.py --command upload --file music.wav
+# List files on all devices
+python file_manager.py --command list
 
 # Upload a file to a specific device
 python file_manager.py --command upload --file music.wav --id MURMURA-001
+
+# Upload a file to all devices (skips if already exists)
+python file_manager.py --command upload --file music.wav
 
 # Force upload (overwrite even if exists)
 python file_manager.py --command upload --file music.wav --force
@@ -260,10 +300,9 @@ File operations:
 #### Shortcut Examples
 
 ```bash
-# Using shortcuts
-python file_manager.py -c list
-python file_manager.py -c upload -f music.wav
+python file_manager.py -c list -i MURMURA-001
 python file_manager.py -c upload -f music.wav -i MURMURA-001
+python file_manager.py -c upload -f music.wav
 python file_manager.py -c upload -f music.wav -F
 python file_manager.py -c sync -d ./loops
 python file_manager.py -c delete -f old_music.wav
@@ -275,6 +314,75 @@ python file_manager.py -c delete -f old_music.wav
 - **Batch Upload**: Upload to multiple devices concurrently (limited to 5 by default for stability)
 - **Directory Sync**: Sync all audio files (WAV, MP3, M4A, AAC, FLAC) from a directory
 - **Progress Tracking**: Shows upload progress and summary statistics
+
+---
+
+### Batch Controller
+
+The batch controller performs operations on all devices in the device map simultaneously.
+
+#### Basic Use
+
+```bash
+# Show status of all devices
+python batch_controller.py --command status
+
+# Stop all loops on all devices
+python batch_controller.py --command stop-all
+
+# Start all configured loops
+python batch_controller.py --command start-all
+
+# Set volume on all devices
+python batch_controller.py --command set-volume --track 0 --volume 50
+python batch_controller.py --command set-volume --global --volume 75
+
+# Save current configuration on all devices
+python batch_controller.py --command save-config
+
+# Load saved configuration on all devices
+python batch_controller.py --command load-config
+
+# Reboot all devices
+python batch_controller.py --command reboot-all
+```
+
+#### Command Line Options
+
+```bash
+python batch_controller.py --help
+
+Required arguments:
+  --command {status,stop-all,start-all,set-volume,save-config,load-config,reboot-all}, -c
+                        Command to execute on all devices
+
+Optional arguments:
+  --map-file PATH, -m PATH      Path to device map JSON file (default: device_map.json)
+  --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
+  --concurrent NUM, -n NUM      Maximum concurrent connections (default: 10)
+
+Volume control:
+  --track {0,1,2}, -k {0,1,2}   Track number for track-specific commands
+  --volume LEVEL, -v LEVEL       Volume level (0-100)
+  --global, -g                   Set global volume instead of track volume
+
+Device filters:
+  --all-devices, -a              Include offline devices (default: online only)
+  --filter-id REGEX, -f REGEX    Filter devices by ID pattern (regex)
+```
+
+#### Shortcut Examples
+
+```bash
+python batch_controller.py -c status
+python batch_controller.py -c stop-all -a
+python batch_controller.py -c set-volume -k 0 -v 50
+python batch_controller.py -c set-volume -g -v 75
+python batch_controller.py -c status -f "^STAGE"
+python batch_controller.py -c reboot-all
+```
+
+---
 
 ## Device Map Format
 
@@ -455,25 +563,6 @@ python batch_controller.py --command status --map-file testing.json
 python device_controller.py --id TEST-001 --command status --map-file testing.json
 ```
 
-## Device ID Management
-
-Device IDs must be set individually using the device controller to ensure uniqueness:
-
-```bash
-# Change a device ID
-python device_controller.py --id OLD-ID --command set-id --new-id NEW-ID
-
-# Examples
-python device_controller.py --id MURMURA-001 --command set-id --new-id "STAGE-CENTER"
-python device_controller.py --id MURMURA-002 --command set-id --new-id "STAGE-LEFT"
-python device_controller.py --id MURMURA-003 --command set-id --new-id "STAGE-RIGHT"
-```
-
-After changing device IDs, rescan the network to update the device map:
-```bash
-python device_scanner.py --net 192.168.1.0/24 --action update
-```
-
 ## Troubleshooting
 
 ### Scanner finds no devices
@@ -517,74 +606,21 @@ python device_scanner.py --net 192.168.1.0/24 --action update
 | Tool | Purpose | Key Commands |
 |------|---------|--------------|
 | `device_scanner.py` | Discover devices on network | `--net 192.168.1.0/24 --action create` (or `-n 192.168.1.0/24 -a create`) |
-| `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` (or `-c status/stop-all/start-all`) |
+| `id_manager.py` | Manage device IDs and identify | `--command find-duplicates/set-id/identify` (or `-c find-duplicates/set-id/identify`) |
 | `device_controller.py` | Control single device by ID | `--id DEVICE --command status/stop/start` (or `-i DEVICE -c status/stop/start`) |
 | `file_manager.py` | Manage audio files | `--command list/upload/sync/delete` (or `-c list/upload/sync/delete`) |
-| `id_manager.py` | Manage device IDs and identify | `--command find-duplicates/set-id/identify` (or `-c find-duplicates/set-id/identify`) |
+| `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` (or `-c status/stop-all/start-all`) |
 
-### ID Manager
+## Future Enhancements
 
-The ID manager handles device ID operations and can help identify specific devices.
+### WiFi Management
 
-#### Basic Usage
+The current tools have no WiFi management commands. Adding the following would round out the toolset and remove the need to drop to raw curl for network config:
 
-```bash
-# Find all devices with duplicate IDs
-python id_manager.py --command find-duplicates
-
-# List all devices with their IDs and MACs
-python id_manager.py --command list-all
-
-# Set device ID based on MAC address
-python id_manager.py --command set-id --mac 34:5F:45:26:76:2C --new-id STAGE-01
-
-# Identify a device by playing a sound
-python id_manager.py --command identify --id MURMURA-001
-python id_manager.py --command identify --mac 34:5F:45:26:76:2C --duration 60
-
-# Auto-assign unique IDs to all devices
-python id_manager.py --command auto-assign --prefix LOUD
-python id_manager.py --command auto-assign --prefix STAGE --start-num 100
-```
-
-#### Command Line Options
-
-```bash
-python id_manager.py --help
-
-Required arguments:
-  --command {find-duplicates,set-id,identify,list-all,auto-assign}, -c
-                        Command to execute
-
-Optional arguments:
-  --map-file PATH, -f PATH      Path to device map JSON file (default: device_map.json)
-  --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
-
-Device identification:
-  --id ID, -i ID                Device ID
-  --mac MAC, -m MAC             Device MAC address (e.g., 34:5F:45:26:76:2C)
-
-ID management:
-  --new-id ID, -n ID            New device ID for set-id command
-
-Identify options:
-  --duration SEC, -d SEC        Duration of identify sound in seconds (default: 30)
-
-Auto-assign options:
-  --prefix PREFIX, -p PREFIX    Prefix for auto-generated IDs (default: LOUD)
-  --start-num NUM, -s NUM       Starting number for auto-generated IDs (default: 1)
-```
-
-#### Shortcut Examples
-
-```bash
-# Using shortcuts
-python id_manager.py -c find-duplicates
-python id_manager.py -c list-all
-python id_manager.py -c set-id -m 34:5F:45:26:76:2C -n STAGE-01
-python id_manager.py -c identify -i MURMURA-001 -d 60
-python id_manager.py -c auto-assign -p STAGE -s 100
-```
+- `device_controller.py -i ID -c wifi-status` — show current network and signal strength
+- `device_controller.py -i ID -c wifi-add --ssid NAME --password PASS` — add a network to one device
+- `device_controller.py -i ID -c wifi-remove --ssid NAME` — remove a network from one device
+- `batch_controller.py -c wifi-add --ssid NAME --password PASS` — push a network to all devices simultaneously
 
 ## License
 
