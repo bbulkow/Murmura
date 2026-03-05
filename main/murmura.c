@@ -355,6 +355,37 @@ typedef struct {
 } audio_control_parameters_t;
 
 
+// State name table for AEL element states (AEL_STATE_* enum)
+static const char *ael_state_name(audio_element_state_t s) {
+    switch (s) {
+        case AEL_STATE_NONE:     return "NONE";
+        case AEL_STATE_INIT:     return "INIT";
+        case AEL_STATE_RUNNING:  return "RUNNING";
+        case AEL_STATE_PAUSED:   return "PAUSED";
+        case AEL_STATE_STOPPED:  return "STOPPED";
+        case AEL_STATE_FINISHED: return "FINISHED";
+        case AEL_STATE_ERROR:    return "ERROR";
+        default:                 return "?";
+    }
+}
+
+// Log all pipeline element states in a compact block.
+// Call this at START_TRACK and STOP_TRACK to see if the output pipeline
+// goes FINISHED when all tracks are terminated.
+static void log_pipeline_states(audio_stream_t *stream, track_manager_t *tm, const char *ctx) {
+    ESP_LOGI(TAG, "[states/%s] output: downmix=%s  i2s=%s",
+             ctx,
+             ael_state_name(audio_element_get_state(stream->downmix_e)),
+             ael_state_name(audio_element_get_state(stream->i2s_e)));
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        ESP_LOGI(TAG, "[states/%s] track[%d]: fatfs=%s  dec=%s  active=%s",
+                 ctx, i,
+                 ael_state_name(audio_element_get_state(stream->tracks[i].fatfs_e)),
+                 ael_state_name(audio_element_get_state(stream->tracks[i].decode_e)),
+                 tm->tracks[i].active ? "YES" : "no");
+    }
+}
+
 void audio_control_task(void *pvParameters)
 {
     audio_control_parameters_t *params = (audio_control_parameters_t *)pvParameters;
@@ -369,19 +400,20 @@ void audio_control_task(void *pvParameters)
     // Use the passthrough approach to fix decoder output issue
     audio_stream_init_with_passthrough(&stream);
     
-    // Initialize loop tracking state
-    loop_manager_t *loop_manager = heap_caps_calloc(1, sizeof(loop_manager_t), MALLOC_CAP_SPIRAM);
-    if (!loop_manager) {
-        ESP_LOGE(TAG, "Failed to allocate loop manager");
+    // Initialize track manager state
+    track_manager_t *track_manager = heap_caps_calloc(1, sizeof(track_manager_t), MALLOC_CAP_SPIRAM);
+    if (!track_manager) {
+        ESP_LOGE(TAG, "Failed to allocate track manager");
         return;
     }
-    loop_manager->audio_stream = stream;
-    loop_manager->audio_control_queue = control_queue;
-    loop_manager->global_volume_percent = 75;  // Default volume 75%
+    track_manager->audio_stream = stream;
+    track_manager->audio_control_queue = control_queue;
+    track_manager->global_volume_percent = 75;
     for (int i = 0; i < MAX_TRACKS; i++) {
-        loop_manager->loops[i].is_playing = false;
-        loop_manager->loops[i].volume_percent = 100;  // Default to 100% (0dB)
-        loop_manager->loops[i].track_index = i;
+        track_manager->tracks[i].active = false;
+        track_manager->tracks[i].mode = TRACK_MODE_LOOP;
+        track_manager->tracks[i].volume_percent = 100;
+        track_manager->tracks[i].track_index = i;
     }
 
     ESP_LOGI(TAG, "audio_control: Initialize HTTP server");
@@ -391,7 +423,7 @@ void audio_control_task(void *pvParameters)
         ESP_LOGI(TAG, "HTTP server initialized successfully");
         ESP_LOGI(TAG, "Access the API documentation at http://<device-ip>/");
         // Update HTTP server with loop manager reference
-        http_server_set_loop_manager(loop_manager);
+        http_server_set_track_manager(track_manager);
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
     }
@@ -399,16 +431,17 @@ void audio_control_task(void *pvParameters)
     ESP_LOGI(TAG, "audio_control: Load configuration (from file or default)");
     
     // Load configuration FIRST - either from file or use default
-    loop_config_t startup_config;
+    track_config_t startup_config;
     if (config_load_or_default(&startup_config) == ESP_OK) {
         ESP_LOGI(TAG, "Configuration loaded:");
         ESP_LOGI(TAG, "  Global volume: %d%%", startup_config.global_volume_percent);
         for (int i = 0; i < MAX_TRACKS; i++) {
-            if (strlen(startup_config.loops[i].file_path) > 0) {
-                ESP_LOGI(TAG, "  Track %d: %s (volume=%d%%, playing=%s)", 
-                         i, startup_config.loops[i].file_path, 
-                         startup_config.loops[i].volume_percent,
-                         startup_config.loops[i].is_playing ? "yes" : "no");
+            if (strlen(startup_config.tracks[i].file_path) > 0) {
+                ESP_LOGI(TAG, "  Track %d: %s (volume=%d%%, active=%s, mode=%s)",
+                         i, startup_config.tracks[i].file_path,
+                         startup_config.tracks[i].volume_percent,
+                         startup_config.tracks[i].active ? "yes" : "no",
+                         startup_config.tracks[i].mode == TRACK_MODE_TRIGGER ? "trigger" : "loop");
             }
         }
         
@@ -427,7 +460,7 @@ void audio_control_task(void *pvParameters)
         
         // Apply the configuration through the message queue (thread-safe)
         ESP_LOGI(TAG, "Applying configuration through message queue...");
-        if (config_apply(&startup_config, control_queue, loop_manager) == ESP_OK) {
+        if (config_apply(&startup_config, control_queue, track_manager) == ESP_OK) {
             ESP_LOGI(TAG, "Configuration messages sent successfully");
         } else {
             ESP_LOGW(TAG, "Failed to send some configuration messages");
@@ -469,12 +502,14 @@ void audio_control_task(void *pvParameters)
 
                 case AUDIO_ACTION_START_TRACK: {
                     ESP_LOGI(TAG, "Processing START_TRACK action for track %d", msg.data.start_track.track_index);
-                    
-                    // Log memory before starting track
-                    log_memory_info("Before starting track");
-                    
+
                     int track = msg.data.start_track.track_index;
                     if (track >= 0 && track < MAX_TRACKS) {
+                        // Log all pipeline states BEFORE touching anything —
+                        // this reveals whether the output pipeline (downmix/i2s) has gone
+                        // FINISHED after all tracks were previously terminated.
+                        log_pipeline_states(stream, track_manager, "pre-start");
+
                         // Stop track if already playing
                         audio_pipeline_stop(stream->tracks[track].pipeline);
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
@@ -487,14 +522,15 @@ void audio_control_task(void *pvParameters)
                         // Start the track
                         audio_pipeline_run(stream->tracks[track].pipeline);
                         ESP_LOGI(TAG, "Started track %d with file: %s", track, msg.data.start_track.file_path);
-                        
-                        // Log memory after starting track
-                        log_memory_info("After starting track");
-                        
-                        // Update loop manager state
-                        loop_manager->loops[track].is_playing = true;
-                        strncpy(loop_manager->loops[track].file_path, msg.data.start_track.file_path, 
-                                sizeof(loop_manager->loops[track].file_path) - 1);
+
+                        // Log states again after run — confirms whether output pipeline
+                        // is still RUNNING or stayed FINISHED (no sound if FINISHED).
+                        log_pipeline_states(stream, track_manager, "post-start");
+
+                        // Update track manager state
+                        track_manager->tracks[track].active = true;
+                        strncpy(track_manager->tracks[track].file_path, msg.data.start_track.file_path,
+                                sizeof(track_manager->tracks[track].file_path) - 1);
                     }
                     break;
                 }
@@ -505,12 +541,18 @@ void audio_control_task(void *pvParameters)
                     if (track >= 0 && track < MAX_TRACKS) {
                         audio_pipeline_stop(stream->tracks[track].pipeline);
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
-                        audio_pipeline_terminate(stream->tracks[track].pipeline);
+                        // Do NOT terminate — terminate aborts the decoder output ringbuf,
+                        // signaling EOF to downmix. When all 3 tracks are stopped this way,
+                        // downmix goes FINISHED and output is silenced permanently.
+                        // Keeping element tasks alive in STOPPED state costs nothing (tasks
+                        // are created once on first start and reused) and lets downmix stay
+                        // RUNNING on empty (silent) inputs indefinitely.
                         ESP_LOGI(TAG, "Stopped track %d", track);
-                        
-                        // Update loop manager state - only change playing state, preserve file path
-                        loop_manager->loops[track].is_playing = false;
-                        // Note: We intentionally preserve file_path so track can be restarted
+
+                        // Stop: clear active; preserve file_path so track can be restarted
+                        track_manager->tracks[track].active = false;
+
+                        log_pipeline_states(stream, track_manager, "post-stop");
                     }
                     break;
                 }
@@ -538,7 +580,7 @@ void audio_control_task(void *pvParameters)
                         ESP_LOGI(TAG, "Set track %d volume to %d%% (%.1f dB)", track, volume, gain_db);
                         
                         // Update loop manager state
-                        loop_manager->loops[track].volume_percent = volume;
+                        track_manager->tracks[track].volume_percent = volume;
                     }
                     break;
                 }
@@ -550,7 +592,7 @@ void audio_control_task(void *pvParameters)
                     if (volume > 100) volume = 100;
                     
                     // Update loop manager state
-                    loop_manager->global_volume_percent = volume;
+                    track_manager->global_volume_percent = volume;
                     
                     // Actually set the hardware volume using the board handle
                     if (params->board_handle && params->board_handle->audio_hal) {
@@ -618,34 +660,30 @@ void audio_control_task(void *pvParameters)
                     ESP_LOGI(TAG, "Track %d reached end of file, marking for restart", i);
                 }
                 
-                // Restart track if it's finished and pipeline is no longer running
+                // Handle track finished
                 if (track_finished[i] && (fatfs_state != AEL_STATE_RUNNING || decode_state != AEL_STATE_RUNNING)) {
-                    ESP_LOGI(TAG, "Track %d finished and stopped, restarting for loop", i);
-                    
-                    // Stop the pipeline completely
+                    const char *current_file = track_manager->tracks[i].file_path;
+                    bool should_loop = (track_manager->tracks[i].mode == TRACK_MODE_LOOP)
+                                      && track_manager->tracks[i].active
+                                      && strlen(current_file) > 0;
+
+                    // Stop and reset pipeline
                     audio_pipeline_stop(stream->tracks[i].pipeline);
                     audio_pipeline_wait_for_stop(stream->tracks[i].pipeline);
-                    
-                    // Reset pipeline
                     audio_pipeline_reset_ringbuffer(stream->tracks[i].pipeline);
                     audio_pipeline_reset_elements(stream->tracks[i].pipeline);
-                    
-                    // Re-set the URI (keep the same file that was playing)
-                    const char *current_file = loop_manager->loops[i].file_path;
-                    // Only restart if there's actually a file configured
-                    if (strlen(current_file) > 0) {
+
+                    if (should_loop) {
                         audio_element_set_uri(stream->tracks[i].fatfs_e, current_file);
-                        
-                        // Restart pipeline
                         audio_pipeline_run(stream->tracks[i].pipeline);
-                        
-                        track_finished[i] = false;  // Reset the flag
-                        ESP_LOGI(TAG, "Track %d restarted with file: %s", i, current_file);
+                        ESP_LOGI(TAG, "Track %d looped: %s", i, current_file);
                     } else {
-                        // No file configured for this track, don't restart
-                        track_finished[i] = false;  // Reset the flag anyway
-                        ESP_LOGW(TAG, "Track %d finished but no file configured, not restarting", i);
+                        // Trigger mode or inactive — track finished, clear active
+                        track_manager->tracks[i].active = false;
+                        ESP_LOGI(TAG, "Track %d finished (mode=%s, not restarting)",
+                                 i, (track_manager->tracks[i].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop");
                     }
+                    track_finished[i] = false;
                 }
             }
             
@@ -664,12 +702,44 @@ void audio_control_task(void *pvParameters)
                     }
                 }
                 
+                // Output pipeline state changes — critical for diagnosing silence after stop-all
                 if (evt_msg.source == (void *)stream->downmix_e) {
-                ESP_LOGD(TAG, "Event from downmix element");
-            } else if (evt_msg.source == (void *)stream->i2s_e) {
-                ESP_LOGD(TAG, "Event from I2S element");
+                    if (evt_msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
+                        int st = (int)evt_msg.data;
+                        if (st == AEL_STATUS_STATE_FINISHED) {
+                            ESP_LOGW(TAG, "*** DOWNMIX went FINISHED — output pipeline will produce no sound ***");
+                        } else if (st == AEL_STATUS_STATE_RUNNING) {
+                            ESP_LOGI(TAG, "downmix: STATE_RUNNING");
+                        } else if (st == AEL_STATUS_STATE_STOPPED) {
+                            ESP_LOGI(TAG, "downmix: STATE_STOPPED");
+                        } else {
+                            ESP_LOGI(TAG, "downmix event: status=%d", st);
+                        }
+                    }
+                } else if (evt_msg.source == (void *)stream->i2s_e) {
+                    if (evt_msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
+                        int st = (int)evt_msg.data;
+                        if (st == AEL_STATUS_STATE_FINISHED) {
+                            ESP_LOGW(TAG, "*** I2S went FINISHED — output is silent ***");
+                        } else {
+                            ESP_LOGI(TAG, "i2s event: status=%d", st);
+                        }
+                    }
                 }
-                
+
+                // Decoder OUTPUT_DONE / INPUT_DONE — these abort the ringbuf wired to downmix,
+                // and may be the trigger that drives the downmix to FINISHED.
+                for (int i = 0; i < MAX_TRACKS; i++) {
+                    if (evt_msg.source == (void *)stream->tracks[i].decode_e
+                        && evt_msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
+                        int st = (int)evt_msg.data;
+                        if (st == AEL_STATUS_OUTPUT_DONE || st == AEL_STATUS_STATE_FINISHED) {
+                            ESP_LOGI(TAG, "track[%d] decoder: status=%d (output done/finished — "
+                                     "downmix input ringbuf may be aborted)", i, st);
+                        }
+                    }
+                }
+
                 // Handle specific important events
                 if (evt_msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
                     if ((int)evt_msg.data == AEL_STATUS_ERROR_OPEN) {
@@ -678,8 +748,6 @@ void audio_control_task(void *pvParameters)
                         ESP_LOGE(TAG, "Error reading input!");
                     } else if ((int)evt_msg.data == AEL_STATUS_ERROR_PROCESS) {
                         ESP_LOGE(TAG, "Error processing audio!");
-                    } else if ((int)evt_msg.data == AEL_STATUS_STATE_FINISHED) {
-                        ESP_LOGI(TAG, "Track finished (STATE_FINISHED)");
                     }
                 }
                 
@@ -704,20 +772,22 @@ void audio_control_task(void *pvParameters)
                         }
                         
                         if (should_restart) {
-                            ESP_LOGI(TAG, "Track %d finished, restarting for loop", i);
-                            
-                            // Stop the pipeline first
+                            bool do_loop = (track_manager->tracks[i].mode == TRACK_MODE_LOOP)
+                                           && track_manager->tracks[i].active
+                                           && strlen(track_manager->tracks[i].file_path) > 0;
+
                             audio_pipeline_stop(stream->tracks[i].pipeline);
                             audio_pipeline_wait_for_stop(stream->tracks[i].pipeline);
-                            
-                            // Reset pipeline state
                             audio_pipeline_reset_ringbuffer(stream->tracks[i].pipeline);
                             audio_pipeline_reset_elements(stream->tracks[i].pipeline);
-                            
-                            // Restart the pipeline
-                            audio_pipeline_run(stream->tracks[i].pipeline);
-                            
-                            ESP_LOGI(TAG, "Track %d restarted", i);
+
+                            if (do_loop) {
+                                audio_pipeline_run(stream->tracks[i].pipeline);
+                                ESP_LOGI(TAG, "Track %d event-looped", i);
+                            } else {
+                                track_manager->tracks[i].active = false;
+                                ESP_LOGI(TAG, "Track %d event-finished (no loop)", i);
+                            }
                             break;
                         }
                     }

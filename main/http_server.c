@@ -22,7 +22,7 @@ static const char *TAG = "HTTP_SERVER";
 
 // Global variables
 static httpd_handle_t server = NULL;
-static loop_manager_t *g_loop_manager = NULL;
+static track_manager_t *g_track_manager = NULL;
 
 // Custom cJSON memory hooks for SPIRAM usage
 static void* cjson_malloc_spiram(size_t size) {
@@ -49,11 +49,8 @@ static void init_cjson_spiram(void) {
 
 // Forward declarations
 static esp_err_t files_get_handler(httpd_req_t *req);
-static esp_err_t loops_get_handler(httpd_req_t *req);
-static esp_err_t loop_file_handler(httpd_req_t *req);
-static esp_err_t loop_start_handler(httpd_req_t *req);
-static esp_err_t loop_stop_handler(httpd_req_t *req);
-static esp_err_t loop_volume_handler(httpd_req_t *req);
+static esp_err_t tracks_get_handler(httpd_req_t *req);
+static esp_err_t track_post_handler(httpd_req_t *req);
 static esp_err_t global_volume_handler(httpd_req_t *req);
 static esp_err_t root_get_handler(httpd_req_t *req);
 // WiFi management handlers
@@ -184,56 +181,274 @@ static esp_err_t files_get_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/loops - List currently playing loops
+ * @brief GET /api/tracks - Return status of all three tracks
  */
-static esp_err_t loops_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/loops");
-    
+static esp_err_t tracks_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/tracks");
+
     cJSON *response = cJSON_CreateObject();
-    cJSON *loops_array = cJSON_CreateArray();
-    
-    if (g_loop_manager) {
-        // Always return all tracks with their complete state
+    cJSON *tracks_array = cJSON_CreateArray();
+
+    if (g_track_manager) {
         for (int i = 0; i < MAX_TRACKS; i++) {
-            cJSON *loop_obj = cJSON_CreateObject();
-            cJSON_AddNumberToObject(loop_obj, "track", i);
-            
-            // Return file path or empty string if no file set
-            const char *file_path = g_loop_manager->loops[i].file_path;
-            cJSON_AddStringToObject(loop_obj, "file", (file_path[0] != '\0') ? file_path : "");
-            
-            cJSON_AddNumberToObject(loop_obj, "volume", g_loop_manager->loops[i].volume_percent);
-            cJSON_AddBoolToObject(loop_obj, "playing", g_loop_manager->loops[i].is_playing);
-            
-            cJSON_AddItemToArray(loops_array, loop_obj);
+            cJSON *t = cJSON_CreateObject();
+            cJSON_AddNumberToObject(t, "track", i);
+            const char *mode_str = (g_track_manager->tracks[i].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop";
+            cJSON_AddStringToObject(t, "mode", mode_str);
+            cJSON_AddBoolToObject(t, "active", g_track_manager->tracks[i].active);
+            const char *fp = g_track_manager->tracks[i].file_path;
+            cJSON_AddStringToObject(t, "file", fp[0] ? fp : "");
+            cJSON_AddNumberToObject(t, "volume", g_track_manager->tracks[i].volume_percent);
+            cJSON_AddItemToArray(tracks_array, t);
         }
     }
-    
-    // Count how many tracks are actually playing
-    int active_count = 0;
-    if (g_loop_manager) {
-        for (int i = 0; i < MAX_TRACKS; i++) {
-            if (g_loop_manager->loops[i].is_playing) {
-                active_count++;
-            }
-        }
-    }
-    
-    cJSON_AddItemToObject(response, "loops", loops_array);
-    cJSON_AddNumberToObject(response, "active_count", active_count);
-    cJSON_AddNumberToObject(response, "max_tracks", MAX_TRACKS);
-    cJSON_AddNumberToObject(response, "global_volume", g_loop_manager ? g_loop_manager->global_volume_percent : 75);
-    
+
+    cJSON_AddItemToObject(response, "tracks", tracks_array);
+    cJSON_AddNumberToObject(response, "global_volume",
+                            g_track_manager ? g_track_manager->global_volume_percent : 75);
+
     esp_err_t ret = send_json_response(req, response);
     cJSON_Delete(response);
-    
     return ret;
 }
 
 /**
- * @brief POST /api/loop/file - Set the file for a specific track
- * Body: { "track": 0, "file_index": 0 } or { "track": 0, "file_path": "/sdcard/track1.wav" } or { "track": 0, "filename": "track1.wav" }
+ * @brief POST /api/track - Configure a track (all fields optional except track)
+ * Body: { "track": 0, "mode": "loop"|"trigger", "active": bool, "file": "name.wav", "volume": 0-100 }
  */
+static esp_err_t track_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/track");
+
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *response = cJSON_CreateObject();
+
+    // --- track (required) ---
+    cJSON *track_json = cJSON_GetObjectItem(request, "track");
+    if (!cJSON_IsNumber(track_json)) {
+        ESP_LOGE(TAG, "POST /api/track: missing or invalid track number");
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Missing or invalid track number");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+    int track = track_json->valueint;
+    if (track < 0 || track >= MAX_TRACKS) {
+        ESP_LOGE(TAG, "POST /api/track: track %d out of range (0-%d)", track, MAX_TRACKS - 1);
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Track index out of range");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+
+    if (!g_track_manager || !g_track_manager->audio_control_queue) {
+        ESP_LOGE(TAG, "POST /api/track[%d]: audio system not initialized", track);
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Audio system not initialized");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+
+    bool file_changed = false;
+
+    // --- mode (optional) ---
+    cJSON *mode_json = cJSON_GetObjectItem(request, "mode");
+    if (cJSON_IsString(mode_json) && mode_json->valuestring) {
+        const char *mode_str = mode_json->valuestring;
+        if (strcmp(mode_str, "loop") == 0) {
+            g_track_manager->tracks[track].mode = TRACK_MODE_LOOP;
+        } else if (strcmp(mode_str, "trigger") == 0) {
+            g_track_manager->tracks[track].mode = TRACK_MODE_TRIGGER;
+        } else {
+            ESP_LOGE(TAG, "POST /api/track[%d]: invalid mode '%s' (must be 'loop' or 'trigger')", track, mode_str);
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Invalid mode — must be 'loop' or 'trigger'");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+    }
+
+    // --- file (optional): accepts "file", "file_path", or "filename" ---
+    char file_path[256] = {0};
+    cJSON *file_json      = cJSON_GetObjectItem(request, "file");
+    cJSON *file_path_json = cJSON_GetObjectItem(request, "file_path");
+    cJSON *filename_json  = cJSON_GetObjectItem(request, "filename");
+
+    if (cJSON_IsString(file_json) && !file_json->valuestring[0]) {
+        // Explicit clear (file: "") — reject if track is active
+        if (g_track_manager->tracks[track].active) {
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Cannot clear file while track is active");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+        // If inactive, silently ignore the empty clear
+    } else if (cJSON_IsString(file_json) && file_json->valuestring[0]) {
+        const char *f = file_json->valuestring;
+        if (f[0] == '/') {
+            strncpy(file_path, f, sizeof(file_path) - 1);
+        } else {
+            // Security: reject path separators in bare filenames
+            if (strchr(f, '/') || strchr(f, '\\')) {
+                ESP_LOGE(TAG, "POST /api/track[%d]: invalid filename '%s' (path separators not allowed)", track, f);
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error", "Invalid filename - path separators not allowed");
+                send_json_response(req, response);
+                cJSON_Delete(response);
+                cJSON_Delete(request);
+                return ESP_OK;
+            }
+            snprintf(file_path, sizeof(file_path), "/sdcard/%s", f);
+        }
+    } else if (cJSON_IsString(file_path_json) && file_path_json->valuestring[0]) {
+        strncpy(file_path, file_path_json->valuestring, sizeof(file_path) - 1);
+    } else if (cJSON_IsString(filename_json) && filename_json->valuestring[0]) {
+        const char *fn = filename_json->valuestring;
+        if (strchr(fn, '/') || strchr(fn, '\\')) {
+            ESP_LOGE(TAG, "POST /api/track[%d]: invalid filename '%s' (path separators not allowed)", track, fn);
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Invalid filename - path separators not allowed");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+        snprintf(file_path, sizeof(file_path), "/sdcard/%s", fn);
+    }
+
+    if (file_path[0]) {
+        // Verify the file actually exists on the SD card
+        struct stat file_st;
+        if (stat(file_path, &file_st) != 0) {
+            ESP_LOGE(TAG, "POST /api/track[%d]: file not found on SD card: %s", track, file_path);
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "File not found on SD card");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+        // Only update if actually different
+        if (strcmp(g_track_manager->tracks[track].file_path, file_path) != 0) {
+            strncpy(g_track_manager->tracks[track].file_path, file_path,
+                    sizeof(g_track_manager->tracks[track].file_path) - 1);
+            file_changed = true;
+        }
+    }
+
+    // Helper macro: send 503 and return on audio queue full
+    // (avoids duplicating the pattern for every xQueueSend call below)
+#define QUEUE_FULL_ERROR(action_name) \
+    do { \
+        ESP_LOGE(TAG, "POST /api/track[%d]: audio queue full, " action_name " dropped", track); \
+        httpd_resp_set_status(req, "503 Service Unavailable"); \
+        cJSON_AddBoolToObject(response, "success", false); \
+        cJSON_AddStringToObject(response, "error", "Audio control queue full"); \
+        send_json_response(req, response); \
+        cJSON_Delete(response); \
+        cJSON_Delete(request); \
+        return ESP_OK; \
+    } while (0)
+
+    // --- volume (optional) ---
+    // Volume is a state change like any other — a dropped message means silence.
+    cJSON *volume_json = cJSON_GetObjectItem(request, "volume");
+    if (cJSON_IsNumber(volume_json)) {
+        int vol = volume_json->valueint;
+        if (vol < 0) vol = 0;
+        if (vol > 100) vol = 100;
+        audio_control_msg_t vol_msg = { .type = AUDIO_ACTION_SET_VOLUME, .data = {} };
+        vol_msg.data.set_volume.track_index = track;
+        vol_msg.data.set_volume.volume_percent = vol;
+        if (xQueueSend(g_track_manager->audio_control_queue, &vol_msg, pdMS_TO_TICKS(500)) == pdPASS) {
+            g_track_manager->tracks[track].volume_percent = vol;
+        } else {
+            QUEUE_FULL_ERROR("SET_VOLUME");
+        }
+    }
+
+    // --- active (optional) ---
+    // Note: active state is written by the audio control task when it processes the message.
+    // The HTTP task does NOT write tracks[track].active to avoid races.
+    cJSON *active_json = cJSON_GetObjectItem(request, "active");
+    if (cJSON_IsBool(active_json)) {
+        bool want_active = cJSON_IsTrue(active_json);
+        if (want_active) {
+            // Must have a file configured
+            if (g_track_manager->tracks[track].file_path[0] == '\0') {
+                ESP_LOGE(TAG, "POST /api/track[%d]: cannot activate - no file configured", track);
+                httpd_resp_set_status(req, "400 Bad Request");
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error", "No file configured for this track");
+                send_json_response(req, response);
+                cJSON_Delete(response);
+                cJSON_Delete(request);
+                return ESP_OK;
+            }
+            audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
+            start_msg.data.start_track.track_index = track;
+            strncpy(start_msg.data.start_track.file_path,
+                    g_track_manager->tracks[track].file_path,
+                    sizeof(start_msg.data.start_track.file_path) - 1);
+            if (xQueueSend(g_track_manager->audio_control_queue, &start_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+                QUEUE_FULL_ERROR("START_TRACK");
+            }
+        } else {
+            audio_control_msg_t stop_msg = { .type = AUDIO_ACTION_STOP_TRACK, .data = {} };
+            stop_msg.data.stop_track.track_index = track;
+            if (xQueueSend(g_track_manager->audio_control_queue, &stop_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+                QUEUE_FULL_ERROR("STOP_TRACK");
+            }
+        }
+    } else if (file_changed && g_track_manager->tracks[track].active) {
+        // File changed while track was active — restart with new file
+        audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
+        start_msg.data.start_track.track_index = track;
+        strncpy(start_msg.data.start_track.file_path,
+                g_track_manager->tracks[track].file_path,
+                sizeof(start_msg.data.start_track.file_path) - 1);
+        if (xQueueSend(g_track_manager->audio_control_queue, &start_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+            QUEUE_FULL_ERROR("START_TRACK (file change)");
+        }
+    }
+
+#undef QUEUE_FULL_ERROR
+
+    // Build response
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddNumberToObject(response, "track", track);
+    const char *mode_str = (g_track_manager->tracks[track].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop";
+    cJSON_AddStringToObject(response, "mode", mode_str);
+    cJSON_AddBoolToObject(response, "active", g_track_manager->tracks[track].active);
+    cJSON_AddStringToObject(response, "file", g_track_manager->tracks[track].file_path);
+    cJSON_AddNumberToObject(response, "volume", g_track_manager->tracks[track].volume_percent);
+
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    return ret;
+}
+
+// --- Removed: loop_file_handler placeholder (kept for compiler) ---
 static esp_err_t loop_file_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "POST /api/loop/file");
     
@@ -325,7 +540,7 @@ static esp_err_t loop_file_handler(httpd_req_t *req) {
     }
     
     // Send message to audio control task to start the track
-    if (g_loop_manager && g_loop_manager->audio_control_queue) {
+    if (g_track_manager && g_track_manager->audio_control_queue) {
         audio_control_msg_t control_msg;
         control_msg.type = AUDIO_ACTION_START_TRACK;
         control_msg.data.start_track.track_index = track;
@@ -333,7 +548,7 @@ static esp_err_t loop_file_handler(httpd_req_t *req) {
         control_msg.data.start_track.file_path[sizeof(control_msg.data.start_track.file_path) - 1] = '\0';
         
         // Send message with timeout
-        if (xQueueSend(g_loop_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+        if (xQueueSend(g_track_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
             // Note: Loop state is now managed by audio control task
             // We don't update it here anymore
             
@@ -399,7 +614,7 @@ static esp_err_t loop_start_handler(httpd_req_t *req) {
     }
     
     // Check if there's a file already configured for this track
-    if (g_loop_manager && strlen(g_loop_manager->loops[track].file_path) == 0) {
+    if (g_track_manager && strlen(g_track_manager->tracks[track].file_path) == 0) {
         cJSON_AddBoolToObject(response, "success", false);
         cJSON_AddStringToObject(response, "error", "No file configured for this track. Use /api/loop/file first.");
         send_json_response(req, response);
@@ -409,20 +624,20 @@ static esp_err_t loop_start_handler(httpd_req_t *req) {
     }
     
     // Just restart the track with its current file
-    if (g_loop_manager && g_loop_manager->audio_control_queue) {
+    if (g_track_manager && g_track_manager->audio_control_queue) {
         audio_control_msg_t control_msg;
         control_msg.type = AUDIO_ACTION_START_TRACK;
         control_msg.data.start_track.track_index = track;
         strncpy(control_msg.data.start_track.file_path, 
-                g_loop_manager->loops[track].file_path, 
+                g_track_manager->tracks[track].file_path, 
                 sizeof(control_msg.data.start_track.file_path) - 1);
         control_msg.data.start_track.file_path[sizeof(control_msg.data.start_track.file_path) - 1] = '\0';
         
         // Send message with timeout
-        if (xQueueSend(g_loop_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+        if (xQueueSend(g_track_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
             cJSON_AddBoolToObject(response, "success", true);
             cJSON_AddNumberToObject(response, "track", track);
-            cJSON_AddStringToObject(response, "file", g_loop_manager->loops[track].file_path);
+            cJSON_AddStringToObject(response, "file", g_track_manager->tracks[track].file_path);
             cJSON_AddStringToObject(response, "message", "Loop started");
         } else {
             cJSON_AddBoolToObject(response, "success", false);
@@ -482,13 +697,13 @@ static esp_err_t loop_stop_handler(httpd_req_t *req) {
     }
     
     // Send message to audio control task to stop the track
-    if (g_loop_manager && g_loop_manager->audio_control_queue) {
+    if (g_track_manager && g_track_manager->audio_control_queue) {
         audio_control_msg_t control_msg;
         control_msg.type = AUDIO_ACTION_STOP_TRACK;
         control_msg.data.stop_track.track_index = track;
         
         // Send message with timeout
-        if (xQueueSend(g_loop_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+        if (xQueueSend(g_track_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
             // Note: Loop state is now managed by audio control task
             // We don't update it here anymore
             
@@ -570,14 +785,14 @@ static esp_err_t loop_volume_handler(httpd_req_t *req) {
     if (volume > 100) volume = 100;
     
     // Send message to audio control task to set the volume
-    if (g_loop_manager && g_loop_manager->audio_control_queue) {
+    if (g_track_manager && g_track_manager->audio_control_queue) {
         audio_control_msg_t control_msg;
         control_msg.type = AUDIO_ACTION_SET_VOLUME;
         control_msg.data.set_volume.track_index = track;
         control_msg.data.set_volume.volume_percent = volume;
         
         // Send message with timeout
-        if (xQueueSend(g_loop_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+        if (xQueueSend(g_track_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
             // Note: Loop state is now managed by audio control task
             // We don't update it here anymore
             
@@ -638,30 +853,40 @@ static esp_err_t global_volume_handler(httpd_req_t *req) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     
-    // Send message to audio control task to set global volume
-    if (g_loop_manager && g_loop_manager->audio_control_queue) {
-        audio_control_msg_t control_msg;
-        control_msg.type = AUDIO_ACTION_SET_GLOBAL_VOLUME;
-        control_msg.data.set_global_volume.volume_percent = volume;
-        
-        // Send message with timeout
-        if (xQueueSend(g_loop_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(100)) == pdPASS) {
-            cJSON_AddBoolToObject(response, "success", true);
-            cJSON_AddNumberToObject(response, "volume", volume);
-            cJSON_AddStringToObject(response, "message", "Global volume adjustment command sent");
-        } else {
-            cJSON_AddBoolToObject(response, "success", false);
-            cJSON_AddStringToObject(response, "error", "Failed to send command to audio task");
-        }
-    } else {
+    if (!g_track_manager || !g_track_manager->audio_control_queue) {
+        ESP_LOGE(TAG, "POST /api/global/volume: audio system not initialized");
+        httpd_resp_set_status(req, "503 Service Unavailable");
         cJSON_AddBoolToObject(response, "success", false);
         cJSON_AddStringToObject(response, "error", "Audio system not initialized");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
     }
-    
+
+    audio_control_msg_t control_msg;
+    control_msg.type = AUDIO_ACTION_SET_GLOBAL_VOLUME;
+    control_msg.data.set_global_volume.volume_percent = volume;
+
+    if (xQueueSend(g_track_manager->audio_control_queue, &control_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+        ESP_LOGE(TAG, "POST /api/global/volume: audio queue full, SET_GLOBAL_VOLUME dropped");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Audio control queue full");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+
+    g_track_manager->global_volume_percent = volume;
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddNumberToObject(response, "volume", volume);
+
     esp_err_t ret = send_json_response(req, response);
     cJSON_Delete(response);
     cJSON_Delete(request);
-    
+
     return ret;
 }
 
@@ -913,49 +1138,53 @@ static esp_err_t config_status_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(response, "config_path", CONFIG_FILE_PATH);
     
     // If configuration exists, show current vs saved
-    if (config_exists_flag && g_loop_manager) {
+    if (config_exists_flag && g_track_manager) {
         // Load saved configuration
-        loop_config_t saved_config;
+        track_config_t saved_config;
         if (config_load(&saved_config) == ESP_OK) {
             // Compare current with saved
             cJSON *current = cJSON_CreateObject();
             cJSON *saved = cJSON_CreateObject();
             
             // Add current state
-            cJSON_AddNumberToObject(current, "global_volume", g_loop_manager->global_volume_percent);
-            cJSON *current_loops = cJSON_CreateArray();
+            cJSON_AddNumberToObject(current, "global_volume", g_track_manager->global_volume_percent);
+            cJSON *current_tracks = cJSON_CreateArray();
             for (int i = 0; i < MAX_TRACKS; i++) {
-                cJSON *loop = cJSON_CreateObject();
-                cJSON_AddNumberToObject(loop, "track", i);
-                cJSON_AddBoolToObject(loop, "playing", g_loop_manager->loops[i].is_playing);
-                cJSON_AddStringToObject(loop, "file", g_loop_manager->loops[i].file_path);
-                cJSON_AddNumberToObject(loop, "volume", g_loop_manager->loops[i].volume_percent);
-                cJSON_AddItemToArray(current_loops, loop);
+                cJSON *t = cJSON_CreateObject();
+                cJSON_AddNumberToObject(t, "track", i);
+                const char *ms = (g_track_manager->tracks[i].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop";
+                cJSON_AddStringToObject(t, "mode", ms);
+                cJSON_AddBoolToObject(t, "active", g_track_manager->tracks[i].active);
+                cJSON_AddStringToObject(t, "file", g_track_manager->tracks[i].file_path);
+                cJSON_AddNumberToObject(t, "volume", g_track_manager->tracks[i].volume_percent);
+                cJSON_AddItemToArray(current_tracks, t);
             }
-            cJSON_AddItemToObject(current, "loops", current_loops);
-            
+            cJSON_AddItemToObject(current, "tracks", current_tracks);
+
             // Add saved state
             cJSON_AddNumberToObject(saved, "global_volume", saved_config.global_volume_percent);
-            cJSON *saved_loops = cJSON_CreateArray();
+            cJSON *saved_tracks = cJSON_CreateArray();
             for (int i = 0; i < MAX_TRACKS; i++) {
-                cJSON *loop = cJSON_CreateObject();
-                cJSON_AddNumberToObject(loop, "track", i);
-                cJSON_AddBoolToObject(loop, "playing", saved_config.loops[i].is_playing);
-                cJSON_AddStringToObject(loop, "file", saved_config.loops[i].file_path);
-                cJSON_AddNumberToObject(loop, "volume", saved_config.loops[i].volume_percent);
-                cJSON_AddItemToArray(saved_loops, loop);
+                cJSON *t = cJSON_CreateObject();
+                cJSON_AddNumberToObject(t, "track", i);
+                const char *ms = (saved_config.tracks[i].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop";
+                cJSON_AddStringToObject(t, "mode", ms);
+                cJSON_AddBoolToObject(t, "active", saved_config.tracks[i].active);
+                cJSON_AddStringToObject(t, "file", saved_config.tracks[i].file_path);
+                cJSON_AddNumberToObject(t, "volume", saved_config.tracks[i].volume_percent);
+                cJSON_AddItemToArray(saved_tracks, t);
             }
-            cJSON_AddItemToObject(saved, "loops", saved_loops);
+            cJSON_AddItemToObject(saved, "tracks", saved_tracks);
             
             cJSON_AddItemToObject(response, "current_config", current);
             cJSON_AddItemToObject(response, "saved_config", saved);
             
             // Check if configs match
-            bool configs_match = (g_loop_manager->global_volume_percent == saved_config.global_volume_percent);
+            bool configs_match = (g_track_manager->global_volume_percent == saved_config.global_volume_percent);
             for (int i = 0; i < MAX_TRACKS && configs_match; i++) {
-                if (g_loop_manager->loops[i].is_playing != saved_config.loops[i].is_playing ||
-                    strcmp(g_loop_manager->loops[i].file_path, saved_config.loops[i].file_path) != 0 ||
-                    g_loop_manager->loops[i].volume_percent != saved_config.loops[i].volume_percent) {
+                if (g_track_manager->tracks[i].active != saved_config.tracks[i].active ||
+                    strcmp(g_track_manager->tracks[i].file_path, saved_config.tracks[i].file_path) != 0 ||
+                    g_track_manager->tracks[i].volume_percent != saved_config.tracks[i].volume_percent) {
                     configs_match = false;
                 }
             }
@@ -977,16 +1206,16 @@ static esp_err_t config_save_handler(httpd_req_t *req) {
     
     cJSON *response = cJSON_CreateObject();
     
-    if (!g_loop_manager) {
+    if (!g_track_manager) {
         cJSON_AddBoolToObject(response, "success", false);
-        cJSON_AddStringToObject(response, "error", "Loop manager not initialized");
+        cJSON_AddStringToObject(response, "error", "Track manager not initialized");
         send_json_response(req, response);
         cJSON_Delete(response);
         return ESP_OK;
     }
     
     // Save current configuration
-    esp_err_t ret = config_save(g_loop_manager);
+    esp_err_t ret = config_save(g_track_manager);
     
     if (ret == ESP_OK) {
         cJSON_AddBoolToObject(response, "success", true);
@@ -1011,7 +1240,7 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
     
     cJSON *response = cJSON_CreateObject();
     
-    if (!g_loop_manager || !g_loop_manager->audio_control_queue) {
+    if (!g_track_manager || !g_track_manager->audio_control_queue) {
         cJSON_AddBoolToObject(response, "success", false);
         cJSON_AddStringToObject(response, "error", "Audio system not initialized");
         send_json_response(req, response);
@@ -1020,12 +1249,12 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
     }
     
     // Load configuration from file
-    loop_config_t config;
+    track_config_t config;
     esp_err_t ret = config_load(&config);
     
     if (ret == ESP_OK) {
         // Apply the configuration
-        ret = config_apply(&config, g_loop_manager->audio_control_queue, g_loop_manager);
+        ret = config_apply(&config, g_track_manager->audio_control_queue, g_track_manager);
         
         if (ret == ESP_OK) {
             cJSON_AddBoolToObject(response, "success", true);
@@ -1038,12 +1267,11 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
             for (int i = 0; i < MAX_TRACKS; i++) {
                 cJSON *loop = cJSON_CreateObject();
                 cJSON_AddNumberToObject(loop, "track", i);
-                cJSON_AddBoolToObject(loop, "playing", config.loops[i].is_playing);
-                cJSON_AddStringToObject(loop, "file", config.loops[i].file_path);
-                cJSON_AddNumberToObject(loop, "volume", config.loops[i].volume_percent);
+                cJSON_AddStringToObject(loop, "file", config.tracks[i].file_path);
+                cJSON_AddNumberToObject(loop, "volume", config.tracks[i].volume_percent);
                 cJSON_AddItemToArray(loops, loop);
             }
-            cJSON_AddItemToObject(loaded_config, "loops", loops);
+            cJSON_AddItemToObject(loaded_config, "tracks", loops);
             cJSON_AddItemToObject(response, "loaded_config", loaded_config);
         } else {
             cJSON_AddBoolToObject(response, "success", false);
@@ -2022,7 +2250,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "        var f = loop.file ? loop.file.split('/').pop() : 'No file';"
         "        h += '<div class=\"track\">';"
         "        h += '<div class=\"track-header\"><span class=\"track-title\">Track ' + (loop.track + 1) + '</span>';"
-        "        h += '<span class=\"' + (loop.playing ? 'playing-badge' : 'stopped-badge') + '\">' + (loop.playing ? 'PLAYING' : 'STOPPED') + '</span></div>';"
+        "        h += '<span class=\"' + (loop.active ? 'playing-badge' : 'stopped-badge') + '\">' + (loop.active ? 'ACTIVE' : 'STOPPED') + '</span></div>';"
         "        h += '<div class=\"track-info\"><div>File: ' + f + '</div><div>Volume: ' + loop.volume + '%</div></div>';"
         "        h += '<div class=\"volume-bar\"><div class=\"volume-fill\" style=\"width: ' + loop.volume + '%\"></div></div>';"
         "        h += '</div>';"
@@ -2084,9 +2312,9 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     init_cjson_spiram();
     ESP_LOGI(TAG, "cJSON configured to use SPIRAM");
     
-    // Note: loop manager will be set by audio_control_task via http_server_set_loop_manager
+    // Note: loop manager will be set by audio_control_task via http_server_set_track_manager
     // We don't create one here - we'll use the shared one from audio control task
-    g_loop_manager = NULL;
+    g_track_manager = NULL;
     
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
@@ -2149,61 +2377,28 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         ESP_LOGE(TAG, "Failed to register handler for /api/files: %s", esp_err_to_name(ret));
     }
     
-    httpd_uri_t loops_uri = {
-        .uri = "/api/loops",
+    httpd_uri_t tracks_uri = {
+        .uri = "/api/tracks",
         .method = HTTP_GET,
-        .handler = loops_get_handler,
+        .handler = tracks_get_handler,
         .user_ctx = NULL
     };
-    ret = httpd_register_uri_handler(server, &loops_uri);
+    ret = httpd_register_uri_handler(server, &tracks_uri);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/loops: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to register handler for /api/tracks: %s", esp_err_to_name(ret));
     }
-    
-    httpd_uri_t file_uri = {
-        .uri = "/api/loop/file",
+
+    httpd_uri_t track_uri = {
+        .uri = "/api/track",
         .method = HTTP_POST,
-        .handler = loop_file_handler,
+        .handler = track_post_handler,
         .user_ctx = NULL
     };
-    ret = httpd_register_uri_handler(server, &file_uri);
+    ret = httpd_register_uri_handler(server, &track_uri);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/loop/file: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to register handler for /api/track: %s", esp_err_to_name(ret));
     }
-    
-    httpd_uri_t start_uri = {
-        .uri = "/api/loop/start",
-        .method = HTTP_POST,
-        .handler = loop_start_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &start_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/loop/start: %s", esp_err_to_name(ret));
-    }
-    
-    httpd_uri_t stop_uri = {
-        .uri = "/api/loop/stop",
-        .method = HTTP_POST,
-        .handler = loop_stop_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &stop_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/loop/stop: %s", esp_err_to_name(ret));
-    }
-    
-    httpd_uri_t volume_uri = {
-        .uri = "/api/loop/volume",
-        .method = HTTP_POST,
-        .handler = loop_volume_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &volume_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/loop/volume: %s", esp_err_to_name(ret));
-    }
-    
+
     httpd_uri_t global_volume_uri = {
         .uri = "/api/global/volume",
         .method = HTTP_POST,
@@ -2396,33 +2591,33 @@ esp_err_t http_server_stop(void) {
     httpd_stop(server);
     server = NULL;
     
-    // Note: We don't free g_loop_manager here because it's owned by audio_control_task
-    g_loop_manager = NULL;
+    // Note: We don't free g_track_manager here because it's owned by audio_control_task
+    g_track_manager = NULL;
     
     return ESP_OK;
 }
 
 /**
- * @brief Get current loop status
+ * @brief Get current track status (unused - state accessed via g_track_manager directly)
  */
-esp_err_t http_server_get_loop_status(loop_manager_t *manager) {
-    if (!manager || !g_loop_manager) {
+esp_err_t http_server_get_loop_status(track_manager_t *manager) {
+    if (!manager || !g_track_manager) {
         return ESP_ERR_INVALID_ARG;
     }
     
-    memcpy(manager, g_loop_manager, sizeof(loop_manager_t));
+    memcpy(manager, g_track_manager, sizeof(track_manager_t));
     return ESP_OK;
 }
 
 /**
- * @brief Set the loop manager reference
+ * @brief Set the track manager reference
  */
-esp_err_t http_server_set_loop_manager(loop_manager_t *manager) {
+esp_err_t http_server_set_track_manager(track_manager_t *manager) {
     if (!manager) {
         return ESP_ERR_INVALID_ARG;
     }
     
-    g_loop_manager = manager;
+    g_track_manager = manager;
     ESP_LOGI(TAG, "Loop manager reference updated");
     return ESP_OK;
 }

@@ -173,31 +173,41 @@ python id_manager.py -c auto-assign -p STAGE -s 100
 
 The device controller performs operations on a single device by its ID.
 
+Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `trigger`), an **active** flag, a **file**, and a **volume**. All of these are configured with a single `set-track` command; only the fields you provide are changed.
+
 #### Basic Use
 
 ```bash
 # Show device status
 python device_controller.py --id MURMURA-001 --command status
 
-# Stop all loops on a device
-python device_controller.py --id MURMURA-001 --command stop
+# Get track status (mode, active, playing, file, volume for all three tracks)
+python device_controller.py --id MURMURA-001 --command get-tracks
 
-# Start configured loops
-python device_controller.py --id MURMURA-001 --command start
+# Start track 0 as a looping ambient sound
+python device_controller.py --id MURMURA-001 --command set-track --track 0 --mode loop --active true --file ambient.wav --volume 80
 
-# Set volume on a specific device
-python device_controller.py --id MURMURA-001 --command set-volume --track 0 --volume 50
-python device_controller.py --id MURMURA-001 --command set-volume --global --volume 75
+# Stop track 0
+python device_controller.py --id MURMURA-001 --command set-track --track 0 --active false
 
-# Get loop status
-python device_controller.py --id MURMURA-001 --command get-loops
+# Change volume on track 1 without affecting anything else
+python device_controller.py --id MURMURA-001 --command set-track --track 1 --volume 50
 
-# Set file for a track
-python device_controller.py --id MURMURA-001 --command set-file --track 0 --file-index 2
+# Set track 2 as a one-shot trigger
+python device_controller.py --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --active true
 
-# Save / load configuration
+# Set global (master) volume
+python device_controller.py --id MURMURA-001 --command set-volume --volume 75
+
+# Change device ID
+python device_controller.py --id MURMURA-001 --command set-id --new-id STAGE-CENTER
+
+# Save / load configuration to/from SD card
 python device_controller.py --id MURMURA-001 --command save-config
 python device_controller.py --id MURMURA-001 --command load-config
+
+# List audio files on the device SD card
+python device_controller.py --id MURMURA-001 --command list-files
 
 # Reboot the device
 python device_controller.py --id MURMURA-001 --command reboot
@@ -210,7 +220,7 @@ python device_controller.py --help
 
 Required arguments:
   --id ID, -i ID        Device ID to control
-  --command {status,stop,start,set-volume,set-id,save-config,load-config,get-loops,set-file,reboot}, -c
+  --command {status,get-tracks,set-track,set-volume,set-id,save-config,load-config,reboot,list-files}, -c
                         Command to execute on the device
 
 Optional arguments:
@@ -218,27 +228,36 @@ Optional arguments:
   --timeout SEC, -t SEC         Request timeout in seconds (default: 5)
   --force, -f                   Skip device ID verification (not recommended)
 
-Volume control:
-  --track {0,1,2}, -k {0,1,2}   Track number for track-specific commands
-  --volume LEVEL, -v LEVEL       Volume level (0-100)
-  --global, -g                   Set global volume instead of track volume
+Track control (for set-track):
+  --track {0,1,2}, -k {0,1,2}   Track number (required for set-track)
+  --mode {loop,trigger}          Track mode: loop (continuous) or trigger (play once)
+  --active {true,false}          Enable/arm (true) or stop (false) the track
+  --file FILENAME                Audio filename, e.g. ambient.wav
+  --volume LEVEL, -v LEVEL       Per-track volume (0-100)
+
+Volume control (for set-volume):
+  --volume LEVEL, -v LEVEL       Global volume level (0-100)
 
 Device ID control:
   --new-id ID, -n ID             New device ID for set-id command
-
-File control:
-  --file-index INDEX, -x INDEX   File index from /api/files for set-file command
-  --file-path PATH, -p PATH      Direct file path for set-file command
 ```
+
+#### Track Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `loop` | File plays continuously in a loop while `active=true` |
+| `trigger` | File plays once when triggered by the trigger system; `active=true` arms the track |
 
 #### Shortcut Examples
 
 ```bash
 python device_controller.py -i MURMURA-001 -c status
-python device_controller.py -i MURMURA-001 -c stop
-python device_controller.py -i MURMURA-001 -c set-volume -k 0 -v 50
+python device_controller.py -i MURMURA-001 -c get-tracks
+python device_controller.py -i MURMURA-001 -c set-track -k 0 --mode loop --active true --file ambient.wav -v 80
+python device_controller.py -i MURMURA-001 -c set-track -k 0 --active false
+python device_controller.py -i MURMURA-001 -c set-volume -v 75
 python device_controller.py -i MURMURA-001 -c set-id -n STAGE-01
-python device_controller.py -i MURMURA-001 -c set-file -k 0 -x 2
 python device_controller.py -i MURMURA-001 -c reboot
 ```
 

@@ -1,22 +1,16 @@
-# Audio Loop Controller HTTP API
+# Murmura HTTP API
 
 ## Overview
 
-The ESP32 Audio Loop Controller provides a JSON-based HTTP API for remote control of audio loops. Once connected to WiFi, the device exposes a web server on port 80 that allows you to:
+The ESP32 Murmura device provides a JSON-based HTTP API for remote control of audio tracks. Once connected to WiFi, the device exposes a web server on port 80.
 
-- List available audio files on the SD card
-- Set files for individual tracks
-- Start and stop loops on individual tracks
-- Adjust volume for each track (0-100%)
-- Adjust global/master volume (0-100%)
-- Monitor currently playing loops
+Each device has three tracks (0, 1, 2). Each track has:
+- **mode**: `"loop"` (continuously repeats) or `"trigger"` (plays once when triggered)
+- **active**: whether the track is enabled/playing
+- **file**: the audio file assigned to the track
+- **volume**: per-track volume (0–100%)
 
-## Getting Started
-
-1. Ensure your device is connected to WiFi (see WIFI_SETUP.md)
-2. Find your device's IP address (displayed in serial logs)
-3. Access the API documentation at: `http://<device-ip>/`
-4. Use the API endpoints below to control loops
+There is also a global/master volume that scales all tracks.
 
 ## API Endpoints
 
@@ -24,7 +18,7 @@ The ESP32 Audio Loop Controller provides a JSON-based HTTP API for remote contro
 
 **GET** `/api/files`
 
-Lists all audio files (WAV and MP3) in the SD card root directory.
+Lists all audio files (WAV) in the SD card root directory.
 
 **Response:**
 ```json
@@ -36,182 +30,124 @@ Lists all audio files (WAV and MP3) in the SD card root directory.
       "type": "wav",
       "path": "/sdcard/track1.wav",
       "size": 1048576
-    },
-    {
-      "index": 1,
-      "name": "track2.wav",
-      "type": "wav",
-      "path": "/sdcard/track2.wav",
-      "size": 2097152
     }
   ],
-  "count": 2
+  "count": 1
 }
 ```
 
-**Note:** The `size` field indicates the file size in bytes.
+---
 
-### List Loop Status
+### Get Track Status
 
-**GET** `/api/loops`
+**GET** `/api/tracks`
 
-Returns the complete state of all tracks (always returns all 3 tracks).
+Returns the current state of all three tracks.
 
 **Response:**
 ```json
 {
-  "loops": [
+  "tracks": [
     {
       "track": 0,
-      "file": "/sdcard/track1.wav",
-      "volume": 100,
-      "playing": true
+      "mode": "loop",
+      "active": true,
+      "playing": true,
+      "file": "/sdcard/ambient.wav",
+      "volume": 80
     },
     {
       "track": 1,
-      "file": "",
-      "volume": 50,
-      "playing": false
+      "mode": "trigger",
+      "active": true,
+      "playing": false,
+      "file": "/sdcard/sting.wav",
+      "volume": 100
     },
     {
       "track": 2,
-      "file": "/sdcard/track3.wav",
-      "volume": 75,
-      "playing": true
+      "mode": "loop",
+      "active": false,
+      "playing": false,
+      "file": "",
+      "volume": 100
     }
   ],
-  "active_count": 2,
-  "max_tracks": 3,
   "global_volume": 75
 }
 ```
 
-**Note:** 
-- All tracks are always returned, with `file` being an empty string if no file is set
-- `volume` is track-specific volume (0-100%)
-- `global_volume` is the master volume control (0-100%)
+**Fields:**
+- `mode`: `"loop"` or `"trigger"`
+- `active`: true if the track is enabled (looping) or armed (trigger)
+- `playing`: true if audio is currently being output (runtime state, not persisted)
+- `file`: full path, or empty string if none assigned
+- `volume`: per-track volume 0–100%
 
-### Set Loop File
+---
 
-**POST** `/api/loop/file`
+### Set Track Configuration
 
-Sets the file for a specific track and starts playing it immediately.
+**POST** `/api/track`
 
-**Request Body (Option 1 - using file index):**
-```json
-{
-  "track": 0,
-  "file_index": 0  // Use file index from /api/files
-}
-```
-
-**Request Body (Option 2 - using full path):**
-```json
-{
-  "track": 0,
-  "file_path": "/sdcard/track1.wav"  // Specify full path
-}
-```
-
-**Request Body (Option 3 - using filename):**
-```json
-{
-  "track": 0,
-  "filename": "track1.wav"  // Specify filename only (no path)
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "track": 0,
-  "file": "/sdcard/track1.wav",
-  "message": "File set and loop started"
-}
-```
-
-### Start a Loop
-
-**POST** `/api/loop/start`
-
-Starts or restarts playing a track with its currently configured file.
-
-**Request Body:**
-```json
-{
-  "track": 0
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "track": 0,
-  "file": "/sdcard/track1.wav",
-  "message": "Loop started"
-}
-```
-
-**Note:** Returns an error if no file is configured for the track. Use `/api/loop/file` first.
-
-### Stop a Loop
-
-**POST** `/api/loop/stop`
-
-Stops a loop on a specific track. The file assignment and volume are preserved.
-
-**Request Body:**
-```json
-{
-  "track": 0
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "track": 0,
-  "message": "Loop stop command sent"
-}
-```
-
-### Set Track Volume
-
-**POST** `/api/loop/volume`
-
-Adjusts the volume for a specific track.
+Updates configuration for a single track. All fields except `track` are optional. Only the fields present in the request are applied.
 
 **Request Body:**
 ```json
 {
   "track": 0,
-  "volume": 75  // 0-100%
+  "mode": "loop",
+  "active": true,
+  "file": "ambient.wav",
+  "volume": 80
 }
 ```
 
-**Response:**
+**Fields:**
+- `track` *(required)*: 0, 1, or 2
+- `mode` *(optional)*: `"loop"` or `"trigger"`
+- `active` *(optional)*: `true` to start/arm, `false` to stop
+- `file` *(optional)*: filename (e.g. `"ambient.wav"`) or full path (e.g. `"/sdcard/ambient.wav"`)
+- `volume` *(optional)*: 0–100
+
+**Behavior:**
+- Setting `active: true` starts playback (loop mode) or arms for triggering (trigger mode). Requires a file to be configured.
+- Setting `active: false` stops the track.
+- Changing `file` while the track is active restarts playback with the new file.
+- Changing `volume` or `mode` alone does not start/stop the track.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "track": 0,
-  "volume": 75,
-  "message": "Volume adjustment command sent"
+  "mode": "loop",
+  "active": true,
+  "file": "/sdcard/ambient.wav",
+  "volume": 80
 }
 ```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "No file configured for this track"
+}
+```
+
+---
 
 ### Set Global Volume
 
 **POST** `/api/global/volume`
 
-Adjusts the master/global volume (affects all tracks).
+Adjusts the master volume (affects all tracks via hardware codec).
 
 **Request Body:**
 ```json
 {
-  "volume": 85  // 0-100%
+  "volume": 75
 }
 ```
 
@@ -219,287 +155,34 @@ Adjusts the master/global volume (affects all tracks).
 ```json
 {
   "success": true,
-  "volume": 85,
+  "volume": 75,
   "message": "Global volume adjustment command sent"
 }
 ```
 
-## Example Usage
+---
 
-### Using curl
-
-```bash
-# List available files
-curl http://192.168.1.100/api/files
-
-# Set file for track 0 (starts playing immediately)
-curl -X POST http://192.168.1.100/api/loop/file \
-  -H "Content-Type: application/json" \
-  -d '{"track": 0, "file_index": 0}'
-
-# Stop loop on track 0
-curl -X POST http://192.168.1.100/api/loop/stop \
-  -H "Content-Type: application/json" \
-  -d '{"track": 0}'
-
-# Restart loop on track 0 (uses previously set file)
-curl -X POST http://192.168.1.100/api/loop/start \
-  -H "Content-Type: application/json" \
-  -d '{"track": 0}'
-
-# Set track 0 volume to 50%
-curl -X POST http://192.168.1.100/api/loop/volume \
-  -H "Content-Type: application/json" \
-  -d '{"track": 0, "volume": 50}'
-
-# Set global volume to 85%
-curl -X POST http://192.168.1.100/api/global/volume \
-  -H "Content-Type: application/json" \
-  -d '{"volume": 85}'
-
-# Check status of all loops
-curl http://192.168.1.100/api/loops
-```
-
-### Using JavaScript/Fetch
-
-```javascript
-// Set file and start loop
-fetch('http://192.168.1.100/api/loop/file', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    track: 0,
-    file_index: 0
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-
-// Stop a loop
-fetch('http://192.168.1.100/api/loop/stop', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    track: 0
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-
-// Restart a loop
-fetch('http://192.168.1.100/api/loop/start', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    track: 0
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-
-// Adjust track volume
-fetch('http://192.168.1.100/api/loop/volume', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    track: 0,
-    volume: 75
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-
-// Adjust global volume
-fetch('http://192.168.1.100/api/global/volume', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    volume: 85
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-
-// Get loop status
-fetch('http://192.168.1.100/api/loops')
-.then(response => response.json())
-.then(data => console.log(data));
-```
-
-### Using Python
-
-```python
-import requests
-import json
-
-# Device IP
-base_url = "http://192.168.1.100"
-
-# List files
-response = requests.get(f"{base_url}/api/files")
-files = response.json()
-print(f"Available files: {files}")
-
-# Set file and start loop
-response = requests.post(
-    f"{base_url}/api/loop/file",
-    json={"track": 0, "file_index": 0}
-)
-print(f"File set response: {response.json()}")
-
-# Stop loop
-response = requests.post(
-    f"{base_url}/api/loop/stop",
-    json={"track": 0}
-)
-print(f"Stop response: {response.json()}")
-
-# Restart loop
-response = requests.post(
-    f"{base_url}/api/loop/start",
-    json={"track": 0}
-)
-print(f"Start response: {response.json()}")
-
-# Set track volume
-response = requests.post(
-    f"{base_url}/api/loop/volume",
-    json={"track": 0, "volume": 75}
-)
-print(f"Track volume response: {response.json()}")
-
-# Set global volume
-response = requests.post(
-    f"{base_url}/api/global/volume",
-    json={"volume": 85}
-)
-print(f"Global volume response: {response.json()}")
-
-# Get loop status
-response = requests.get(f"{base_url}/api/loops")
-loops = response.json()
-print(f"Loop status: {loops}")
-```
-
-## Track Management
-
-- The system supports up to 3 simultaneous tracks (0, 1, 2)
-- Each track can play one audio file at a time
-- Files automatically loop when they reach the end
-- Setting a new file on a track will stop the currently playing file and start the new one
-- Stopping a track preserves the file assignment and volume - you can restart it later
-- Volume adjustments are applied in real-time and persist across stop/start
-
-## Volume Control
-
-The system has two levels of volume control:
-
-1. **Track Volume** (`/api/loop/volume`) - Individual volume for each track (0-100%)
-2. **Global Volume** (`/api/global/volume`) - Master volume that affects all tracks (0-100%)
-
-Volume values:
-- 100% = Full volume (0dB internally)
-- 50% = Half volume (-6dB internally)
-- 25% = Quarter volume (-12dB internally)
-- 0% = Muted (-60dB internally)
-
-## API Design Philosophy
-
-The API separates the concerns of file management, playback control, and volume control:
-
-1. **`/api/loop/file`** - Sets which file a track should play (and starts it immediately)
-2. **`/api/loop/start`** - Starts/restarts playback with the currently set file
-3. **`/api/loop/stop`** - Stops playback but remembers the file and volume
-4. **`/api/loop/volume`** - Adjusts track volume independently of playback state
-5. **`/api/global/volume`** - Adjusts master volume for all tracks
-
-This design allows for:
-- Cleaner semantics - each endpoint has a single purpose
-- Better state management - file assignments and volumes persist
-- Easier UI development - can show all tracks consistently
-- More flexible control - can restart tracks without re-specifying files or volumes
-
-## Configuration Persistence Endpoints
+## Configuration Persistence
 
 ### Get Configuration Status
 
 **GET** `/api/config/status`
 
-Returns both the current running configuration and the saved configuration from the SD card (if it exists).
+Returns current running state and whether a saved config exists on SD card.
 
-**Response (with saved config):**
+**Response:**
 ```json
 {
-  "current": {
-    "global_volume": 85,
-    "loops": [
-      {
-        "track": 0,
-        "is_playing": true,
-        "file_path": "/sdcard/track1.wav",
-        "volume": 100
-      },
-      {
-        "track": 1,
-        "is_playing": false,
-        "file_path": "/sdcard/track2.wav",
-        "volume": 75
-      },
-      {
-        "track": 2,
-        "is_playing": true,
-        "file_path": "/sdcard/track3.wav",
-        "volume": 50
-      }
-    ]
-  },
-  "saved": {
+  "config_exists": true,
+  "config_path": "/sdcard/track_config.json",
+  "current_config": {
     "global_volume": 75,
-    "loops": [
-      {
-        "track": 0,
-        "is_playing": true,
-        "file_path": "/sdcard/track1.wav",
-        "volume": 100
-      },
-      {
-        "track": 1,
-        "is_playing": true,
-        "file_path": "/sdcard/track2.wav",
-        "volume": 100
-      },
-      {
-        "track": 2,
-        "is_playing": true,
-        "file_path": "/sdcard/track3.wav",
-        "volume": 100
-      }
+    "tracks": [
+      { "track": 0, "mode": "loop", "active": true, "file": "/sdcard/ambient.wav", "volume": 80 },
+      { "track": 1, "mode": "trigger", "active": false, "file": "", "volume": 100 },
+      { "track": 2, "mode": "loop", "active": false, "file": "", "volume": 100 }
     ]
-  },
-  "saved_exists": true
-}
-```
-
-**Response (no saved config):**
-```json
-{
-  "current": {
-    "global_volume": 85,
-    "loops": [...]
-  },
-  "saved": null,
-  "saved_exists": false
+  }
 }
 ```
 
@@ -507,24 +190,14 @@ Returns both the current running configuration and the saved configuration from 
 
 **POST** `/api/config/save`
 
-Saves the current configuration (loops, volumes, playing states) to `/sdcard/loop_config.json`. This configuration will be automatically loaded on device startup.
+Saves current track configuration to `/sdcard/track_config.json`. Loaded automatically on next boot.
 
-**Request Body:** None required
-
-**Response (success):**
+**Response:**
 ```json
 {
   "success": true,
-  "message": "Configuration saved to SD card",
-  "path": "/sdcard/loop_config.json"
-}
-```
-
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Failed to save configuration: SD card not mounted"
+  "message": "Configuration saved successfully",
+  "path": "/sdcard/track_config.json"
 }
 ```
 
@@ -532,32 +205,13 @@ Saves the current configuration (loops, volumes, playing states) to `/sdcard/loo
 
 **POST** `/api/config/load`
 
-Loads and applies the saved configuration from `/sdcard/loop_config.json`. This allows you to restore a previously saved configuration without restarting the device.
+Loads and applies saved configuration from SD card.
 
-**Request Body:** None required
-
-**Response (success):**
+**Response:**
 ```json
 {
   "success": true,
-  "message": "Configuration loaded and applied",
-  "tracks_configured": 3
-}
-```
-
-**Response (error - file not found):**
-```json
-{
-  "success": false,
-  "error": "No saved configuration found"
-}
-```
-
-**Response (error - invalid config):**
-```json
-{
-  "success": false,
-  "error": "Invalid configuration format"
+  "message": "Configuration loaded and applied successfully"
 }
 ```
 
@@ -565,50 +219,32 @@ Loads and applies the saved configuration from `/sdcard/loop_config.json`. This 
 
 **DELETE** `/api/config/delete`
 
-Deletes the saved configuration file from the SD card. After deletion, the device will use the default configuration on next startup.
+Deletes saved configuration. Device uses defaults on next boot.
 
-**Request Body:** None required
-
-**Response (success):**
+**Response:**
 ```json
 {
   "success": true,
-  "message": "Configuration file deleted"
+  "message": "Configuration deleted successfully"
 }
 ```
 
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Configuration file not found"
-}
-```
+---
 
-## WiFi Management Endpoints
+## WiFi Management
 
 ### Get WiFi Status
 
 **GET** `/api/wifi/status`
 
-Returns the current WiFi connection status including SSID, IP address, and signal strength.
-
-**Response (when connected):**
+**Response (connected):**
 ```json
 {
   "connected": true,
   "ssid": "MyNetwork",
   "ip_address": "192.168.1.100",
   "rssi": -65,
-  "signal_strength": 70
-}
-```
-
-**Response (when disconnected):**
-```json
-{
-  "connected": false,
-  "state": "scanning"  // or "connecting", "connection_failed", "disconnected"
+  "signal_strength": 75
 }
 ```
 
@@ -616,582 +252,201 @@ Returns the current WiFi connection status including SSID, IP address, and signa
 
 **GET** `/api/wifi/networks`
 
-Returns a list of all WiFi networks configured in the device.
-
-**Response:**
 ```json
 {
   "networks": [
-    {
-      "index": 0,
-      "ssid": "HomeNetwork",
-      "has_password": true,
-      "auth_failed": false,
-      "available": true,
-      "rssi": -65
-    },
-    {
-      "index": 1,
-      "ssid": "OfficeNetwork",
-      "has_password": true,
-      "auth_failed": false,
-      "available": false,
-      "rssi": -127
-    }
+    { "index": 0, "ssid": "HomeNetwork", "has_password": true, "available": true, "rssi": -65 }
   ],
-  "count": 2,
+  "count": 1,
   "max_networks": 5
 }
 ```
-
-**Note:** Passwords are never exposed in the response for security reasons.
 
 ### Add WiFi Network
 
 **POST** `/api/wifi/add`
 
-Adds a new WiFi network to the device configuration. The device will immediately attempt to connect to the new network.
-
-**Request Body:**
 ```json
-{
-  "ssid": "NetworkName",
-  "password": "NetworkPassword"
-}
-```
-
-**Response (success):**
-```json
-{
-  "success": true,
-  "message": "Network added successfully",
-  "ssid": "NetworkName"
-}
-```
-
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Maximum number of networks reached"
-}
+{ "ssid": "NetworkName", "password": "NetworkPassword" }
 ```
 
 ### Remove WiFi Network
 
 **POST** `/api/wifi/remove`
 
-Removes a WiFi network from the device configuration.
-
-**Request Body:**
 ```json
-{
-  "ssid": "NetworkName"
-}
+{ "ssid": "NetworkName" }
 ```
 
-**Response (success):**
-```json
-{
-  "success": true,
-  "message": "Network removed successfully",
-  "ssid": "NetworkName"
-}
-```
+---
 
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Network not found"
-}
-```
-
-## Error Handling
-
-All endpoints return appropriate HTTP status codes:
-- `200 OK` - Request successful
-- `400 Bad Request` - Invalid request format or parameters
-- `500 Internal Server Error` - Server error
-
-Error responses include a JSON body with details:
-```json
-{
-  "success": false,
-  "error": "Track index out of range"
-}
-```
-
-## Configuration Management Examples
-
-### Using curl
-
-```bash
-# Get configuration status (current vs saved)
-curl http://192.168.1.100/api/config/status
-
-# Save current configuration to SD card
-curl -X POST http://192.168.1.100/api/config/save
-
-# Load saved configuration from SD card
-curl -X POST http://192.168.1.100/api/config/load
-
-# Delete saved configuration
-curl -X DELETE http://192.168.1.100/api/config/delete
-```
-
-### Using JavaScript/Fetch
-
-```javascript
-// Get configuration status
-fetch('http://192.168.1.100/api/config/status')
-  .then(response => response.json())
-  .then(data => {
-    console.log('Current config:', data.current);
-    console.log('Saved config:', data.saved);
-    console.log('Config exists:', data.saved_exists);
-  });
-
-// Save current configuration
-fetch('http://192.168.1.100/api/config/save', {
-  method: 'POST'
-})
-.then(response => response.json())
-.then(data => console.log('Save result:', data));
-
-// Load saved configuration
-fetch('http://192.168.1.100/api/config/load', {
-  method: 'POST'
-})
-.then(response => response.json())
-.then(data => console.log('Load result:', data));
-
-// Delete saved configuration
-fetch('http://192.168.1.100/api/config/delete', {
-  method: 'DELETE'
-})
-.then(response => response.json())
-.then(data => console.log('Delete result:', data));
-```
-
-### Using Python
-
-```python
-import requests
-
-# Device IP
-base_url = "http://192.168.1.100"
-
-# Get configuration status
-response = requests.get(f"{base_url}/api/config/status")
-config_status = response.json()
-print(f"Current config: {config_status['current']}")
-print(f"Saved exists: {config_status['saved_exists']}")
-
-# Save current configuration
-response = requests.post(f"{base_url}/api/config/save")
-print(f"Save result: {response.json()}")
-
-# Load saved configuration
-response = requests.post(f"{base_url}/api/config/load")
-print(f"Load result: {response.json()}")
-
-# Delete saved configuration
-response = requests.delete(f"{base_url}/api/config/delete")
-print(f"Delete result: {response.json()}")
-```
-
-## WiFi Management Examples
-
-### Using curl
-
-```bash
-# Get WiFi status
-curl http://192.168.1.100/api/wifi/status
-
-# List configured networks
-curl http://192.168.1.100/api/wifi/networks
-
-# Add a new WiFi network
-curl -X POST http://192.168.1.100/api/wifi/add \
-  -H "Content-Type: application/json" \
-  -d '{"ssid": "MyNetwork", "password": "MyPassword"}'
-
-# Remove a WiFi network
-curl -X POST http://192.168.1.100/api/wifi/remove \
-  -H "Content-Type: application/json" \
-  -d '{"ssid": "OldNetwork"}'
-```
-
-### Using JavaScript/Fetch
-
-```javascript
-// Get WiFi status
-fetch('http://192.168.1.100/api/wifi/status')
-  .then(response => response.json())
-  .then(data => console.log(data));
-
-// Add a new network
-fetch('http://192.168.1.100/api/wifi/add', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    ssid: 'MyNetwork',
-    password: 'MyPassword'
-  })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-```
-
-## Device Status Management Endpoints
+## Device Status
 
 ### Get Device Status
 
 **GET** `/api/status`
 
-Returns comprehensive device status information including MAC address (unique identifier), device ID, IP address, WiFi connection status, firmware version, and uptime.
-
-**Response:**
 ```json
 {
   "mac_address": "AA:BB:CC:DD:EE:FF",
   "id": "MURMURA-001",
   "ip_address": "192.168.1.100",
   "wifi_connected": true,
-  "firmware_version": "1.0.4",
+  "firmware_version": "2.0",
   "uptime_seconds": 3600,
   "uptime_formatted": "00 01:00:00"
 }
 ```
 
-**Notes:**
-- The MAC address serves as a unique device identifier
-- The `id` field contains the user-configurable device ID
-- `uptime_formatted` is in format: "DD HH:MM:SS"
-- Current firmware version is 1.0.3
-
 ### Get Device ID
 
 **GET** `/api/id`
 
-Returns the current device ID.
-
-**Response:**
 ```json
-{
-  "id": "MURMURA-001",
-  "success": true
-}
+{ "id": "MURMURA-001", "success": true }
 ```
 
 ### Set Device ID
 
 **POST** `/api/id`
 
-Sets a custom device ID. This ID is persisted to the SD card at `/sdcard/unit_id.txt`.
-
-**Request Body:**
 ```json
-{
-  "id": "MURMURA-STAGE-01"
-}
+{ "id": "MURMURA-STAGE-01" }
 ```
 
-**Response (success):**
-```json
-{
-  "success": true,
-  "message": "Unit ID updated successfully",
-  "id": "MURMURA-STAGE-01"
-}
-```
+The ID is persisted to `/sdcard/unit_id.txt`.
 
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Failed to set unit ID"
-}
-```
+---
 
-**Notes:**
-- The device ID can be up to 63 characters long
-- The ID is saved to `/sdcard/unit_id.txt` for persistence across reboots
-- Default device ID is "MURMURA-001" if no custom ID is set
-
-## File Management Endpoints
+## File Management
 
 ### Upload Audio File
 
 **POST** `/api/upload?filename=track.wav`
 
-Uploads an audio file to the SD card. Supports large files (100+ MB) via streaming.
-
-**Query Parameters:**
-- `filename` - The name to save the file as (optional, auto-generated if not provided)
-
-**Request:**
 - Content-Type: `application/octet-stream`
-- Body: Binary file data
+- Body: binary file data
 
-**Response (success):**
 ```json
-{
-  "success": true,
-  "filename": "track.wav",
-  "path": "/sdcard/track.wav",
-  "size": 1048576,
-  "message": "File uploaded successfully"
-}
-```
-
-**Response (error):**
-```json
-{
-  "success": false,
-  "error": "Failed to create file"
-}
-```
-
-**Upload Examples:**
-
-```bash
-# Using curl
-curl -X POST "http://192.168.1.100/api/upload?filename=track.wav" \
-     -H "Content-Type: application/octet-stream" \
-     --data-binary @localfile.wav
+{ "success": true, "filename": "track.wav", "path": "/sdcard/track.wav", "size": 1048576 }
 ```
 
 ### Delete Audio File
 
 **DELETE** `/api/file/delete`
 
-Deletes an audio file from the SD card by name.
-
-**Request Body:**
 ```json
-{
-  "filename": "track.wav"
-}
+{ "filename": "track.wav" }
 ```
 
-**Response (success):**
-```json
-{
-  "success": true,
-  "filename": "track.wav",
-  "message": "File deleted successfully"
-}
-```
+---
 
-**Response (error - file not found):**
-```json
-{
-  "success": false,
-  "error": "File not found"
-}
-```
+## System
 
-**Response (error - security violation):**
-```json
-{
-  "success": false,
-  "error": "Invalid filename - path separators not allowed"
-}
-```
-
-**Notes:**
-- Filename must not contain path separators (/ or \) for security
-- Only files in the /sdcard/ root directory can be deleted
-- The operation verifies the file exists and is a regular file before deletion
-
-## System Management Endpoints
-
-### System Reboot
+### Reboot
 
 **POST** `/api/system/reboot`
 
-Reboots the device after an optional delay. Useful for testing configuration persistence across reboots.
-
-**Request Body (optional):**
 ```json
-{
-  "delay_ms": 1000
-}
+{ "delay_ms": 1000 }
 ```
 
-**Parameters:**
-- `delay_ms` - Delay in milliseconds before reboot (100-10000, default: 1000)
+---
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "System will reboot",
-  "delay_ms": 1000
-}
-```
+## Examples
 
-**Notes:**
-- The delay is clamped between 100ms and 10 seconds
-- The response is sent before the reboot occurs
-- This endpoint is useful for testing if configurations persist across reboots
-
-**Reboot Examples:**
+### curl
 
 ```bash
-# Using curl with default 1 second delay
-curl -X POST http://192.168.1.100/api/system/reboot
+# Get track status
+curl http://192.168.1.100/api/tracks
 
-# Using curl with custom 2 second delay
-curl -X POST http://192.168.1.100/api/system/reboot \
+# Start track 0 as a loop with a file at 80% volume
+curl -X POST http://192.168.1.100/api/track \
   -H "Content-Type: application/json" \
-  -d '{"delay_ms": 2000}'
-```
+  -d '{"track": 0, "mode": "loop", "active": true, "file": "ambient.wav", "volume": 80}'
 
-```javascript
-// Using JavaScript with custom delay
-fetch('http://192.168.1.100/api/system/reboot', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    delay_ms: 3000  // 3 second delay
-  })
-})
-.then(response => response.json())
-.then(data => console.log('Reboot initiated:', data));
-```
-
-```python
-# Using Python
-import requests
-
-# Reboot with default delay
-response = requests.post("http://192.168.1.100/api/system/reboot")
-print(f"Reboot response: {response.json()}")
-
-# Reboot with custom delay
-response = requests.post(
-    "http://192.168.1.100/api/system/reboot",
-    json={"delay_ms": 5000}
-)
-print(f"Reboot with 5s delay: {response.json()}")
-```
-
-## Device Status Examples
-
-### Using curl
-
-```bash
-# Get complete device status
-curl http://192.168.1.100/api/status
-
-# Get current device ID
-curl http://192.168.1.100/api/id
-
-# Set a custom device ID
-curl -X POST http://192.168.1.100/api/id \
+# Stop track 0
+curl -X POST http://192.168.1.100/api/track \
   -H "Content-Type: application/json" \
-  -d '{"id": "MURMURA-VENUE-01"}'
+  -d '{"track": 0, "active": false}'
 
-# Delete a file
-curl -X DELETE http://192.168.1.100/api/file/delete \
+# Change volume on track 1 without affecting play state
+curl -X POST http://192.168.1.100/api/track \
   -H "Content-Type: application/json" \
-  -d '{"filename": "old_track.wav"}'
+  -d '{"track": 1, "volume": 50}'
+
+# Set track 2 as trigger mode
+curl -X POST http://192.168.1.100/api/track \
+  -H "Content-Type: application/json" \
+  -d '{"track": 2, "mode": "trigger", "file": "sting.wav", "active": true}'
+
+# Set global volume
+curl -X POST http://192.168.1.100/api/global/volume \
+  -H "Content-Type: application/json" \
+  -d '{"volume": 75}'
+
+# Save current configuration
+curl -X POST http://192.168.1.100/api/config/save
 ```
 
-### Using JavaScript/Fetch
-
-```javascript
-// Get device status
-fetch('http://192.168.1.100/api/status')
-  .then(response => response.json())
-  .then(data => {
-    console.log('MAC Address:', data.mac_address);
-    console.log('Device ID:', data.id);
-    console.log('Firmware:', data.firmware_version);
-    console.log('Uptime:', data.uptime_formatted);
-  });
-
-// Get device ID
-fetch('http://192.168.1.100/api/id')
-  .then(response => response.json())
-  .then(data => console.log('Device ID:', data.id));
-
-// Set device ID
-fetch('http://192.168.1.100/api/id', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    id: 'MURMURA-CUSTOM-01'
-  })
-})
-.then(response => response.json())
-.then(data => console.log('Set ID result:', data));
-
-// Delete a file
-fetch('http://192.168.1.100/api/file/delete', {
-  method: 'DELETE',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    filename: 'unwanted.wav'
-  })
-})
-.then(response => response.json())
-.then(data => console.log('Delete result:', data));
-```
-
-### Using Python
+### Python
 
 ```python
 import requests
 
-# Device IP
 base_url = "http://192.168.1.100"
 
-# Get device status
-response = requests.get(f"{base_url}/api/status")
-status = response.json()
-print(f"MAC Address: {status['mac_address']}")
-print(f"Device ID: {status['id']}")
-print(f"Firmware: {status['firmware_version']}")
-print(f"Uptime: {status['uptime_formatted']}")
+# Get all track status
+resp = requests.get(f"{base_url}/api/tracks")
+print(resp.json())
 
-# Get device ID
-response = requests.get(f"{base_url}/api/id")
-device_id = response.json()
-print(f"Current device ID: {device_id['id']}")
+# Configure track 0 as a looping ambient sound
+resp = requests.post(f"{base_url}/api/track", json={
+    "track": 0,
+    "mode": "loop",
+    "active": True,
+    "file": "ambient.wav",
+    "volume": 80
+})
+print(resp.json())
 
-# Set device ID
-response = requests.post(
-    f"{base_url}/api/id",
-    json={"id": "MURMURA-PYTHON-01"}
-)
-print(f"Set ID result: {response.json()}")
+# Stop track 0
+resp = requests.post(f"{base_url}/api/track", json={"track": 0, "active": False})
 
-# Delete a file
-response = requests.delete(
-    f"{base_url}/api/file/delete",
-    json={"filename": "test.wav"}
-)
-print(f"Delete result: {response.json()}")
+# Set track 1 as a trigger
+resp = requests.post(f"{base_url}/api/track", json={
+    "track": 1,
+    "mode": "trigger",
+    "file": "sting.wav",
+    "active": True
+})
+
+# Save configuration to survive reboot
+resp = requests.post(f"{base_url}/api/config/save")
 ```
+
+---
+
+## Error Handling
+
+All endpoints return HTTP 200 with a JSON body. Errors use `"success": false`:
+
+```json
+{ "success": false, "error": "Track index out of range" }
+```
+
+HTTP status codes:
+- `200 OK` — request processed (check `success` field)
+- `400 Bad Request` — missing or invalid request body
+- `500 Internal Server Error` — server-side failure
+
+---
 
 ## Notes
 
-- CORS headers are included to allow browser-based access
-- The server runs on port 80 (standard HTTP)
-- Maximum request body size is limited by ESP32 memory
-- File paths must exist on the SD card
-- Audio files must be in WAV or MP3 format
-- The `/api/files` endpoint now includes file sizes in bytes for each file
-- The `/api
+- CORS headers included for browser access
+- Server runs on port 80
+- Audio files must be WAV format on the SD card at `/sdcard/`
+- Configuration is persisted to `/sdcard/track_config.json`
+- Device ID is persisted to `/sdcard/unit_id.txt`

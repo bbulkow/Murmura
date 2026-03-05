@@ -6,105 +6,76 @@
 #include "murmura.h"
 
 // Configuration file path on SD card
-#define CONFIG_FILE_PATH "/sdcard/loop_config.json"
-#define CONFIG_BACKUP_PATH "/sdcard/loop_config_backup.json"
+#define CONFIG_FILE_PATH        "/sdcard/track_config.json"
+#define CONFIG_BACKUP_PATH      "/sdcard/track_config_backup.json"
 
-// Configuration structure that matches loop_manager_t
+// Persisted config for a single track
 typedef struct {
-    struct {
-        bool is_playing;
-        char file_path[MAX_FILE_PATH_LEN];
-        int volume_percent;
-    } loops[MAX_TRACKS];
+    track_mode_t mode;
+    bool active;
+    char file_path[MAX_FILE_PATH_LEN];
+    int volume_percent;
+} track_config_entry_t;
+
+// Full persisted configuration
+typedef struct {
+    track_config_entry_t tracks[MAX_TRACKS];
     int global_volume_percent;
-} loop_config_t;
+} track_config_t;
 
 /**
- * @brief Save current loop configuration to SD card
- * 
- * @param manager Pointer to loop manager with current configuration
- * @return esp_err_t ESP_OK on success
+ * @brief Save current track configuration to SD card
  */
-esp_err_t config_save(const loop_manager_t *manager);
+esp_err_t config_save(const track_manager_t *manager);
 
 /**
- * @brief Load loop configuration from SD card
- * 
- * @param config Pointer to configuration structure to populate
- * @return esp_err_t ESP_OK on success, ESP_ERR_NOT_FOUND if file doesn't exist
+ * @brief Load track configuration from SD card
  */
-esp_err_t config_load(loop_config_t *config);
+esp_err_t config_load(track_config_t *config);
 
 /**
  * @brief Apply loaded configuration to the audio system
- * 
- * @param config Configuration to apply
- * @param audio_control_queue Queue for sending audio control messages
- * @param loop_manager Loop manager to update
- * @return esp_err_t ESP_OK on success
  */
-esp_err_t config_apply(const loop_config_t *config, QueueHandle_t audio_control_queue, loop_manager_t *loop_manager);
+esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control_queue, track_manager_t *track_manager);
 
 /**
  * @brief Check if configuration file exists
- * 
- * @return true if configuration file exists
  */
 bool config_exists(void);
 
 /**
  * @brief Delete configuration file
- * 
- * @return esp_err_t ESP_OK on success
  */
 esp_err_t config_delete(void);
 
 /**
  * @brief Create backup of current configuration
- * 
- * @return esp_err_t ESP_OK on success
  */
 esp_err_t config_backup(void);
 
 /**
  * @brief Restore configuration from backup
- * 
- * @return esp_err_t ESP_OK on success
  */
 esp_err_t config_restore_backup(void);
 
 /**
- * @brief Get configuration as JSON string
- * 
- * @param manager Loop manager with current configuration
- * @param json_str Pointer to store allocated JSON string (must be freed by caller)
- * @return esp_err_t ESP_OK on success
+ * @brief Serialize manager state to JSON string (caller must free)
  */
-esp_err_t config_to_json_string(const loop_manager_t *manager, char **json_str);
+esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str);
 
 /**
  * @brief Parse configuration from JSON string
- * 
- * @param json_str JSON string to parse
- * @param config Configuration structure to populate
- * @return esp_err_t ESP_OK on success
  */
-esp_err_t config_from_json_string(const char *json_str, loop_config_t *config);
+esp_err_t config_from_json_string(const char *json_str, track_config_t *config);
 
 /**
  * @brief Get default configuration
- * 
- * @param config Configuration structure to populate with defaults
- * @return esp_err_t ESP_OK on success
  */
-esp_err_t config_get_default(loop_config_t *config);
+esp_err_t config_get_default(track_config_t *config);
 
 /**
- * @brief Load configuration from file or use default
- * 
- * @param config Configuration structure to populate
- * @return esp_err_t ESP_OK on success (either from file or default)
+ * @brief Load configuration from file, or fall back to default
  */
-esp_err_t config_load_or_default(loop_config_t *config);
+esp_err_t config_load_or_default(track_config_t *config);
 
 #endif // CONFIG_MANAGER_H

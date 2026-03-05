@@ -189,20 +189,23 @@ Each device exposes a JSON API on port 80. Key endpoints:
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/api/tracks` | GET | Get status of all 3 tracks |
+| `/api/track` | POST | Control a track — `track` (0-2), plus any of: `active` (bool), `mode` (`loop`\|`trigger`), `file` (filename), `volume` (0-100) |
+| `/api/global/volume` | POST | Set master volume (0-100) |
 | `/api/files` | GET | List audio files on SD card |
-| `/api/loops` | GET | Get status of all tracks |
-| `/api/loop/file` | POST | Set file for a track (starts playing) |
-| `/api/loop/start` | POST | Start/restart a track |
-| `/api/loop/stop` | POST | Stop a track |
-| `/api/loop/volume` | POST | Set per-track volume (0-100%) |
-| `/api/global/volume` | POST | Set master volume (0-100%) |
-| `/api/config/save` | POST | Save configuration to SD card |
-| `/api/config/load` | POST | Load and apply saved configuration |
 | `/api/upload` | POST | Upload audio file to SD card |
-| `/api/status` | GET | Device status (MAC, IP, uptime, firmware) |
-| `/api/id` | GET/POST | Get or set device ID |
+| `/api/file/delete` | DELETE | Delete an audio file from SD card |
+| `/api/status` | GET | Device status (MAC, IP, uptime, firmware version) |
+| `/api/id` | GET | Get device ID |
+| `/api/id` | POST | Set device ID |
 | `/api/wifi/status` | GET | WiFi connection status |
+| `/api/wifi/networks` | GET | List stored WiFi networks |
 | `/api/wifi/add` | POST | Add a WiFi network |
+| `/api/wifi/remove` | POST | Remove a WiFi network |
+| `/api/config/status` | GET | Compare current state to saved config |
+| `/api/config/save` | POST | Save current state to SD card |
+| `/api/config/load` | POST | Load and apply saved configuration |
+| `/api/config/delete` | DELETE | Delete saved configuration |
 | `/api/system/reboot` | POST | Reboot the device |
 
 See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response examples.
