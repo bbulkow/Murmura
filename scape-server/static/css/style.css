@@ -727,33 +727,70 @@ header h1 {
     gap: 10px;
 }
 
-.track-play-btn {
-    width: 30px;
-    height: 30px;
+.track-enable-btn {
+    min-width: 38px;
+    height: 28px;
     border: none;
     border-radius: 5px;
     cursor: pointer;
-    font-size: 16px;
-    font-weight: bold;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
+    transition: all 0.15s;
 }
 
-.modal-loop-item.playing .track-play-btn {
+.track-enable-btn.playing {
     background: #28a745;
     color: white;
 }
 
-.modal-loop-item.stopped .track-play-btn {
+.track-enable-btn.stopped {
     background: #6c757d;
     color: white;
 }
 
-.track-play-btn:hover {
-    transform: scale(1.1);
+.track-enable-btn:hover {
+    filter: brightness(1.15);
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* Segmented mode selector */
+.track-mode-selector {
+    display: flex;
+    border-radius: 5px;
+    border: 1px solid #bbb;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.track-mode-option {
+    padding: 4px 9px;
+    font-size: 12px;
+    border: none;
+    background: #e9ecef;
+    color: #aaa;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.track-mode-option + .track-mode-option {
+    border-left: 1px solid #bbb;
+}
+
+.track-mode-option.active {
+    background: #2a5298;
+    color: white;
+    font-weight: 600;
+}
+
+.track-mode-option:hover:not(.active) {
+    background: #d0d7e6;
+    color: #555;
 }
 
 .track-volume-slider {

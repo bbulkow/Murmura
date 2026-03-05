@@ -112,33 +112,42 @@ function updateDeviceInfo(data) {
     }
 }
 
-// Update loops display
+// Update tracks display
 function updateLoops(loopData) {
     const loopsConfig = document.getElementById('loopsConfig');
-    
-    if (!loopData.loops || loopData.loops.length === 0) {
+
+    if (!loopData.tracks || loopData.tracks.length === 0) {
         loopsConfig.innerHTML = '<p>No tracks configured</p>';
         return;
     }
-    
+
     let loopsHTML = '<div class="modal-loops-list">';
-    
-    loopData.loops.forEach(loop => {
-        const statusClass = loop.playing ? 'playing' : 'stopped';
-        const filename = loop.file ? loop.file.split('/').pop() : 'No file';
-        
+
+    loopData.tracks.forEach(track => {
+        const activeClass = track.active ? 'playing' : 'stopped';
+        const filename = track.file ? track.file.split('/').pop() : (track.filename || 'No file');
         loopsHTML += `
-            <div class="modal-loop-item ${statusClass}" data-track="${loop.track}">
+            <div class="modal-loop-item ${activeClass}" data-track="${track.track}">
                 <div class="track-controls">
-                    <button class="track-play-btn ${statusClass}" data-track="${loop.track}" data-playing="${loop.playing}" 
-                            title="${loop.playing ? 'Stop' : 'Start'} Track ${loop.track}">
-                        ${loop.playing ? '■' : '▶'}
+                    <button class="track-enable-btn ${activeClass}" data-track="${track.track}" data-active="${track.active}"
+                            title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
+                        ${track.active ? 'ON' : 'OFF'}
                     </button>
-                    <span class="loop-track">Track ${loop.track}:</span>
-                    <input type="range" class="track-volume-slider" data-track="${loop.track}" 
-                           min="0" max="100" value="${loop.volume}">
-                    <span class="track-volume-value">${loop.volume}%</span>
-                    <span class="loop-file clickable" data-track="${loop.track}" 
+                    <div class="track-mode-selector">
+                        <button class="track-mode-option ${track.mode === 'loop' ? 'active' : ''}"
+                                data-track="${track.track}" data-mode="loop" title="Loop: repeat continuously">
+                            ↻ Loop
+                        </button>
+                        <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
+                                data-track="${track.track}" data-mode="trigger" title="Trigger: play once">
+                            ▶ Trig
+                        </button>
+                    </div>
+                    <span class="loop-track">Track ${track.track}:</span>
+                    <input type="range" class="track-volume-slider" data-track="${track.track}"
+                           min="0" max="100" value="${track.volume}">
+                    <span class="track-volume-value">${track.volume}%</span>
+                    <span class="loop-file clickable" data-track="${track.track}"
                           title="Click to change file">
                         ${filename}
                     </span>
@@ -146,7 +155,7 @@ function updateLoops(loopData) {
             </div>
         `;
     });
-    
+
     loopsHTML += '</div>';
     loopsConfig.innerHTML = loopsHTML;
     
@@ -167,13 +176,24 @@ function updateLoops(loopData) {
 
 // Attach handlers to track controls
 function attachTrackHandlers() {
-    // Track play/stop buttons
-    document.querySelectorAll('.track-play-btn').forEach(btn => {
+    // Track enable/disable buttons
+    document.querySelectorAll('.track-enable-btn').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const track = parseInt(this.dataset.track);
-            const isPlaying = this.dataset.playing === 'true';
-            await controlTrack(track, isPlaying ? 'stop' : 'start');
+            const isActive = this.dataset.active === 'true';
+            await controlTrack(track, isActive ? 'stop' : 'start');
+        });
+    });
+
+    // Track mode selector options
+    document.querySelectorAll('.track-mode-option').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            if (this.classList.contains('active')) return;  // already selected
+            const track = parseInt(this.dataset.track);
+            const mode = this.dataset.mode;
+            await setTrackMode(track, mode);
         });
     });
     
@@ -228,7 +248,7 @@ async function controlPlayback(action) {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 device_ids: [currentDevice],
-                action: action === 'start' ? 'play' : 'stop'
+                action: action  // 'start' or 'stop', batch endpoint accepts both
             })
         });
         
@@ -380,7 +400,7 @@ async function rebootDevice() {
     }
 }
 
-// Control individual track
+// Control individual track (enable/disable)
 async function controlTrack(track, action) {
     try {
         const response = await fetch(`/api/device/${currentDevice}/track/control`, {
@@ -388,7 +408,7 @@ async function controlTrack(track, action) {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({track: track, action: action})
         });
-        
+
         if (response.ok) {
             setTimeout(loadDeviceData, 500);
         }
@@ -396,6 +416,26 @@ async function controlTrack(track, action) {
         console.error(`Error controlling track ${track}:`, error);
         if (error.message.includes('Failed to fetch')) {
             showMessage('Flask server error - Cannot control track', 'error');
+        }
+    }
+}
+
+// Set track mode (loop/trigger)
+async function setTrackMode(track, mode) {
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({track: track, mode: mode})
+        });
+
+        if (response.ok) {
+            setTimeout(loadDeviceData, 500);
+        }
+    } catch (error) {
+        console.error(`Error setting mode for track ${track}:`, error);
+        if (error.message.includes('Failed to fetch')) {
+            showMessage('Flask server error - Cannot set track mode', 'error');
         }
     }
 }

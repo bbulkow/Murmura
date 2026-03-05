@@ -242,20 +242,21 @@ function createDeviceCard(device) {
     
     const deviceId = device.id || device.ip;
     
-    // Build loop information display
+    // Build track summary display
     let loopInfo = '';
     if (device.loops && device.loops.length > 0) {
         loopInfo = '<div class="loop-info">';
-        loopInfo += '<div class="loop-header">Loops:</div>';
-        device.loops.forEach(loop => {
-            const status = loop.playing ? '▶' : '■';
-            const statusClass = loop.playing ? 'playing' : 'stopped';
-            const filename = loop.filename || 'No file';
+        loopInfo += '<div class="loop-header">Tracks:</div>';
+        device.loops.forEach(track => {
+            const activeClass = track.active ? 'playing' : 'stopped';
+            const modeLabel = track.mode === 'trigger' ? 'TRG' : 'LOOP';
+            const filename = track.filename || 'No file';
             loopInfo += `
-                <div class="loop-item ${statusClass}">
-                    <span class="loop-status">${status}</span>
-                    <span class="loop-track">T${loop.track}:</span>
-                    <span class="loop-volume">${loop.volume}%</span>
+                <div class="loop-item ${activeClass}">
+                    <span class="loop-status">${track.active ? '▶' : '■'}</span>
+                    <span class="loop-track">T${track.track}:</span>
+                    <span class="loop-mode">${modeLabel}</span>
+                    <span class="loop-volume">${track.volume}%</span>
                     <span class="loop-file" title="${filename}">${filename}</span>
                 </div>
             `;
@@ -281,8 +282,8 @@ function createDeviceCard(device) {
                 <span class="device-info-value">${device.global_volume || device.volume || 0}%</span>
             </div>
             <div class="device-info-item">
-                <span class="device-info-label">Active Loops:</span>
-                <span class="device-info-value">${device.active_loops || 0}/3 ${device.playing ? '(Playing)' : '(Stopped)'}</span>
+                <span class="device-info-label">Active Tracks:</span>
+                <span class="device-info-value">${device.active_loops || 0}/3 ${device.playing ? '(Active)' : '(Stopped)'}</span>
             </div>
         </div>
         ${loopInfo}
@@ -560,27 +561,7 @@ async function openDeviceModal(device) {
     const loopsConfig = document.getElementById('loopsConfig');
     
     if (device.loops && device.loops.length > 0) {
-        // Build loop display similar to summary card
-        let loopsHTML = '<div class="modal-loops-list">';
-        loopsHTML += '<h4>Track Configuration</h4>';
-        
-        device.loops.forEach(loop => {
-            const status = loop.playing ? '▶' : '■';
-            const statusClass = loop.playing ? 'playing' : 'stopped';
-            const filename = loop.filename || 'No file';
-            
-            loopsHTML += `
-                <div class="modal-loop-item ${statusClass}" data-track="${loop.track}">
-                    <span class="loop-status">${status}</span>
-                    <span class="loop-track">Track ${loop.track}:</span>
-                    <span class="loop-volume">Vol: ${loop.volume}%</span>
-                    <span class="loop-file" title="${filename}">${filename}</span>
-                </div>
-            `;
-        });
-        
-        loopsHTML += '</div>';
-        loopsConfig.innerHTML = loopsHTML;
+        loopsConfig.innerHTML = buildTracksHTML(device.loops);
         loopsSection.style.display = 'block';
     } else {
         loopsSection.style.display = 'none';
@@ -598,42 +579,14 @@ async function openDeviceModal(device) {
         if (response.ok) {
             const loopData = await response.json();
             
-            // Update with fresh loop data
-            if (loopData.loops) {
-                let loopsHTML = '<div class="modal-loops-list">';
-                loopsHTML += '<h4>Track Configuration</h4>';
-                
-                loopData.loops.forEach(loop => {
-                    const statusClass = loop.playing ? 'playing' : 'stopped';
-                    const filename = loop.file ? loop.file.split('/').pop() : 'No file';
-                    
-                    loopsHTML += `
-                        <div class="modal-loop-item ${statusClass}" data-track="${loop.track}">
-                            <div class="track-controls">
-                                <button class="track-play-btn ${statusClass}" data-track="${loop.track}" data-playing="${loop.playing}" 
-                                        title="${loop.playing ? 'Stop' : 'Start'} Track ${loop.track}">
-                                    ${loop.playing ? '■' : '▶'}
-                                </button>
-                                <span class="loop-track">Track ${loop.track}:</span>
-                                <input type="range" class="track-volume-slider" data-track="${loop.track}" 
-                                       min="0" max="100" value="${loop.volume}">
-                                <span class="track-volume-value">${loop.volume}%</span>
-                                <span class="loop-file clickable" data-track="${loop.track}" 
-                                      title="Click to change file">
-                                    ${filename}
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                loopsHTML += '</div>';
-                loopsConfig.innerHTML = loopsHTML;
+            // Update with fresh track data
+            if (loopData.tracks) {
+                loopsConfig.innerHTML = buildTracksHTML(loopData.tracks);
                 loopsSection.style.display = 'block';
-                
+
                 // Attach event handlers to track controls
                 attachTrackControlHandlers();
-                
+
                 // Update global volume from fresh data
                 const freshVolume = loopData.global_volume || 0;
                 volumeSlider.value = freshVolume;
@@ -726,47 +679,18 @@ async function refreshModalData() {
             const loopsConfig = document.getElementById('loopsConfig');
             const loopsSection = document.getElementById('loopsSection');
             
-            if (loopData.loops && loopsConfig) {
-                let loopsHTML = '<div class="modal-loops-list">';
-                loopsHTML += '<h4>Track Configuration</h4>';
-                
-                loopData.loops.forEach(loop => {
-                    const statusClass = loop.playing ? 'playing' : 'stopped';
-                    const filename = loop.file ? loop.file.split('/').pop() : 'No file';
-                    
-                    loopsHTML += `
-                        <div class="modal-loop-item ${statusClass}" data-track="${loop.track}">
-                            <div class="track-controls">
-                                <button class="track-play-btn ${statusClass}" data-track="${loop.track}" data-playing="${loop.playing}" 
-                                        title="${loop.playing ? 'Stop' : 'Start'} Track ${loop.track}">
-                                    ${loop.playing ? '■' : '▶'}
-                                </button>
-                                <span class="loop-track">Track ${loop.track}:</span>
-                                <input type="range" class="track-volume-slider" data-track="${loop.track}" 
-                                       min="0" max="100" value="${loop.volume}">
-                                <span class="track-volume-value">${loop.volume}%</span>
-                                <span class="loop-file clickable" data-track="${loop.track}" 
-                                      title="Click to change file">
-                                    ${filename}
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                loopsHTML += '</div>';
-                loopsConfig.innerHTML = loopsHTML;
+            if (loopData.tracks && loopsConfig) {
+                loopsConfig.innerHTML = buildTracksHTML(loopData.tracks);
                 loopsSection.style.display = 'block';
-                
+
                 // Re-attach event handlers
                 attachTrackControlHandlers();
-                
+
                 // Update global volume
                 const volumeSlider = document.getElementById('modalVolume');
                 const volumeValue = document.getElementById('modalVolumeValue');
                 if (volumeSlider && volumeValue) {
                     const freshVolume = loopData.global_volume || 0;
-                    // Only update if value actually changed to avoid disrupting user interaction
                     if (Math.abs(volumeSlider.value - freshVolume) > 1) {
                         volumeSlider.value = freshVolume;
                         volumeValue.textContent = freshVolume;
@@ -1225,18 +1149,71 @@ async function batchSaveConfig() {
     }
 }
 
+// Build the tracks HTML for the modal (shared by openDeviceModal, refreshModalData, refreshLoopData)
+function buildTracksHTML(tracks) {
+    let html = '<div class="modal-loops-list">';
+    html += '<h4>Track Configuration</h4>';
+
+    tracks.forEach(track => {
+        const activeClass = track.active ? 'playing' : 'stopped';
+        const filename = track.file ? track.file.split('/').pop() : (track.filename || 'No file');
+        html += `
+            <div class="modal-loop-item ${activeClass}" data-track="${track.track}">
+                <div class="track-controls">
+                    <button class="track-enable-btn ${activeClass}" data-track="${track.track}" data-active="${track.active}"
+                            title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
+                        ${track.active ? 'ON' : 'OFF'}
+                    </button>
+                    <div class="track-mode-selector">
+                        <button class="track-mode-option ${track.mode === 'loop' ? 'active' : ''}"
+                                data-track="${track.track}" data-mode="loop" title="Loop: repeat continuously">
+                            ↻ Loop
+                        </button>
+                        <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
+                                data-track="${track.track}" data-mode="trigger" title="Trigger: play once">
+                            ▶ Trig
+                        </button>
+                    </div>
+                    <span class="loop-track">Track ${track.track}:</span>
+                    <input type="range" class="track-volume-slider" data-track="${track.track}"
+                           min="0" max="100" value="${track.volume}">
+                    <span class="track-volume-value">${track.volume}%</span>
+                    <span class="loop-file clickable" data-track="${track.track}"
+                          title="Click to change file">
+                        ${filename}
+                    </span>
+                </div>
+            </div>
+        `;
+    });
+
+    html += '</div>';
+    return html;
+}
+
 // Attach event handlers to track controls
 function attachTrackControlHandlers() {
-    // Track play/stop buttons
-    document.querySelectorAll('.track-play-btn').forEach(btn => {
+    // Track enable/disable buttons
+    document.querySelectorAll('.track-enable-btn').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const track = parseInt(this.dataset.track);
-            const isPlaying = this.dataset.playing === 'true';
-            await controlTrack(track, isPlaying ? 'stop' : 'start');
+            const isActive = this.dataset.active === 'true';
+            await controlTrack(track, isActive ? 'stop' : 'start');
         });
     });
-    
+
+    // Track mode selector options
+    document.querySelectorAll('.track-mode-option').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            if (this.classList.contains('active')) return;  // already selected
+            const track = parseInt(this.dataset.track);
+            const mode = this.dataset.mode;
+            await setTrackMode(track, mode);
+        });
+    });
+
     // Track volume sliders
     document.querySelectorAll('.track-volume-slider').forEach(slider => {
         slider.addEventListener('input', async function() {
@@ -1249,7 +1226,7 @@ function attachTrackControlHandlers() {
             await setTrackVolume(track, volume);
         });
     });
-    
+
     // Track file selection (click on filename)
     document.querySelectorAll('.loop-file.clickable').forEach(fileElement => {
         fileElement.addEventListener('click', async function(e) {
@@ -1260,31 +1237,45 @@ function attachTrackControlHandlers() {
     });
 }
 
-// Control individual track
+// Control individual track (enable/disable)
 async function controlTrack(track, action) {
     if (!currentDevice) return;
-    
+
     try {
         const response = await fetch(`/api/device/${currentDevice}/track/control`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                track: track,
-                action: action
-            })
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({track: track, action: action})
         });
-        
+
         if (response.ok) {
-            console.log(`Track ${track} ${action === 'start' ? 'started' : 'stopped'}`);
-            // Refresh loop data to update UI
             await refreshLoopData();
         } else {
             console.error(`Failed to ${action} track ${track}`);
         }
     } catch (error) {
         console.error(`Error controlling track ${track}:`, error);
+    }
+}
+
+// Set track mode (loop/trigger)
+async function setTrackMode(track, mode) {
+    if (!currentDevice) return;
+
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({track: track, mode: mode})
+        });
+
+        if (response.ok) {
+            await refreshLoopData();
+        } else {
+            console.error(`Failed to set mode for track ${track}`);
+        }
+    } catch (error) {
+        console.error(`Error setting mode for track ${track}:`, error);
     }
 }
 
@@ -1383,44 +1374,13 @@ async function refreshLoopData() {
         const response = await fetch(`/api/device/${currentDevice}/loops`);
         if (response.ok) {
             const loopData = await response.json();
-            
-            // Update loop display
+
             const loopsConfig = document.getElementById('loopsConfig');
-            if (loopData.loops && loopsConfig) {
-                let loopsHTML = '<div class="modal-loops-list">';
-                loopsHTML += '<h4>Track Configuration</h4>';
-                
-                loopData.loops.forEach(loop => {
-                    const statusClass = loop.playing ? 'playing' : 'stopped';
-                    const filename = loop.file ? loop.file.split('/').pop() : 'No file';
-                    
-                    loopsHTML += `
-                        <div class="modal-loop-item ${statusClass}" data-track="${loop.track}">
-                            <div class="track-controls">
-                                <button class="track-play-btn ${statusClass}" data-track="${loop.track}" data-playing="${loop.playing}" 
-                                        title="${loop.playing ? 'Stop' : 'Start'} Track ${loop.track}">
-                                    ${loop.playing ? '■' : '▶'}
-                                </button>
-                                <span class="loop-track">Track ${loop.track}:</span>
-                                <input type="range" class="track-volume-slider" data-track="${loop.track}" 
-                                       min="0" max="100" value="${loop.volume}">
-                                <span class="track-volume-value">${loop.volume}%</span>
-                                <span class="loop-file clickable" data-track="${loop.track}" 
-                                      title="Click to change file">
-                                    ${filename}
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                loopsHTML += '</div>';
-                loopsConfig.innerHTML = loopsHTML;
-                
-                // Re-attach event handlers
+            if (loopData.tracks && loopsConfig) {
+                loopsConfig.innerHTML = buildTracksHTML(loopData.tracks);
+
                 attachTrackControlHandlers();
-                
-                // Update global volume
+
                 const volumeSlider = document.getElementById('modalVolume');
                 const volumeValue = document.getElementById('modalVolumeValue');
                 if (volumeSlider && volumeValue) {

@@ -248,36 +248,38 @@ def get_devices():
             online_count += 1
             
             try:
-                # Get loop status
-                response = requests.get(f"http://{ip_address}/api/loops", timeout=1)
-                
+                # Get track status
+                response = requests.get(f"http://{ip_address}/api/tracks", timeout=1)
+
                 if response.status_code == 200:
                     loop_data = response.json()
-                    
-                    # Update with actual loop information
+
+                    # Update with actual track information
                     formatted['global_volume'] = loop_data.get('global_volume', 0)
                     formatted['volume'] = formatted['global_volume']  # For compatibility
-                    formatted['active_loops'] = loop_data.get('active_count', 0)
-                    
-                    # Process each loop/track
+
+                    # Process each track
                     loops = []
-                    any_playing = False
-                    for loop in loop_data.get('loops', []):
+                    active_count = 0
+                    for track in loop_data.get('tracks', []):
                         loop_info = {
-                            'track': loop.get('track', 0),
-                            'playing': loop.get('playing', False),
-                            'volume': loop.get('volume', 0),
-                            'file': loop.get('file', ''),
-                            'filename': loop.get('file', '').split('/')[-1] if loop.get('file') else 'No file'
+                            'track': track.get('track', 0),
+                            'active': track.get('active', False),
+                            'mode': track.get('mode', 'loop'),
+                            'playing': track.get('playing', False),
+                            'volume': track.get('volume', 0),
+                            'file': track.get('file', ''),
+                            'filename': track.get('file', '').split('/')[-1] if track.get('file') else 'No file'
                         }
                         loops.append(loop_info)
-                        if loop_info['playing']:
-                            any_playing = True
-                    
+                        if loop_info['active']:
+                            active_count += 1
+
                     formatted['loops'] = loops
-                    formatted['playing'] = any_playing
-                    
-                    logger.debug(f"Device {formatted['id']}: {formatted['active_loops']} active loops, global vol: {formatted['global_volume']}")
+                    formatted['active_loops'] = active_count
+                    formatted['playing'] = active_count > 0
+
+                    logger.debug(f"Device {formatted['id']}: {active_count} active tracks, global vol: {formatted['global_volume']}")
                     
             except requests.RequestException as e:
                 logger.debug(f"Could not get loop status for {formatted['id']}: {e}")
@@ -455,7 +457,7 @@ def set_device_volume(device_id):
     try:
         logger.info(f"Setting volume to {volume} for device {device_id}")
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/volume",
+            f"http://{device.get('ip_address')}/api/global/volume",
             json={'volume': volume},
             timeout=2
         )
@@ -481,22 +483,23 @@ def control_playback(device_id):
     
     try:
         ip_address = device.get('ip_address')
-        logger.info(f"Sending {action} command to device {device_id} at {ip_address}")
-        
-        if action == 'play':
-            response = requests.post(f"http://{ip_address}/api/play", timeout=2)
-        elif action == 'pause':
-            response = requests.post(f"http://{ip_address}/api/pause", timeout=2)
-        elif action == 'stop':
-            response = requests.post(f"http://{ip_address}/api/stop", timeout=2)
-        else:
-            # Toggle
-            response = requests.post(f"http://{ip_address}/api/toggle", timeout=2)
-        
-        if response.status_code == 200:
+        active = (action == 'play')
+        logger.info(f"Sending {action} (active={active}) to all tracks on device {device_id} at {ip_address}")
+
+        errors = []
+        for track in range(3):
+            resp = requests.post(
+                f"http://{ip_address}/api/track",
+                json={'track': track, 'active': active},
+                timeout=2
+            )
+            if resp.status_code != 200:
+                errors.append(track)
+
+        if not errors:
             return jsonify({'status': 'success', 'action': action})
         else:
-            return jsonify({'error': 'Failed to control playback'}), 500
+            return jsonify({'error': f'Failed to {action} tracks {errors}'}), 500
     except requests.RequestException as e:
         logger.error(f"Failed to control playback for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
@@ -541,8 +544,8 @@ def get_device_loops(device_id):
         })
     
     try:
-        logger.debug(f"Getting loops for {device_id} at {ip_address}")
-        response = requests.get(f"http://{ip_address}/api/loops", timeout=2)
+        logger.debug(f"Getting tracks for {device_id} at {ip_address}")
+        response = requests.get(f"http://{ip_address}/api/tracks", timeout=2)
         if response.status_code == 200:
             return jsonify(response.json())
         else:
@@ -696,22 +699,27 @@ def control_track(device_id):
     
     data = request.json
     track = data.get('track', 0)
-    action = data.get('action', 'stop')
-    
+
     try:
         ip_address = device.get('ip_address')
-        endpoint = '/api/loop/start' if action == 'start' else '/api/loop/stop'
-        
+        request_body = {'track': track}
+
+        if 'action' in data:
+            action = data['action']
+            request_body['active'] = (action == 'start')
+        if 'mode' in data:
+            request_body['mode'] = data['mode']
+
         response = requests.post(
-            f"http://{ip_address}{endpoint}",
-            json={'track': track},
+            f"http://{ip_address}/api/track",
+            json=request_body,
             timeout=2
         )
-        
+
         if response.status_code == 200:
-            return jsonify({'status': 'success', 'track': track, 'action': action})
+            return jsonify({'status': 'success', 'track': track})
         else:
-            return jsonify({'error': f'Failed to {action} track {track}'}), 500
+            return jsonify({'error': f'Failed to update track {track}'}), 500
     except requests.RequestException as e:
         logger.error(f"Error controlling track {track} on {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
@@ -729,11 +737,11 @@ def set_track_volume(device_id):
     
     try:
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/loop/volume",
+            f"http://{device.get('ip_address')}/api/track",
             json={'track': track, 'volume': volume},
             timeout=2
         )
-        
+
         if response.status_code == 200:
             return jsonify({'status': 'success', 'track': track, 'volume': volume})
         else:
@@ -753,23 +761,31 @@ def set_track_file(device_id):
     track = data.get('track', 0)
     file_index = data.get('file_index')
     filename = data.get('filename')
-    
+
+    ip_address = device.get('ip_address')
+
     try:
-        # Build request body based on what was provided
-        request_body = {'track': track}
-        if file_index is not None:
-            request_body['file_index'] = file_index
-        elif filename:
-            request_body['filename'] = filename
-        
+        # Resolve file_index to a filename if needed
+        if file_index is not None and filename is None:
+            files_resp = requests.get(f"http://{ip_address}/api/files", timeout=3)
+            if files_resp.status_code != 200:
+                return jsonify({'error': 'Failed to fetch file list from device'}), 500
+            files = files_resp.json().get('files', [])
+            if file_index < 0 or file_index >= len(files):
+                return jsonify({'error': f'File index {file_index} out of range'}), 400
+            filename = files[file_index]['name']
+
+        if not filename:
+            return jsonify({'error': 'No file specified'}), 400
+
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/loop/file",
-            json=request_body,
+            f"http://{ip_address}/api/track",
+            json={'track': track, 'file': filename},
             timeout=5
         )
-        
+
         if response.status_code == 200:
-            return jsonify({'status': 'success', 'track': track})
+            return jsonify({'status': 'success', 'track': track, 'file': filename})
         else:
             return jsonify({'error': f'Failed to set file for track {track}'}), 500
     except requests.RequestException as e:
@@ -786,40 +802,28 @@ def batch_control_playback():
     logger.info(f"Batch {action} for {len(device_ids)} devices")
     results = []
     
+    active = (action in ('play', 'start'))
+
     for device_id in device_ids:
         device = registry.get_device(device_id)
         if device:
             ip_address = device.get('ip_address')
             device_success = True
-            
-            # For each device, we need to control all 3 tracks
+
             for track in range(3):
                 try:
-                    if action == 'play' or action == 'start':
-                        # Use /api/loop/start to start each track
-                        response = requests.post(
-                            f"http://{ip_address}/api/loop/start",
-                            json={'track': track},
-                            timeout=2
-                        )
-                    elif action == 'stop' or action == 'pause':
-                        # Use /api/loop/stop to stop each track
-                        response = requests.post(
-                            f"http://{ip_address}/api/loop/stop",
-                            json={'track': track},
-                            timeout=2
-                        )
-                    else:
-                        continue
-                    
+                    response = requests.post(
+                        f"http://{ip_address}/api/track",
+                        json={'track': track, 'active': active},
+                        timeout=2
+                    )
                     if response.status_code != 200:
                         device_success = False
-                        logger.warning(f"Failed to {action} track {track} on {device_id}")
-                        
+                        logger.warning(f"Failed to set track {track} active={active} on {device_id}")
                 except requests.RequestException as e:
-                    logger.error(f"Error controlling track {track} on {device_id}: {e}")
+                    logger.error(f"Error setting track {track} on {device_id}: {e}")
                     device_success = False
-            
+
             if device_success:
                 results.append({'device_id': device_id, 'status': 'success'})
             else:
