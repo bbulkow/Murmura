@@ -42,12 +42,27 @@ git submodule update --init --recursive
 ## Apply patches
 
 In the esp-adf directory, you will see a patch directory idf_patches. The esp-idf version
-pointed to is 5.3.1. 
+pointed to is 5.3.1.
 
 Thus,
 ```
 cd esp-idf
 git apply ..\idf_patches\idf_v5.3_freertos.patch
+```
+
+### downmix patch
+
+`downmix.patch` fixes a bug in `esp-adf-libs` where the downmix element goes FINISHED
+(and silences the output pipeline) when all input ringbufs are aborted — for example,
+after stopping all track pipelines. The fix treats `AEL_IO_ABORT` the same as
+`AEL_IO_TIMEOUT`: output silence for that slot, keep mixing. Only `AEL_IO_DONE` signals
+a true end-of-stream.
+
+Apply it from the `esp-adf-libs` component directory:
+
+```
+cd <esp-adf>/components/esp-adf-libs
+git apply <path-to-murmura>/aithinker-adf/downmix.patch
 ```
 
 

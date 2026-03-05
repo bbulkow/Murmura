@@ -1,0 +1,13 @@
+diff --git a/esp_codec/downmix.c b/esp_codec/downmix.c
+index 33533b9..b613303 100755
+--- a/esp_codec/downmix.c
++++ b/esp_codec/downmix.c
+@@ -259,7 +259,7 @@ static int downmix_process(audio_element_handle_t self, char *in_buffer, int in_
+                        r_size * downmix_info.source_info[index].channel, index, downmix->ticks_to_wait[index]);
+         if (bytes[index] < 0) {
+             memset(downmix->inbuf[index], 0, downmix->max_sample * 2 * sizeof(short));
+-            if ((bytes[index] != AEL_IO_TIMEOUT)) {
++            if ((bytes[index] != AEL_IO_TIMEOUT) && (bytes[index] != AEL_IO_ABORT)) {
+                 status_end++;
+             }
+         } else if (bytes[index] != r_size * downmix->downmix_info.source_info[index].channel) {
