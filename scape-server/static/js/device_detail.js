@@ -77,6 +77,9 @@ async function loadDeviceData() {
             const loopData = await loopsResponse.json();
             updateLoops(loopData);
         }
+
+        // Get trigger server config
+        loadTriggerServer();
     } catch (error) {
         console.error('[DEVICE-DETAIL] Error loading device data:', error);
         // Show clear error message if Flask server is down
@@ -124,14 +127,43 @@ function updateLoops(loopData) {
     let loopsHTML = '<div class="modal-loops-list">';
 
     loopData.tracks.forEach(track => {
+        const isTrigger = track.mode === 'trigger';
         const activeClass = track.active ? 'playing' : 'stopped';
         const filename = track.file ? track.file.split('/').pop() : (track.filename || 'No file');
+        const triggerName = track.trigger_name || '';
+        const triggerMode = track.trigger_mode || 'momentary';
+
+        const enableBtnLabel = track.active ? 'ON' : 'OFF';
+        const enableBtnClass = activeClass;
+
+        const triggerSection = isTrigger ? `
+            <div class="track-trigger-config" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px;">
+                <input type="text" class="trigger-name-input" data-track="${track.track}"
+                       placeholder="trigger name" value="${triggerName}"
+                       style="width:160px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
+                       title="Trigger name from Haven Gateway">
+                <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
+                        data-track="${track.track}" data-tmode="momentary"
+                        style="padding:3px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer;
+                               background:${triggerMode === 'momentary' ? '#2a5298' : '#eee'};
+                               color:${triggerMode === 'momentary' ? '#fff' : '#333'};">
+                    Momentary
+                </button>
+                <button class="trigger-mode-opt ${triggerMode === 'oneshot' ? 'active' : ''}"
+                        data-track="${track.track}" data-tmode="oneshot"
+                        style="padding:3px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer;
+                               background:${triggerMode === 'oneshot' ? '#2a5298' : '#eee'};
+                               color:${triggerMode === 'oneshot' ? '#fff' : '#333'};">
+                    Oneshot
+                </button>
+            </div>` : '';
+
         loopsHTML += `
             <div class="modal-loop-item ${activeClass}" data-track="${track.track}">
                 <div class="track-controls">
-                    <button class="track-enable-btn ${activeClass}" data-track="${track.track}" data-active="${track.active}"
+                    <button class="track-enable-btn ${enableBtnClass}" data-track="${track.track}" data-active="${track.active}"
                             title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
-                        ${track.active ? 'ON' : 'OFF'}
+                        ${enableBtnLabel}
                     </button>
                     <div class="track-mode-selector">
                         <button class="track-mode-option ${track.mode === 'loop' ? 'active' : ''}"
@@ -139,7 +171,7 @@ function updateLoops(loopData) {
                             ↻ Loop
                         </button>
                         <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
-                                data-track="${track.track}" data-mode="trigger" title="Trigger: play once">
+                                data-track="${track.track}" data-mode="trigger" title="Trigger: play on event">
                             ▶ Trig
                         </button>
                     </div>
@@ -152,6 +184,7 @@ function updateLoops(loopData) {
                         ${filename}
                     </span>
                 </div>
+                ${triggerSection}
             </div>
         `;
     });
@@ -236,6 +269,30 @@ function attachTrackHandlers() {
             e.stopPropagation();
             const track = parseInt(this.dataset.track);
             await selectTrackFile(track);
+        });
+    });
+
+    // Trigger name input: save on Enter or blur
+    document.querySelectorAll('.trigger-name-input').forEach(input => {
+        const save = async function() {
+            const track = parseInt(this.dataset.track);
+            await setTrackTriggerConfig(track, { trigger_name: this.value.trim() });
+        };
+        input.addEventListener('change', save);
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { this.blur(); }
+        });
+    });
+
+    // Trigger mode buttons (momentary/oneshot)
+    document.querySelectorAll('.trigger-mode-opt').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            if (this.classList.contains('active')) return;
+            const track = parseInt(this.dataset.track);
+            const tmode = this.dataset.tmode;
+            await setTrackTriggerConfig(track, { trigger_mode: tmode });
+            setTimeout(loadDeviceData, 400);
         });
     });
 }
@@ -773,6 +830,70 @@ async function loadWiFiStatus() {
     } catch (error) {
         console.error('[WIFI-STATUS] Error fetching WiFi status:', error);
         // Don't show error to user - WiFi status is not critical
+    }
+}
+
+// Load and display trigger server config
+async function loadTriggerServer() {
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/trigger-server`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const ip = data.trigger_server_ip || '';
+        const port = data.trigger_server_port || '';
+        const display = ip ? `${ip}${port ? ':' + port : ''}` : '—';
+        document.getElementById('triggerServerDisplay').textContent = display;
+    } catch (e) {
+        // silently ignore — not critical
+    }
+}
+
+window.showTriggerServerEdit = function() {
+    const row = document.getElementById('triggerServerEditRow');
+    row.style.display = 'flex';
+};
+
+window.hideTriggerServerEdit = function() {
+    document.getElementById('triggerServerEditRow').style.display = 'none';
+};
+
+window.saveTriggerServer = async function() {
+    const ip = document.getElementById('triggerServerIpInput').value.trim();
+    const portRaw = document.getElementById('triggerServerPortInput').value.trim();
+    if (!ip) { showMessage('Enter a trigger server IP', 'error'); return; }
+    const payload = { trigger_server_ip: ip };
+    if (portRaw) payload.trigger_server_port = parseInt(portRaw);
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/trigger-server`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        if (response.ok) {
+            showMessage('Trigger server updated', 'success');
+            hideTriggerServerEdit();
+            loadTriggerServer();
+        } else {
+            showMessage('Failed to set trigger server', 'error');
+        }
+    } catch (e) {
+        showMessage('Error setting trigger server', 'error');
+    }
+};
+
+// Set trigger_name / trigger_mode for a track
+async function setTrackTriggerConfig(track, fields) {
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/track/trigger`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ track, ...fields })
+        });
+        if (!response.ok) {
+            showMessage(`Failed to update trigger config for track ${track}`, 'error');
+        }
+    } catch (e) {
+        showMessage('Error updating trigger config', 'error');
     }
 }
 

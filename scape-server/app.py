@@ -269,7 +269,9 @@ def get_devices():
                             'playing': track.get('playing', False),
                             'volume': track.get('volume', 0),
                             'file': track.get('file', ''),
-                            'filename': track.get('file', '').split('/')[-1] if track.get('file') else 'No file'
+                            'filename': track.get('file', '').split('/')[-1] if track.get('file') else 'No file',
+                            'trigger_name': track.get('trigger_name', ''),
+                            'trigger_mode': track.get('trigger_mode', 'momentary'),
                         }
                         loops.append(loop_info)
                         if loop_info['active']:
@@ -748,6 +750,96 @@ def set_track_volume(device_id):
             return jsonify({'error': f'Failed to set volume for track {track}'}), 500
     except requests.RequestException as e:
         logger.error(f"Error setting volume for track {track} on {device_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/<device_id>/trigger-server', methods=['GET'])
+def get_device_trigger_server(device_id):
+    """Get trigger server config for a device."""
+    device = registry.get_device(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    try:
+        response = requests.get(f"http://{device.get('ip_address')}/api/trigger-server", timeout=2)
+        if response.status_code == 200:
+            return jsonify(response.json())
+        return jsonify({'error': f'HTTP {response.status_code}'}), 500
+    except requests.RequestException as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/<device_id>/trigger-server', methods=['POST'])
+def set_device_trigger_server(device_id):
+    """Set trigger server config for a device."""
+    device = registry.get_device(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    data = request.json
+    payload = {'trigger_server_ip': data.get('trigger_server_ip', '')}
+    if data.get('trigger_server_port'):
+        payload['trigger_server_port'] = int(data['trigger_server_port'])
+    try:
+        response = requests.post(
+            f"http://{device.get('ip_address')}/api/trigger-server",
+            json=payload, timeout=2
+        )
+        if response.status_code == 200:
+            return jsonify({'status': 'success'})
+        return jsonify({'error': f'HTTP {response.status_code}'}), 500
+    except requests.RequestException as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/batch/trigger-server', methods=['POST'])
+def batch_set_trigger_server():
+    """Set trigger server IP/port on multiple devices."""
+    data = request.json
+    device_ids = data.get('device_ids', [])
+    trigger_server_ip = data.get('trigger_server_ip', '')
+    trigger_server_port = data.get('trigger_server_port')
+
+    logger.info(f"Batch setting trigger server to {trigger_server_ip} for {len(device_ids)} devices")
+    results = []
+
+    for device_id in device_ids:
+        device = registry.get_device(device_id)
+        if device:
+            payload = {'trigger_server_ip': trigger_server_ip}
+            if trigger_server_port:
+                payload['trigger_server_port'] = int(trigger_server_port)
+            try:
+                response = requests.post(
+                    f"http://{device.get('ip_address')}/api/trigger-server",
+                    json=payload, timeout=2
+                )
+                results.append({'device_id': device_id,
+                                 'status': 'success' if response.status_code == 200 else 'failed'})
+            except requests.RequestException:
+                results.append({'device_id': device_id, 'status': 'error'})
+        else:
+            results.append({'device_id': device_id, 'status': 'not_found'})
+
+    return jsonify({'results': results})
+
+@app.route('/api/device/<device_id>/track/trigger', methods=['POST'])
+def set_track_trigger_config(device_id):
+    """Set trigger_name and/or trigger_mode for a track."""
+    device = registry.get_device(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    data = request.json
+    track = data.get('track', 0)
+    payload = {'track': track}
+    if 'trigger_name' in data:
+        payload['trigger_name'] = data['trigger_name']
+    if 'trigger_mode' in data:
+        payload['trigger_mode'] = data['trigger_mode']
+    try:
+        response = requests.post(
+            f"http://{device.get('ip_address')}/api/track",
+            json=payload, timeout=2
+        )
+        if response.status_code == 200:
+            return jsonify({'status': 'success'})
+        return jsonify({'error': f'HTTP {response.status_code}'}), 500
+    except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/device/<device_id>/track/file', methods=['POST'])

@@ -188,25 +188,27 @@ class DeviceController:
         if result['success'] and result['response']:
             data = result['response']
             print(f"\nTrack Status for {self.device_id}")
-            print("-" * 70)
+            print("-" * 90)
             print(f"Global Volume: {data.get('global_volume', 'N/A')}%")
             print()
-            print(f"{'Track':<6} {'Mode':<8} {'Active':<8} {'Volume':<8} File")
-            print("-" * 60)
+            print(f"{'Trk':<5} {'Mode':<8} {'Active':<8} {'Vol':<5} {'TrigMode':<10} {'TrigName':<24} File")
+            print("-" * 90)
 
             for track in data.get('tracks', []):
                 active = "YES" if track.get('active') else "no"
                 file_name = track.get('file', '')
-                if file_name:
-                    file_name = file_name.split('/')[-1]
-                else:
-                    file_name = '(none)'
-                print(f"  {track['track']:<4} {track.get('mode','loop'):<8} {active:<8} {track.get('volume',0):<8} {file_name}")
+                file_name = file_name.split('/')[-1] if file_name else '(none)'
+                trig_name = track.get('trigger_name', '') or '-'
+                trig_mode = track.get('trigger_mode', '-') if track.get('trigger_name') else '-'
+                print(f"  {track['track']:<3} {track.get('mode','loop'):<8} {active:<8} "
+                      f"{track.get('volume',0):<5} {trig_mode:<10} {trig_name:<24} {file_name}")
         else:
             logger.error(f"Failed to get track status: {result.get('error', 'Unknown error')}")
 
     async def set_track(self, track: int, mode: Optional[str], active: Optional[bool],
-                        filename: Optional[str], volume: Optional[int]) -> None:
+                        filename: Optional[str], volume: Optional[int],
+                        trigger_name: Optional[str] = None,
+                        trigger_mode: Optional[str] = None) -> None:
         """Configure a track."""
         payload: Dict[str, Any] = {'track': track}
 
@@ -218,6 +220,10 @@ class DeviceController:
             payload['file'] = filename
         if volume is not None:
             payload['volume'] = volume
+        if trigger_name is not None:
+            payload['trigger_name'] = trigger_name
+        if trigger_mode is not None:
+            payload['trigger_mode'] = trigger_mode
 
         logger.info(f"Configuring track {track} on {self.device_id}: {payload}")
         result = await self.send_request('POST', '/api/track', payload)
@@ -225,7 +231,35 @@ class DeviceController:
         if result['success']:
             resp = result['response']
             logger.info(f"✓ Track {track} updated: mode={resp.get('mode')}, active={resp.get('active')}, "
-                        f"file={resp.get('file')}, volume={resp.get('volume')}")
+                        f"file={resp.get('file')}, volume={resp.get('volume')}, "
+                        f"trigger_name={resp.get('trigger_name')}, trigger_mode={resp.get('trigger_mode')}")
+        else:
+            resp = result.get('response', {}) or {}
+            logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
+
+    async def get_trigger_server(self) -> None:
+        """Get trigger server configuration."""
+        result = await self.send_request('GET', '/api/trigger-server')
+        if result['success'] and result['response']:
+            data = result['response']
+            print(f"\nTrigger Server Config for {self.device_id}")
+            print(f"  Gateway IP:   {data.get('trigger_server_ip') or '(not set)'}")
+            print(f"  Gateway port: {data.get('trigger_server_port', 5002)}")
+            print(f"  Listen port:  {data.get('trigger_listen_port', 5100)}")
+        else:
+            logger.error(f"Failed to get trigger server config: {result.get('error', 'Unknown error')}")
+
+    async def set_trigger_server(self, ip: Optional[str], port: Optional[int]) -> None:
+        """Set trigger server IP and/or port."""
+        payload: Dict[str, Any] = {}
+        if ip is not None:
+            payload['trigger_server_ip'] = ip
+        if port is not None:
+            payload['trigger_server_port'] = port
+        result = await self.send_request('POST', '/api/trigger-server', payload)
+        if result['success']:
+            resp = result['response']
+            logger.info(f"✓ Trigger server updated: ip={resp.get('trigger_server_ip')}, port={resp.get('trigger_server_port')}")
         else:
             resp = result.get('response', {}) or {}
             logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
@@ -372,7 +406,8 @@ Examples:
     required.add_argument('--command', '-c',
                           required=True,
                           choices=['status', 'get-tracks', 'set-track', 'set-volume',
-                                   'set-id', 'save-config', 'load-config', 'reboot', 'list-files'],
+                                   'set-id', 'save-config', 'load-config', 'reboot', 'list-files',
+                                   'get-trigger-server', 'set-trigger-server'],
                           help='Command to execute on the device')
 
     # Optional arguments
@@ -410,6 +445,24 @@ Examples:
     track_group.add_argument('--file',
                               metavar='FILENAME',
                               help='Audio filename (e.g. ambient.wav)')
+
+    track_group.add_argument('--trigger-name',
+                              metavar='NAME',
+                              help='Trigger event name to bind (e.g. RedButton.Button_1); empty string clears')
+
+    track_group.add_argument('--trigger-mode',
+                              choices=['momentary', 'oneshot'],
+                              help='momentary: play while held; oneshot: play once on press')
+
+    # Trigger server control
+    trig_group = parser.add_argument_group('trigger server control (for set-trigger-server)')
+    trig_group.add_argument('--trigger-ip',
+                             metavar='IP',
+                             help='IP address of the Haven Trigger Gateway')
+    trig_group.add_argument('--trigger-port',
+                             type=int,
+                             metavar='PORT',
+                             help='Port of the Haven Trigger Gateway (default 5002)')
 
     # Volume control
     volume_group = parser.add_argument_group('volume control')
@@ -471,7 +524,9 @@ Examples:
                 mode=args.mode,
                 active=active,
                 filename=args.file,
-                volume=args.volume
+                volume=args.volume,
+                trigger_name=args.trigger_name,
+                trigger_mode=args.trigger_mode
             ))
 
         elif args.command == 'set-volume':
@@ -497,6 +552,18 @@ Examples:
 
         elif args.command == 'list-files':
             asyncio.run(controller.list_files())
+
+        elif args.command == 'get-trigger-server':
+            asyncio.run(controller.get_trigger_server())
+
+        elif args.command == 'set-trigger-server':
+            if args.trigger_ip is None and args.trigger_port is None:
+                logger.error("Provide --trigger-ip and/or --trigger-port")
+                sys.exit(1)
+            asyncio.run(controller.set_trigger_server(
+                ip=args.trigger_ip,
+                port=args.trigger_port
+            ))
 
     except KeyboardInterrupt:
         logger.info("\nOperation interrupted by user")

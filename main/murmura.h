@@ -66,9 +66,10 @@ typedef enum {
     AUDIO_ACTION_PLAY_PAUSE,
     AUDIO_ACTION_START_TRACK,  // Start a specific track with file
     AUDIO_ACTION_STOP_TRACK,   // Stop a specific track
-    AUDIO_ACTION_SET_VOLUME,   // Set volume for a track (0-100%)
-    AUDIO_ACTION_SET_GLOBAL_VOLUME // Set global/master volume (0-100%)
-    // Add other audio control actions as needed
+    AUDIO_ACTION_SET_VOLUME,        // Set volume for a track (0-100%)
+    AUDIO_ACTION_SET_GLOBAL_VOLUME, // Set global/master volume (0-100%)
+    AUDIO_ACTION_ENABLE_TRACK,      // Mark trigger-mode track active (no audio start)
+    AUDIO_ACTION_DISABLE_TRACK,     // Mark trigger-mode track inactive (stop if playing)
 } audio_action_type_t;
 
 // Data structures for specific actions

@@ -58,6 +58,7 @@
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "config_manager.h"
+#include "trigger_listener.h"
 #include <math.h>  // For log10f
 #include "esp_heap_caps.h"
 
@@ -424,6 +425,14 @@ void audio_control_task(void *pvParameters)
         ESP_LOGI(TAG, "Access the API documentation at http://<device-ip>/");
         // Update HTTP server with loop manager reference
         http_server_set_track_manager(track_manager);
+
+        // Initialize trigger listener (listens for gateway TCP connections)
+        esp_err_t trig_ret = trigger_listener_init(track_manager);
+        if (trig_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Trigger listener initialized on port %d", TRIGGER_LISTEN_PORT);
+        } else {
+            ESP_LOGW(TAG, "Trigger listener init failed: %s", esp_err_to_name(trig_ret));
+        }
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
     }
@@ -600,6 +609,27 @@ void audio_control_task(void *pvParameters)
                         ESP_LOGI(TAG, "Global volume set to %d%% (hardware codec updated)", volume);
                     } else {
                         ESP_LOGW(TAG, "Global volume set to %d%% (no board handle available)", volume);
+                    }
+                    break;
+                }
+
+                case AUDIO_ACTION_ENABLE_TRACK: {
+                    int track = msg.data.stop_track.track_index;
+                    if (track >= 0 && track < MAX_TRACKS) {
+                        track_manager->tracks[track].active = true;
+                        ESP_LOGI(TAG, "Track %d enabled (trigger mode — waiting for trigger)", track);
+                    }
+                    break;
+                }
+
+                case AUDIO_ACTION_DISABLE_TRACK: {
+                    int track = msg.data.stop_track.track_index;
+                    if (track >= 0 && track < MAX_TRACKS) {
+                        track_manager->tracks[track].active = false;
+                        /* Stop the pipeline in case a trigger fired while it was active */
+                        audio_pipeline_stop(stream->tracks[track].pipeline);
+                        audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
+                        ESP_LOGI(TAG, "Track %d disabled (trigger mode)", track);
                     }
                     break;
                 }

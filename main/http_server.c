@@ -70,6 +70,9 @@ static esp_err_t id_set_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
 static esp_err_t file_delete_handler(httpd_req_t *req);
 static esp_err_t system_reboot_handler(httpd_req_t *req);
+// Trigger server configuration handlers
+static esp_err_t trigger_server_get_handler(httpd_req_t *req);
+static esp_err_t trigger_server_post_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response (uses SPIRAM via cJSON hooks)
@@ -199,6 +202,9 @@ static esp_err_t tracks_get_handler(httpd_req_t *req) {
             const char *fp = g_track_manager->tracks[i].file_path;
             cJSON_AddStringToObject(t, "file", fp[0] ? fp : "");
             cJSON_AddNumberToObject(t, "volume", g_track_manager->tracks[i].volume_percent);
+            cJSON_AddStringToObject(t, "trigger_name", g_track_manager->tracks[i].trigger_name);
+            const char *tm_str = (g_track_manager->tracks[i].trigger_mode == TRIGGER_MODE_ONESHOT) ? "oneshot" : "momentary";
+            cJSON_AddStringToObject(t, "trigger_mode", tm_str);
             cJSON_AddItemToArray(tracks_array, t);
         }
     }
@@ -278,6 +284,34 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
             ESP_LOGE(TAG, "POST /api/track[%d]: invalid mode '%s' (must be 'loop' or 'trigger')", track, mode_str);
             cJSON_AddBoolToObject(response, "success", false);
             cJSON_AddStringToObject(response, "error", "Invalid mode — must be 'loop' or 'trigger'");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+    }
+
+    // --- trigger_name (optional) ---
+    cJSON *trigger_name_json = cJSON_GetObjectItem(request, "trigger_name");
+    if (cJSON_IsString(trigger_name_json)) {
+        strncpy(g_track_manager->tracks[track].trigger_name,
+                trigger_name_json->valuestring,
+                sizeof(g_track_manager->tracks[track].trigger_name) - 1);
+        g_track_manager->tracks[track].trigger_name[sizeof(g_track_manager->tracks[track].trigger_name) - 1] = '\0';
+    }
+
+    // --- trigger_mode (optional): "momentary" or "oneshot" ---
+    cJSON *trigger_mode_json = cJSON_GetObjectItem(request, "trigger_mode");
+    if (cJSON_IsString(trigger_mode_json) && trigger_mode_json->valuestring) {
+        const char *tm = trigger_mode_json->valuestring;
+        if (strcmp(tm, "oneshot") == 0) {
+            g_track_manager->tracks[track].trigger_mode = TRIGGER_MODE_ONESHOT;
+        } else if (strcmp(tm, "momentary") == 0) {
+            g_track_manager->tracks[track].trigger_mode = TRIGGER_MODE_MOMENTARY;
+        } else {
+            ESP_LOGE(TAG, "POST /api/track[%d]: invalid trigger_mode '%s'", track, tm);
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Invalid trigger_mode — must be 'momentary' or 'oneshot'");
             send_json_response(req, response);
             cJSON_Delete(response);
             cJSON_Delete(request);
@@ -392,8 +426,22 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
     cJSON *active_json = cJSON_GetObjectItem(request, "active");
     if (cJSON_IsBool(active_json)) {
         bool want_active = cJSON_IsTrue(active_json);
-        if (want_active) {
-            // Must have a file configured
+        bool is_trigger = (g_track_manager->tracks[track].mode == TRACK_MODE_TRIGGER);
+
+        if (is_trigger) {
+            // Trigger-mode: enabling/disabling only changes the active flag.
+            // Audio is started by a trigger event, not by setting active.
+            audio_control_msg_t msg = {
+                .type = want_active ? AUDIO_ACTION_ENABLE_TRACK : AUDIO_ACTION_DISABLE_TRACK,
+                .data = {}
+            };
+            msg.data.stop_track.track_index = track;
+            if (xQueueSend(g_track_manager->audio_control_queue, &msg, pdMS_TO_TICKS(500)) != pdPASS) {
+                if (want_active) { QUEUE_FULL_ERROR("ENABLE_TRACK"); }
+                else             { QUEUE_FULL_ERROR("DISABLE_TRACK"); }
+            }
+        } else if (want_active) {
+            // Loop mode: activate = start playing
             if (g_track_manager->tracks[track].file_path[0] == '\0') {
                 ESP_LOGE(TAG, "POST /api/track[%d]: cannot activate - no file configured", track);
                 httpd_resp_set_status(req, "400 Bad Request");
@@ -413,6 +461,7 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
                 QUEUE_FULL_ERROR("START_TRACK");
             }
         } else {
+            // Loop mode: deactivate = stop playing
             audio_control_msg_t stop_msg = { .type = AUDIO_ACTION_STOP_TRACK, .data = {} };
             stop_msg.data.stop_track.track_index = track;
             if (xQueueSend(g_track_manager->audio_control_queue, &stop_msg, pdMS_TO_TICKS(500)) != pdPASS) {
@@ -441,6 +490,9 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(response, "active", g_track_manager->tracks[track].active);
     cJSON_AddStringToObject(response, "file", g_track_manager->tracks[track].file_path);
     cJSON_AddNumberToObject(response, "volume", g_track_manager->tracks[track].volume_percent);
+    cJSON_AddStringToObject(response, "trigger_name", g_track_manager->tracks[track].trigger_name);
+    const char *tm_str = (g_track_manager->tracks[track].trigger_mode == TRIGGER_MODE_ONESHOT) ? "oneshot" : "momentary";
+    cJSON_AddStringToObject(response, "trigger_mode", tm_str);
 
     esp_err_t ret = send_json_response(req, response);
     cJSON_Delete(response);
@@ -1713,6 +1765,79 @@ static esp_err_t system_reboot_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief GET /api/trigger-server — return trigger gateway IP/port config
+ */
+static esp_err_t trigger_server_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/trigger-server");
+
+    cJSON *response = cJSON_CreateObject();
+    if (g_track_manager) {
+        cJSON_AddStringToObject(response, "trigger_server_ip", g_track_manager->trigger_server_ip);
+        cJSON_AddNumberToObject(response, "trigger_server_port", g_track_manager->trigger_server_port);
+        cJSON_AddNumberToObject(response, "trigger_listen_port", TRIGGER_LISTEN_PORT);
+    } else {
+        cJSON_AddStringToObject(response, "trigger_server_ip", "");
+        cJSON_AddNumberToObject(response, "trigger_server_port", 5002);
+        cJSON_AddNumberToObject(response, "trigger_listen_port", TRIGGER_LISTEN_PORT);
+    }
+
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    return ret;
+}
+
+/**
+ * @brief POST /api/trigger-server — update trigger gateway IP and/or port
+ * Body: { "trigger_server_ip": "192.168.1.10", "trigger_server_port": 5002 }
+ */
+static esp_err_t trigger_server_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/trigger-server");
+
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *response = cJSON_CreateObject();
+
+    if (!g_track_manager) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "Audio system not initialized");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+
+    cJSON *ip_json = cJSON_GetObjectItem(request, "trigger_server_ip");
+    if (cJSON_IsString(ip_json)) {
+        strncpy(g_track_manager->trigger_server_ip, ip_json->valuestring,
+                sizeof(g_track_manager->trigger_server_ip) - 1);
+        g_track_manager->trigger_server_ip[sizeof(g_track_manager->trigger_server_ip) - 1] = '\0';
+    }
+
+    cJSON *port_json = cJSON_GetObjectItem(request, "trigger_server_port");
+    if (cJSON_IsNumber(port_json)) {
+        g_track_manager->trigger_server_port = port_json->valueint;
+    }
+
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "trigger_server_ip", g_track_manager->trigger_server_ip);
+    cJSON_AddNumberToObject(response, "trigger_server_port", g_track_manager->trigger_server_port);
+
+    esp_err_t ret = send_json_response(req, response);
+    cJSON_Delete(response);
+    cJSON_Delete(request);
+    return ret;
+}
+
+/**
  * @brief GET /favicon.ico - Favicon handler (returns empty icon to avoid 404)
  */
 static esp_err_t favicon_handler(httpd_req_t *req) {
@@ -2567,7 +2692,29 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for /api/system/reboot: %s", esp_err_to_name(ret));
     }
-    
+
+    httpd_uri_t trigger_server_get_uri = {
+        .uri     = "/api/trigger-server",
+        .method  = HTTP_GET,
+        .handler = trigger_server_get_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &trigger_server_get_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register GET /api/trigger-server: %s", esp_err_to_name(ret));
+    }
+
+    httpd_uri_t trigger_server_post_uri = {
+        .uri     = "/api/trigger-server",
+        .method  = HTTP_POST,
+        .handler = trigger_server_post_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &trigger_server_post_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register POST /api/trigger-server: %s", esp_err_to_name(ret));
+    }
+
     // Initialize unit status manager
     unit_status_init();
     

@@ -32,6 +32,17 @@ static track_mode_t str_to_mode(const char *s) {
     return TRACK_MODE_LOOP;
 }
 
+// Helper: convert trigger_mode enum to string
+static const char *trigger_mode_to_str(trigger_mode_t tm) {
+    return (tm == TRIGGER_MODE_ONESHOT) ? "oneshot" : "momentary";
+}
+
+// Helper: parse trigger_mode string to enum
+static trigger_mode_t str_to_trigger_mode(const char *s) {
+    if (s && strcmp(s, "oneshot") == 0) return TRIGGER_MODE_ONESHOT;
+    return TRIGGER_MODE_MOMENTARY;
+}
+
 esp_err_t config_save(const track_manager_t *manager) {
     if (!manager) {
         ESP_LOGE(TAG, "Invalid manager pointer");
@@ -42,6 +53,8 @@ esp_err_t config_save(const track_manager_t *manager) {
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
+    cJSON_AddStringToObject(root, "trigger_server_ip", manager->trigger_server_ip);
+    cJSON_AddNumberToObject(root, "trigger_server_port", manager->trigger_server_port);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -51,6 +64,8 @@ esp_err_t config_save(const track_manager_t *manager) {
         cJSON_AddBoolToObject(t, "active", manager->tracks[i].active);
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
+        cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
+        cJSON_AddStringToObject(t, "trigger_mode", trigger_mode_to_str(manager->tracks[i].trigger_mode));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -143,6 +158,9 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
         track_manager->tracks[i].mode = config->tracks[i].mode;
         strncpy(track_manager->tracks[i].file_path, config->tracks[i].file_path,
                 sizeof(track_manager->tracks[i].file_path) - 1);
+        strncpy(track_manager->tracks[i].trigger_name, config->tracks[i].trigger_name,
+                sizeof(track_manager->tracks[i].trigger_name) - 1);
+        track_manager->tracks[i].trigger_mode = config->tracks[i].trigger_mode;
 
         // Start or stop based on active flag
         if (config->tracks[i].active && strlen(config->tracks[i].file_path) > 0) {
@@ -164,6 +182,9 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
     }
 
     track_manager->global_volume_percent = config->global_volume_percent;
+    strncpy(track_manager->trigger_server_ip, config->trigger_server_ip,
+            sizeof(track_manager->trigger_server_ip) - 1);
+    track_manager->trigger_server_port = config->trigger_server_port;
     ESP_LOGI(TAG, "Configuration applied successfully");
     return ESP_OK;
 }
@@ -243,6 +264,8 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
+    cJSON_AddStringToObject(root, "trigger_server_ip", manager->trigger_server_ip);
+    cJSON_AddNumberToObject(root, "trigger_server_port", manager->trigger_server_port);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -252,6 +275,8 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
         cJSON_AddBoolToObject(t, "active", manager->tracks[i].active);
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
+        cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
+        cJSON_AddStringToObject(t, "trigger_mode", trigger_mode_to_str(manager->tracks[i].trigger_mode));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -274,16 +299,31 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     // Defaults
     memset(config, 0, sizeof(track_config_t));
     config->global_volume_percent = 75;
+    config->trigger_server_ip[0] = '\0';
+    config->trigger_server_port = 5002;
     for (int i = 0; i < MAX_TRACKS; i++) {
         config->tracks[i].mode = TRACK_MODE_LOOP;
         config->tracks[i].active = false;
         config->tracks[i].volume_percent = 100;
         config->tracks[i].file_path[0] = '\0';
+        config->tracks[i].trigger_name[0] = '\0';
+        config->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
     }
 
     cJSON *global_vol = cJSON_GetObjectItem(root, "global_volume");
     if (cJSON_IsNumber(global_vol)) {
         config->global_volume_percent = global_vol->valueint;
+    }
+
+    cJSON *trig_ip = cJSON_GetObjectItem(root, "trigger_server_ip");
+    if (cJSON_IsString(trig_ip) && trig_ip->valuestring) {
+        strncpy(config->trigger_server_ip, trig_ip->valuestring,
+                sizeof(config->trigger_server_ip) - 1);
+    }
+
+    cJSON *trig_port = cJSON_GetObjectItem(root, "trigger_server_port");
+    if (cJSON_IsNumber(trig_port)) {
+        config->trigger_server_port = trig_port->valueint;
     }
 
     cJSON *tracks_arr = cJSON_GetObjectItem(root, "tracks");
@@ -317,6 +357,17 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
             if (cJSON_IsNumber(volume)) {
                 config->tracks[idx].volume_percent = volume->valueint;
             }
+
+            cJSON *trig_name = cJSON_GetObjectItem(t, "trigger_name");
+            if (cJSON_IsString(trig_name) && trig_name->valuestring) {
+                strncpy(config->tracks[idx].trigger_name, trig_name->valuestring,
+                        sizeof(config->tracks[idx].trigger_name) - 1);
+            }
+
+            cJSON *trig_mode = cJSON_GetObjectItem(t, "trigger_mode");
+            if (cJSON_IsString(trig_mode)) {
+                config->tracks[idx].trigger_mode = str_to_trigger_mode(trig_mode->valuestring);
+            }
         }
     }
 
@@ -336,10 +387,14 @@ esp_err_t config_get_default(track_config_t *config) {
         };
         memset(config, 0, sizeof(track_config_t));
         config->global_volume_percent = 75;
+        config->trigger_server_ip[0] = '\0';
+        config->trigger_server_port = 5002;
         for (int i = 0; i < MAX_TRACKS; i++) {
             config->tracks[i].mode = TRACK_MODE_LOOP;
             config->tracks[i].active = (i == 0);
             config->tracks[i].volume_percent = 100;
+            config->tracks[i].trigger_name[0] = '\0';
+            config->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
             strncpy(config->tracks[i].file_path, default_files[i],
                     sizeof(config->tracks[i].file_path) - 1);
         }

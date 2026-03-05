@@ -5,11 +5,15 @@ curl http://192.168.5.74/api/wifi/status
 curl http://192.168.5.74/api/config/status
 
 
-curl http://192.168.5.74/api/loops
+curl http://192.168.5.74/api/tracks
 curl http://192.168.5.74/api/files
 
-curl -X POST http://192.168.5.74/api/loop/file   -d '{"track": 0, "file_index": 0}'
-curl -X POST http://192.168.5.74/api/loop/stop -d '{"track": 1}'
+curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 0, "file": "track1.wav", "active": true}'
+curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "active": false}'
+
+curl http://192.168.5.74/api/trigger-server
+curl -X POST http://192.168.5.74/api/trigger-server -H "Content-Type: application/json" -d '{"trigger_server_ip": "192.168.5.10", "trigger_server_port": 5002}'
+curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "mode": "trigger", "file": "sting.wav", "trigger_name": "RedButton.Button_1", "trigger_mode": "oneshot"}'
 
 curl -X POST http://192.168.5.74/api/config/save  
 

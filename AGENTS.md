@@ -41,6 +41,10 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **SPIRAM**: Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` for large allocations. If allocation fails, raise a fatal error (`ESP_ERROR_CHECK(ESP_ERR_NO_MEM)`) — do NOT fall back to regular `malloc`.
 - **SPIRAM and synchronization primitives**: The ESP32's S32C1I atomic compare-and-swap instruction does not work correctly through the SPI cache to external PSRAM. Never embed spinlocks, raw atomic variables, or any synchronization primitive inside a struct allocated wholesale in PSRAM. FreeRTOS `SemaphoreHandle_t` is safe because `xSemaphoreCreate*` allocates from internal RAM by default — but the handle itself (a pointer) must not be confused with the underlying memory. Pattern: keep the struct with the lock in internal RAM and point to bulk data in SPIRAM, or use FreeRTOS semaphore handles (which are internally allocated correctly).
 
+# API contract
+
+**HTTP_API.md** is the authoritative source for all HTTP API endpoints, request/response shapes, and behavior. Read it instead of inspecting `http_server.c` when working on HTTP-related tasks. When adding or changing endpoints, update HTTP_API.md to match.
+
 # Project architecture
 
 - **main/murmura.c** - App entry point, audio pipeline setup, audio_control_task

@@ -5,12 +5,19 @@
 The ESP32 Murmura device provides a JSON-based HTTP API for remote control of audio tracks. Once connected to WiFi, the device exposes a web server on port 80.
 
 Each device has three tracks (0, 1, 2). Each track has:
-- **mode**: `"loop"` (continuously repeats) or `"trigger"` (plays once when triggered)
+- **mode**: `"loop"` (continuously repeats) or `"trigger"` (plays when a trigger event arrives)
 - **active**: whether the track is enabled/playing
 - **file**: the audio file assigned to the track
 - **volume**: per-track volume (0–100%)
+- **trigger_name**: name of the trigger event to listen for (empty string = no trigger)
+- **trigger_mode**: `"momentary"` (start on keyDown "On", stop on keyUp "Off") or `"oneshot"` (start on keyDown, plays to completion, ignore keyUp)
 
 There is also a global/master volume that scales all tracks.
+
+The device can connect to a Haven Trigger Gateway to receive trigger events:
+- **trigger_server_ip**: IP address of the Trigger Gateway (empty = disabled)
+- **trigger_server_port**: port of the Trigger Gateway (default 5002)
+- The device listens for incoming TCP connections from the gateway on port 5100
 
 ## API Endpoints
 
@@ -52,25 +59,28 @@ Returns the current state of all three tracks.
       "track": 0,
       "mode": "loop",
       "active": true,
-      "playing": true,
       "file": "/sdcard/ambient.wav",
-      "volume": 80
+      "volume": 80,
+      "trigger_name": "",
+      "trigger_mode": "momentary"
     },
     {
       "track": 1,
       "mode": "trigger",
-      "active": true,
-      "playing": false,
+      "active": false,
       "file": "/sdcard/sting.wav",
-      "volume": 100
+      "volume": 100,
+      "trigger_name": "RedButton.Button_1",
+      "trigger_mode": "oneshot"
     },
     {
       "track": 2,
       "mode": "loop",
       "active": false,
-      "playing": false,
       "file": "",
-      "volume": 100
+      "volume": 100,
+      "trigger_name": "",
+      "trigger_mode": "momentary"
     }
   ],
   "global_volume": 75
@@ -79,10 +89,11 @@ Returns the current state of all three tracks.
 
 **Fields:**
 - `mode`: `"loop"` or `"trigger"`
-- `active`: true if the track is enabled (looping) or armed (trigger)
-- `playing`: true if audio is currently being output (runtime state, not persisted)
+- `active`: true if the track is playing (loop) or was last started by a trigger
 - `file`: full path, or empty string if none assigned
 - `volume`: per-track volume 0–100%
+- `trigger_name`: trigger event name to match; empty string = no trigger assigned
+- `trigger_mode`: `"momentary"` or `"oneshot"`
 
 ---
 
@@ -96,10 +107,12 @@ Updates configuration for a single track. All fields except `track` are optional
 ```json
 {
   "track": 0,
-  "mode": "loop",
-  "active": true,
-  "file": "ambient.wav",
-  "volume": 80
+  "mode": "trigger",
+  "active": false,
+  "file": "sting.wav",
+  "volume": 100,
+  "trigger_name": "RedButton.Button_1",
+  "trigger_mode": "oneshot"
 }
 ```
 
@@ -109,6 +122,8 @@ Updates configuration for a single track. All fields except `track` are optional
 - `active` *(optional)*: `true` to start/arm, `false` to stop
 - `file` *(optional)*: filename (e.g. `"ambient.wav"`) or full path (e.g. `"/sdcard/ambient.wav"`)
 - `volume` *(optional)*: 0–100
+- `trigger_name` *(optional)*: name of trigger event to bind (e.g. `"RedButton.Button_1"`); empty string clears
+- `trigger_mode` *(optional)*: `"momentary"` or `"oneshot"`
 
 **Behavior:**
 - Setting `active: true` starts playback (loop mode) or arms for triggering (trigger mode). Requires a file to be configured.
@@ -120,11 +135,13 @@ Updates configuration for a single track. All fields except `track` are optional
 ```json
 {
   "success": true,
-  "track": 0,
-  "mode": "loop",
-  "active": true,
-  "file": "/sdcard/ambient.wav",
-  "volume": 80
+  "track": 1,
+  "mode": "trigger",
+  "active": false,
+  "file": "/sdcard/sting.wav",
+  "volume": 100,
+  "trigger_name": "RedButton.Button_1",
+  "trigger_mode": "oneshot"
 }
 ```
 
@@ -157,6 +174,54 @@ Adjusts the master volume (affects all tracks via hardware codec).
   "success": true,
   "volume": 75,
   "message": "Global volume adjustment command sent"
+}
+```
+
+---
+
+### Get Trigger Server Configuration
+
+**GET** `/api/trigger-server`
+
+Returns the current trigger gateway IP/port and the local listen port.
+
+**Response:**
+```json
+{
+  "trigger_server_ip": "192.168.1.10",
+  "trigger_server_port": 5002,
+  "trigger_listen_port": 5100
+}
+```
+
+- `trigger_server_ip`: IP of the Haven Trigger Gateway; empty string if not configured
+- `trigger_server_port`: gateway HTTP port (default 5002)
+- `trigger_listen_port`: port this device listens on for incoming TCP events (fixed: 5100)
+
+---
+
+### Set Trigger Server Configuration
+
+**POST** `/api/trigger-server`
+
+Updates the trigger gateway connection settings. The trigger listener will use these values on its next registration attempt (every 30 s) or immediately if `trigger_listener_register_with_gateway()` is called.
+
+**Request Body:**
+```json
+{
+  "trigger_server_ip": "192.168.1.10",
+  "trigger_server_port": 5002
+}
+```
+
+Both fields are optional — only the fields present are updated.
+
+**Response:**
+```json
+{
+  "success": true,
+  "trigger_server_ip": "192.168.1.10",
+  "trigger_server_port": 5002
 }
 ```
 

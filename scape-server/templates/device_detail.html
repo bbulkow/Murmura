@@ -113,6 +113,17 @@
                 <input type="range" id="globalVolume" min="0" max="100" value="0">
                 <span id="globalVolumeValue">0</span>%
             </div>
+            <div class="info-row" style="margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span class="info-label" style="display: inline-block; width: 120px;">Trigger Server:</span>
+                <span id="triggerServerDisplay" style="color: #555;">—</span>
+                <button onclick="showTriggerServerEdit()" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">Set</button>
+            </div>
+            <div id="triggerServerEditRow" style="display: none; margin-top: 6px; display: none; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <input type="text" id="triggerServerIpInput" placeholder="IP address" style="width: 130px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <input type="number" id="triggerServerPortInput" placeholder="port (optional)" style="width: 130px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <button onclick="saveTriggerServer()" class="btn btn-primary" style="padding: 4px 12px; font-size: 13px;">Save</button>
+                <button onclick="hideTriggerServerEdit()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Cancel</button>
+            </div>
         </div>
         
         <div class="device-detail-content">

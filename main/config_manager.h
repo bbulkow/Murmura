@@ -15,12 +15,16 @@ typedef struct {
     bool active;
     char file_path[MAX_FILE_PATH_LEN];
     int volume_percent;
+    char trigger_name[MAX_TRIGGER_NAME_LEN];
+    trigger_mode_t trigger_mode;
 } track_config_entry_t;
 
 // Full persisted configuration
 typedef struct {
     track_config_entry_t tracks[MAX_TRACKS];
     int global_volume_percent;
+    char trigger_server_ip[TRIGGER_SERVER_IP_LEN];
+    int trigger_server_port;
 } track_config_t;
 
 /**

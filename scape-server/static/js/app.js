@@ -95,7 +95,8 @@ function attachEventListeners() {
     document.getElementById('batchVolumeBtn').addEventListener('click', batchSetVolume);
     document.getElementById('batchSaveConfigBtn').addEventListener('click', batchSaveConfig);
     document.getElementById('batchRebootBtn').addEventListener('click', batchReboot);
-    
+    document.getElementById('batchTriggerServerBtn').addEventListener('click', batchSetTriggerServer);
+
     // Volume slider
     const batchVolume = document.getElementById('batchVolume');
     const batchVolumeValue = document.getElementById('batchVolumeValue');
@@ -249,8 +250,11 @@ function createDeviceCard(device) {
         loopInfo += '<div class="loop-header">Tracks:</div>';
         device.loops.forEach(track => {
             const activeClass = track.active ? 'playing' : 'stopped';
-            const modeLabel = track.mode === 'trigger' ? 'TRG' : 'LOOP';
+            const modeLabel = track.mode === 'trigger' ? '⚡' : '🔁';
             const filename = track.filename || 'No file';
+            const triggerLine = (track.mode === 'trigger' && track.trigger_name)
+                ? `<div class="loop-trigger-info"><span class="loop-trigger-name">${track.trigger_name}</span> <span class="loop-trigger-mode">(${track.trigger_mode || 'momentary'})</span></div>`
+                : '';
             loopInfo += `
                 <div class="loop-item ${activeClass}">
                     <span class="loop-status">${track.active ? '▶' : '■'}</span>
@@ -258,6 +262,7 @@ function createDeviceCard(device) {
                     <span class="loop-mode">${modeLabel}</span>
                     <span class="loop-volume">${track.volume}%</span>
                     <span class="loop-file" title="${filename}">${filename}</span>
+                    ${triggerLine}
                 </div>
             `;
         });
@@ -1441,9 +1446,46 @@ async function batchReboot() {
             autoRefreshActive = true;
             loadDevices();  // Refresh to check which devices are back online
         }, 10000);  // Wait 10 seconds before resuming auto-refresh
-        
+
     } catch (error) {
         console.error('Error rebooting devices:', error);
         showError('Failed to reboot devices');
+    }
+}
+
+// Batch set trigger server IP/port
+async function batchSetTriggerServer() {
+    const ip = document.getElementById('batchTriggerIp').value.trim();
+    const portRaw = document.getElementById('batchTriggerPort').value.trim();
+
+    if (!ip) {
+        showError('Please enter a trigger server IP address');
+        return;
+    }
+
+    let targetDevices = selectedDevices.size > 0
+        ? Array.from(selectedDevices)
+        : devices.filter(d => d.status === 'online').map(d => d.id);
+
+    if (targetDevices.length === 0) {
+        showError('No devices selected or online');
+        return;
+    }
+
+    const payload = { device_ids: targetDevices, trigger_server_ip: ip };
+    if (portRaw) payload.trigger_server_port = parseInt(portRaw);
+
+    try {
+        const response = await fetch('/api/batch/trigger-server', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        const successCount = data.results.filter(r => r.status === 'success').length;
+        showSuccess(`Trigger server set on ${successCount}/${targetDevices.length} device(s)`);
+    } catch (error) {
+        console.error('Error setting trigger server:', error);
+        showError('Failed to set trigger server');
     }
 }

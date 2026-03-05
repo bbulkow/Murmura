@@ -173,7 +173,7 @@ python id_manager.py -c auto-assign -p STAGE -s 100
 
 The device controller performs operations on a single device by its ID.
 
-Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `trigger`), an **active** flag, a **file**, and a **volume**. All of these are configured with a single `set-track` command; only the fields you provide are changed.
+Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `trigger`), an **active** flag, a **file**, a **volume**, a **trigger_name**, and a **trigger_mode**. All of these are configured with a single `set-track` command; only the fields you provide are changed.
 
 #### Basic Use
 
@@ -193,8 +193,15 @@ python device_controller.py --id MURMURA-001 --command set-track --track 0 --act
 # Change volume on track 1 without affecting anything else
 python device_controller.py --id MURMURA-001 --command set-track --track 1 --volume 50
 
-# Set track 2 as a one-shot trigger
-python device_controller.py --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --active true
+# Set track 2 as a one-shot trigger bound to a specific trigger name
+python device_controller.py --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --trigger-name "RedButton.Button_1" --trigger-mode oneshot
+
+# Set track 1 as a momentary trigger (plays while held)
+python device_controller.py --id MURMURA-001 --command set-track --track 1 --mode trigger --file bass.wav --trigger-name "Dial.Pedal" --trigger-mode momentary
+
+# Get/set trigger gateway configuration
+python device_controller.py --id MURMURA-001 --command get-trigger-server
+python device_controller.py --id MURMURA-001 --command set-trigger-server --trigger-ip 192.168.1.10 --trigger-port 5002
 
 # Set global (master) volume
 python device_controller.py --id MURMURA-001 --command set-volume --volume 75
@@ -220,7 +227,7 @@ python device_controller.py --help
 
 Required arguments:
   --id ID, -i ID        Device ID to control
-  --command {status,get-tracks,set-track,set-volume,set-id,save-config,load-config,reboot,list-files}, -c
+  --command {status,get-tracks,set-track,set-volume,set-id,save-config,load-config,reboot,list-files,get-trigger-server,set-trigger-server}, -c
                         Command to execute on the device
 
 Optional arguments:
@@ -230,10 +237,17 @@ Optional arguments:
 
 Track control (for set-track):
   --track {0,1,2}, -k {0,1,2}   Track number (required for set-track)
-  --mode {loop,trigger}          Track mode: loop (continuous) or trigger (play once)
+  --mode {loop,trigger}          Track mode: loop (continuous) or trigger (event-driven)
   --active {true,false}          Enable/arm (true) or stop (false) the track
   --file FILENAME                Audio filename, e.g. ambient.wav
   --volume LEVEL, -v LEVEL       Per-track volume (0-100)
+  --trigger-name NAME            Trigger event name to bind (e.g. RedButton.Button_1)
+  --trigger-mode {momentary,oneshot}
+                                 momentary: play while held; oneshot: play once on press
+
+Trigger server control (for set-trigger-server):
+  --trigger-ip IP                IP address of the Haven Trigger Gateway
+  --trigger-port PORT            Port of the Trigger Gateway (default 5002)
 
 Volume control (for set-volume):
   --volume LEVEL, -v LEVEL       Global volume level (0-100)
@@ -242,12 +256,19 @@ Device ID control:
   --new-id ID, -n ID             New device ID for set-id command
 ```
 
-#### Track Modes
+#### Track Modes and Trigger Modes
 
 | Mode | Behaviour |
 |------|-----------|
 | `loop` | File plays continuously in a loop while `active=true` |
-| `trigger` | File plays once when triggered by the trigger system; `active=true` arms the track |
+| `trigger` | File plays in response to trigger events from the Trigger Gateway |
+
+When `mode=trigger`, set `trigger_name` to the gateway event name and `trigger_mode` to control playback behaviour:
+
+| Trigger Mode | Behaviour |
+|---|---|
+| `momentary` | Plays on keyDown ("On" event), stops on keyUp ("Off" event) |
+| `oneshot` | Plays once on keyDown; keyUp is ignored; track plays to natural end |
 
 #### Shortcut Examples
 

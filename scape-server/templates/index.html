@@ -63,6 +63,15 @@
                         Reboot
                     </button>
                 </div>
+
+                <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
+                    <label style="font-weight: 500; white-space: nowrap;">Trigger Server:</label>
+                    <input type="text" id="batchTriggerIp" placeholder="IP address" style="width: 130px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <input type="number" id="batchTriggerPort" placeholder="port (opt)" style="width: 100px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <button id="batchTriggerServerBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                        Set Trigger Server
+                    </button>
+                </div>
             </div>
         </div>
 
