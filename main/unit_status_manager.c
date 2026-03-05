@@ -10,11 +10,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include "version.h"
 
 static const char *TAG = "UNIT_STATUS";
-
-// Firmware version - update this with each release
-#define FIRMWARE_VERSION "1.1"
 
 // Static storage for unit ID
 static char g_id[MAX_UNIT_ID_LEN] = "MURMURA-001";  // Default unit ID
