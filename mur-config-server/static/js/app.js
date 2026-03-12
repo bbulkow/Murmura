@@ -580,7 +580,7 @@ async function openDeviceModal(device) {
     
     // Load fresh device data including loops
     try {
-        const response = await fetch(`/api/device/${currentDevice}/loops`);
+        const response = await fetch(`/api/device/${currentDevice}/tracks`);
         if (response.ok) {
             const loopData = await response.json();
             
@@ -676,7 +676,7 @@ async function refreshModalData() {
         }
         
         // Get fresh loop data - same as refreshLoopData but without recursion
-        const loopsResponse = await fetch(`/api/device/${currentDevice}/loops`);
+        const loopsResponse = await fetch(`/api/device/${currentDevice}/tracks`);
         if (loopsResponse.ok) {
             const loopData = await loopsResponse.json();
             
@@ -893,7 +893,7 @@ async function loadDeviceLoops() {
     loopsSection.style.display = 'block';
     
     try {
-        const response = await fetch(`/api/device/${currentDevice}/loops`);
+        const response = await fetch(`/api/device/${currentDevice}/tracks`);
         const data = await response.json();
         
         // Display loop configuration (customize based on your actual loop data structure)
@@ -1376,7 +1376,7 @@ async function refreshLoopData() {
     if (!currentDevice) return;
     
     try {
-        const response = await fetch(`/api/device/${currentDevice}/loops`);
+        const response = await fetch(`/api/device/${currentDevice}/tracks`);
         if (response.ok) {
             const loopData = await response.json();
 

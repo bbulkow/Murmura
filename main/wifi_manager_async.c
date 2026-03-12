@@ -728,7 +728,7 @@ esp_err_t wifi_manager_read_credentials(wifiman_config_t *config)
     }
 
     config->network_count = (network_count > WIFI_MAX_NETWORKS) ? WIFI_MAX_NETWORKS : network_count;
-    ESP_LOGI(TAG, "Found %d networks in NVS", config->network_count);
+    ESP_LOGD(TAG, "Found %d networks in NVS", config->network_count);
 
     // Read each network
     for (int i = 0; i < config->network_count; i++) {
@@ -759,7 +759,7 @@ esp_err_t wifi_manager_read_credentials(wifiman_config_t *config)
         ret = nvs_get_u8(nvs_handle, key, &auth_fail_count);
         config->networks[i].auth_fail_count = (ret == ESP_OK) ? auth_fail_count : 0;
 
-        ESP_LOGI(TAG, "Network %d: SSID=%s, Auth fail count=%d", 
+        ESP_LOGD(TAG, "Network %d: SSID=%s, Auth fail count=%d",
                  i, config->networks[i].ssid, config->networks[i].auth_fail_count);
     }
 

@@ -181,7 +181,7 @@ static esp_err_t files_get_handler(httpd_req_t *req) {
  * @brief GET /api/tracks - Return status of all three tracks
  */
 static esp_err_t tracks_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/tracks");
+    ESP_LOGD(TAG, "GET /api/tracks");
 
     cJSON *response = cJSON_CreateObject();
     cJSON *tracks_array = cJSON_CreateArray();
@@ -941,7 +941,7 @@ static esp_err_t global_volume_handler(httpd_req_t *req) {
  * Returns device identity, network status, mur gateway config, and wifi info
  */
 static esp_err_t device_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/device");
+    ESP_LOGD(TAG, "GET /api/device");
 
     cJSON *response = cJSON_CreateObject();
 

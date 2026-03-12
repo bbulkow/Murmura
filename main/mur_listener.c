@@ -1,5 +1,5 @@
 /*
- * trigger_listener.c
+ * mur_listener.c
  *
  * Connects to the Mur Gateway over a persistent TCP connection.
  * On connect, announces the device ID and subscribes to all trigger
@@ -22,7 +22,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "trigger_listener.h"
+#include "mur_listener.h"
+#include "wifi_manager.h"
 #include "murmura.h"
 #include "unit_status_manager.h"
 #include "esp_log.h"
@@ -34,16 +35,17 @@
 #include <string.h>
 #include <errno.h>
 
-static const char *TAG = "TRIGGER_LISTENER";
+static const char *TAG = "MUR_LISTENER";
 
 #define TASK_STACK_SIZE     4096
 #define TASK_PRIORITY       4
 #define RECV_BUF_SIZE       256
 #define LINE_BUF_SIZE       512
 
-/* Reconnect backoff: 1s → 2s → 4s → 8s → 16s → 30s cap */
-#define INITIAL_BACKOFF_MS  1000
-#define MAX_BACKOFF_MS      30000
+/* Poll interval while waiting for WiFi (no network traffic) */
+#define WIFI_POLL_MS        1000
+/* Retry interval after a failed gateway connection or disconnect */
+#define RECONNECT_MS        5000
 
 /* Module state */
 static track_manager_t *s_manager     = NULL;
@@ -51,7 +53,7 @@ static TaskHandle_t     s_task_handle = NULL;
 static volatile bool    s_resubscribe = false;
 
 /* ---- forward declarations ----------------------------------------- */
-static void  trigger_task(void *arg);
+static void  mur_task(void *arg);
 static void  process_line(const char *line);
 static void  dispatch_event(const char *trigger_name, const char *value);
 static int   connect_to_gateway(void);
@@ -62,7 +64,7 @@ static bool  send_subscribe(int sock);
 /*  Public API                                                          */
 /* ================================================================== */
 
-esp_err_t trigger_listener_init(track_manager_t *manager)
+esp_err_t mur_listener_init(track_manager_t *manager)
 {
     if (!manager) return ESP_ERR_INVALID_ARG;
     s_manager = manager;
@@ -71,7 +73,7 @@ esp_err_t trigger_listener_init(track_manager_t *manager)
              s_manager->mur_gateway_ip[0] ? s_manager->mur_gateway_ip : "(not set)",
              s_manager->mur_gateway_port);
 
-    if (xTaskCreate(trigger_task, "trigger_listener", TASK_STACK_SIZE,
+    if (xTaskCreate(mur_task, "mur_listener", TASK_STACK_SIZE,
                     NULL, TASK_PRIORITY, &s_task_handle) != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate failed");
         return ESP_FAIL;
@@ -80,7 +82,7 @@ esp_err_t trigger_listener_init(track_manager_t *manager)
     return ESP_OK;
 }
 
-void trigger_listener_stop(void)
+void mur_listener_stop(void)
 {
     if (s_task_handle) {
         vTaskDelete(s_task_handle);
@@ -89,7 +91,7 @@ void trigger_listener_stop(void)
     s_manager = NULL;
 }
 
-esp_err_t trigger_listener_resubscribe(void)
+esp_err_t mur_listener_resubscribe(void)
 {
     s_resubscribe = true;
     return ESP_OK;
@@ -320,39 +322,34 @@ static void process_line(const char *line)
 }
 
 /*
- * trigger_task — main FreeRTOS task.
+ * mur_task — main FreeRTOS task.
  *
  * Loop:
- *   1. Connect to Mur Gateway (with backoff on failure)
- *   2. Send announce + subscribe
- *   3. Read events, dispatch them
- *   4. On disconnect: back to connect loop
+ *   1. Wait for WiFi connectivity (poll every 1 s, no network traffic)
+ *   2. Connect to Mur Gateway
+ *   3. Send announce + subscribe
+ *   4. Read events, dispatch them
+ *   5. On disconnect or failure: wait 5 s, then retry from step 1
  */
-static void trigger_task(void *arg)
+static void mur_task(void *arg)
 {
     char recv_buf[RECV_BUF_SIZE];
     char line_buf[LINE_BUF_SIZE];
     int  line_pos = 0;
-    int  backoff_ms = INITIAL_BACKOFF_MS;
 
     while (1) {
-        /* Wait if no gateway configured */
-        if (!s_manager || s_manager->mur_gateway_ip[0] == '\0') {
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            continue;
+        /* Wait until gateway is configured and WiFi is connected */
+        while (!s_manager || s_manager->mur_gateway_ip[0] == '\0'
+               || !wifi_manager_is_connected()) {
+            vTaskDelay(pdMS_TO_TICKS(WIFI_POLL_MS));
         }
 
-        /* Connect to gateway */
+        /* WiFi is up — attempt gateway connection */
         int sock = connect_to_gateway();
         if (sock < 0) {
-            ESP_LOGD(TAG, "Retry in %d ms", backoff_ms);
-            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
-            backoff_ms = (backoff_ms * 2 > MAX_BACKOFF_MS) ? MAX_BACKOFF_MS : backoff_ms * 2;
+            vTaskDelay(pdMS_TO_TICKS(RECONNECT_MS));
             continue;
         }
-
-        /* Connected — reset backoff */
-        backoff_ms = INITIAL_BACKOFF_MS;
 
         /* Send announce and subscribe */
         if (!send_announce(sock) || !send_subscribe(sock)) {
@@ -399,7 +396,8 @@ static void trigger_task(void *arg)
         }
 
         close(sock);
-        ESP_LOGI(TAG, "Connection closed, will reconnect...");
+        ESP_LOGI(TAG, "Connection closed, will reconnect in %d s...", RECONNECT_MS / 1000);
+        vTaskDelay(pdMS_TO_TICKS(RECONNECT_MS));
     }
 
     vTaskDelete(NULL);

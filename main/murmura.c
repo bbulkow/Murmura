@@ -58,7 +58,7 @@
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "config_manager.h"
-#include "trigger_listener.h"
+#include "mur_listener.h"
 #include <math.h>  // For log10f
 #include "esp_heap_caps.h"
 
@@ -426,14 +426,14 @@ void audio_control_task(void *pvParameters)
         // Update HTTP server with loop manager reference
         http_server_set_track_manager(track_manager);
 
-        // Initialize trigger listener (connects outbound to Mur Gateway)
-        esp_err_t trig_ret = trigger_listener_init(track_manager);
-        if (trig_ret == ESP_OK) {
-            ESP_LOGI(TAG, "Trigger listener initialized (gateway %s:%d)",
+        // Initialize Mur Gateway listener (connects outbound to Mur Gateway)
+        esp_err_t mur_ret = mur_listener_init(track_manager);
+        if (mur_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Mur listener initialized (gateway %s:%d)",
                      track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
                      track_manager->mur_gateway_port);
         } else {
-            ESP_LOGW(TAG, "Trigger listener init failed: %s", esp_err_to_name(trig_ret));
+            ESP_LOGW(TAG, "Mur listener init failed: %s", esp_err_to_name(mur_ret));
         }
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));

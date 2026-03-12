@@ -523,9 +523,9 @@ def get_device_files(device_id):
         logger.error(f"Failed to get files for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/device/<device_id>/loops')
-def get_device_loops(device_id):
-    """Get loop configuration for a device."""
+@app.route('/api/device/<device_id>/tracks')
+def get_device_tracks(device_id):
+    """Get track configuration for a device."""
     device = registry.get_device(device_id)
     if not device:
         logger.error(f"Device not found in registry: {device_id}")
@@ -551,14 +551,14 @@ def get_device_loops(device_id):
         if response.status_code == 200:
             return jsonify(response.json())
         else:
-            logger.warning(f"Failed to get loops from {device_id}: HTTP {response.status_code}")
+            logger.warning(f"Failed to get tracks from {device_id}: HTTP {response.status_code}")
             return jsonify({
                 'loops': [],
                 'global_volume': 0,
                 'active_count': 0
             })
     except requests.RequestException as e:
-        logger.error(f"Failed to get loops for {device_id}: {e}")
+        logger.error(f"Failed to get tracks for {device_id}: {e}")
         # Return empty loops structure instead of error
         return jsonify({
             'loops': [],
@@ -566,9 +566,9 @@ def get_device_loops(device_id):
             'active_count': 0
         })
 
-@app.route('/api/device/<device_id>/loops', methods=['POST'])
-def set_device_loops(device_id):
-    """Set loop configuration for a device."""
+@app.route('/api/device/<device_id>/tracks', methods=['POST'])
+def set_device_tracks(device_id):
+    """Set track configuration for a device."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
@@ -577,16 +577,16 @@ def set_device_loops(device_id):
     
     try:
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/loops",
+            f"http://{device.get('ip_address')}/api/track",
             json=data,
             timeout=2
         )
         if response.status_code == 200:
             return jsonify({'status': 'success'})
         else:
-            return jsonify({'error': 'Failed to set loops'}), 500
+            return jsonify({'error': 'Failed to set tracks'}), 500
     except requests.RequestException as e:
-        logger.error(f"Failed to set loops for {device_id}: {e}")
+        logger.error(f"Failed to set tracks for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/batch/volume', methods=['POST'])

@@ -114,9 +114,10 @@ class MurGateway:
                            self.trigger_host, self.trigger_port, e)
 
     async def _registration_loop(self):
-        """Periodically re-register with the Trigger Server."""
+        """Re-register with the Trigger Server only when not connected."""
         while self._running:
-            await self._register_with_trigger_server()
+            if self.upstream_writer is None or self.upstream_writer.is_closing():
+                await self._register_with_trigger_server()
             await asyncio.sleep(REREGISTER_INTERVAL)
 
     async def _handle_upstream_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):

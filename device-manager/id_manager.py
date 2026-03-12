@@ -310,21 +310,21 @@ class IDManager:
         try:
             async with aiohttp.ClientSession() as session:
                 # First, stop any playing loops
-                logger.info("Stopping current loops...")
+                logger.info("Stopping current tracks...")
                 for track in range(3):
-                    url = f"http://{ip}/api/loop/stop"
-                    data = {'track': track}
-                    await session.post(url, json=data, 
+                    url = f"http://{ip}/api/track"
+                    data = {'track': track, 'active': False}
+                    await session.post(url, json=data,
                                       timeout=aiohttp.ClientTimeout(total=self.timeout))
                 
                 # Start identify sound on track 0
                 # Using file index 0 as a default identify sound
                 # You may want to adjust this based on available files
                 logger.info("Starting identify sound loop...")
-                url = f"http://{ip}/api/loop/start"
+                url = f"http://{ip}/api/track"
                 data = {
                     'track': 0,
-                    'file_index': 0  # Use first available file as identify sound
+                    'active': True
                 }
                 
                 async with session.post(url, json=data,
@@ -339,8 +339,8 @@ class IDManager:
                         
                         # Stop the identify sound
                         logger.info("Stopping identify sound...")
-                        url = f"http://{ip}/api/loop/stop"
-                        data = {'track': 0}
+                        url = f"http://{ip}/api/track"
+                        data = {'track': 0, 'active': False}
                         await session.post(url, json=data,
                                          timeout=aiohttp.ClientTimeout(total=self.timeout))
                         

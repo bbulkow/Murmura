@@ -202,7 +202,7 @@ class BatchController:
         # Stop all 3 tracks on each device
         for track in range(3):
             logger.info(f"Stopping track {track}...")
-            results = await self.batch_request(devices, 'POST', '/api/loop/stop', {'track': track})
+            results = await self.batch_request(devices, 'POST', '/api/track', {'track': track, 'active': False})
             
             success_count = sum(1 for r in results if r['success'])
             logger.info(f"Track {track}: {success_count}/{len(results)} devices stopped successfully")
@@ -214,7 +214,7 @@ class BatchController:
         logger.info("Starting all loops on all devices...")
         
         # First get the current configuration of each device
-        status_results = await self.batch_request(devices, 'GET', '/api/loops')
+        status_results = await self.batch_request(devices, 'GET', '/api/tracks')
         
         # Process each device
         for i, device in enumerate(devices):
@@ -225,7 +225,7 @@ class BatchController:
                     if loop.get('file'):  # Only start if a file is configured
                         track = loop['track']
                         logger.info(f"Starting track {track} on {device['id']}...")
-                        await self.batch_request([device], 'POST', '/api/loop/start', {'track': track})
+                        await self.batch_request([device], 'POST', '/api/track', {'track': track, 'active': True})
         
         logger.info("All start commands sent")
     
@@ -249,7 +249,7 @@ class BatchController:
                 return
                 
             logger.info(f"Setting track {track} volume to {volume}% on all devices...")
-            results = await self.batch_request(devices, 'POST', '/api/loop/volume', 
+            results = await self.batch_request(devices, 'POST', '/api/track',
                                               {'track': track, 'volume': volume})
         
         success_count = sum(1 for r in results if r['success'])

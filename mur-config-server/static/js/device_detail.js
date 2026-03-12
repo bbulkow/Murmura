@@ -72,7 +72,7 @@ async function loadDeviceData() {
         }
         
         // Get loops
-        const loopsResponse = await fetch(`/api/device/${currentDevice}/loops`);
+        const loopsResponse = await fetch(`/api/device/${currentDevice}/tracks`);
         if (loopsResponse.ok) {
             const loopData = await loopsResponse.json();
             updateLoops(loopData);
@@ -119,6 +119,14 @@ function updateDeviceInfo(data) {
 function updateLoops(loopData) {
     const loopsConfig = document.getElementById('loopsConfig');
 
+    // Skip full rebuild if user is editing a trigger name
+    const editRowOpen = document.querySelector('.trigger-name-edit-row[style*="display: flex"]') ||
+                        document.querySelector('.trigger-name-edit-row[style*="display:flex"]');
+    if (editRowOpen) {
+        updateLoopsInPlace(loopData);
+        return;
+    }
+
     if (!loopData.tracks || loopData.tracks.length === 0) {
         loopsConfig.innerHTML = '<p>No tracks configured</p>';
         return;
@@ -136,12 +144,29 @@ function updateLoops(loopData) {
         const enableBtnLabel = track.active ? 'ON' : 'OFF';
         const enableBtnClass = activeClass;
 
+        const triggerDisplayName = triggerName || '(none)';
         const triggerSection = isTrigger ? `
             <div class="track-trigger-config" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px;">
-                <input type="text" class="trigger-name-input" data-track="${track.track}"
-                       placeholder="trigger name" value="${triggerName}"
-                       style="width:160px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
-                       title="Trigger name from Haven Gateway">
+                <span class="trigger-name-display" data-track="${track.track}"
+                      style="font-size:13px; color:#555; min-width:100px;">${triggerDisplayName}</span>
+                <button class="trigger-name-edit-btn" data-track="${track.track}"
+                        style="padding:2px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer; background:#eee; color:#333;">
+                    Edit
+                </button>
+                <div class="trigger-name-edit-row" data-track="${track.track}" style="display:none; align-items:center; gap:4px;">
+                    <input type="text" class="trigger-name-input" data-track="${track.track}"
+                           placeholder="trigger name" value="${triggerName}"
+                           style="width:160px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
+                           title="Trigger name from Haven Gateway">
+                    <button class="trigger-name-ok-btn" data-track="${track.track}"
+                            style="padding:2px 8px; font-size:12px; border:1px solid #2a5298; border-radius:4px; cursor:pointer; background:#2a5298; color:#fff;">
+                        OK
+                    </button>
+                    <button class="trigger-name-cancel-btn" data-track="${track.track}"
+                            style="padding:2px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer; background:#eee; color:#333;">
+                        Cancel
+                    </button>
+                </div>
                 <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
                         data-track="${track.track}" data-tmode="momentary"
                         style="padding:3px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer;
@@ -205,6 +230,55 @@ function updateLoops(loopData) {
     
     // Attach track control handlers
     attachTrackHandlers();
+}
+
+// Close trigger name edit row and restore display mode
+function closeTriggerNameEdit(track) {
+    const editRow = document.querySelector(`.trigger-name-edit-row[data-track="${track}"]`);
+    const display = document.querySelector(`.trigger-name-display[data-track="${track}"]`);
+    const editBtn = document.querySelector(`.trigger-name-edit-btn[data-track="${track}"]`);
+    if (editRow) editRow.style.display = 'none';
+    if (display) display.style.display = '';
+    if (editBtn) editBtn.style.display = '';
+}
+
+// Update track state in-place without rebuilding DOM (preserves focused inputs)
+function updateLoopsInPlace(loopData) {
+    if (!loopData.tracks) return;
+
+    loopData.tracks.forEach(track => {
+        const item = document.querySelector(`.modal-loop-item[data-track="${track.track}"]`);
+        if (!item) return;
+
+        // Update active/stopped class
+        item.classList.remove('playing', 'stopped');
+        item.classList.add(track.active ? 'playing' : 'stopped');
+
+        // Update enable button
+        const enableBtn = item.querySelector('.track-enable-btn');
+        if (enableBtn) {
+            enableBtn.textContent = track.active ? 'ON' : 'OFF';
+            enableBtn.className = `track-enable-btn ${track.active ? 'playing' : 'stopped'}`;
+            enableBtn.dataset.active = track.active;
+        }
+
+        // Update volume slider (only if not focused)
+        const slider = item.querySelector('.track-volume-slider');
+        if (slider && slider !== document.activeElement) {
+            slider.value = track.volume;
+            const volLabel = item.querySelector('.track-volume-value');
+            if (volLabel) volLabel.textContent = track.volume + '%';
+        }
+    });
+
+    // Update global volume
+    const volumeSlider = document.getElementById('globalVolume');
+    const volumeValue = document.getElementById('globalVolumeValue');
+    const globalVolume = loopData.global_volume || 0;
+    if (Math.abs(volumeSlider.value - globalVolume) > 1) {
+        volumeSlider.value = globalVolume;
+        volumeValue.textContent = globalVolume;
+    }
 }
 
 // Attach handlers to track controls
@@ -273,14 +347,50 @@ function attachTrackHandlers() {
     });
 
     // Trigger name input: save on Enter or blur
-    document.querySelectorAll('.trigger-name-input').forEach(input => {
-        const save = async function() {
+    // Trigger name edit buttons
+    document.querySelectorAll('.trigger-name-edit-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const track = this.dataset.track;
+            const editRow = document.querySelector(`.trigger-name-edit-row[data-track="${track}"]`);
+            const display = document.querySelector(`.trigger-name-display[data-track="${track}"]`);
+            this.style.display = 'none';
+            display.style.display = 'none';
+            editRow.style.display = 'flex';
+            editRow.querySelector('.trigger-name-input').focus();
+        });
+    });
+
+    // Trigger name OK buttons
+    document.querySelectorAll('.trigger-name-ok-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
             const track = parseInt(this.dataset.track);
-            await setTrackTriggerConfig(track, { trigger_name: this.value.trim() });
-        };
-        input.addEventListener('change', save);
+            const input = document.querySelector(`.trigger-name-input[data-track="${track}"]`);
+            await setTrackTriggerConfig(track, { trigger_name: input.value.trim() });
+            closeTriggerNameEdit(track);
+            setTimeout(loadDeviceData, 400);
+        });
+    });
+
+    // Trigger name Cancel buttons
+    document.querySelectorAll('.trigger-name-cancel-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            closeTriggerNameEdit(parseInt(this.dataset.track));
+        });
+    });
+
+    // Enter key in trigger name input triggers OK
+    document.querySelectorAll('.trigger-name-input').forEach(input => {
         input.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { this.blur(); }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const okBtn = document.querySelector(`.trigger-name-ok-btn[data-track="${this.dataset.track}"]`);
+                okBtn.click();
+            } else if (e.key === 'Escape') {
+                closeTriggerNameEdit(parseInt(this.dataset.track));
+            }
         });
     });
 
@@ -843,24 +953,24 @@ async function loadMurGateway() {
         const ip = data.mur_gateway_ip || '';
         const port = data.mur_gateway_port || '';
         const display = ip ? `${ip}${port ? ':' + port : ''}` : '—';
-        document.getElementById('triggerServerDisplay').textContent = display;
+        document.getElementById('murGatewayDisplay').textContent = display;
     } catch (e) {
         // silently ignore — not critical
     }
 }
 
-window.showTriggerServerEdit = function() {
-    const row = document.getElementById('triggerServerEditRow');
+window.showMurGatewayEdit = function() {
+    const row = document.getElementById('murGatewayEditRow');
     row.style.display = 'flex';
 };
 
-window.hideTriggerServerEdit = function() {
-    document.getElementById('triggerServerEditRow').style.display = 'none';
+window.hideMurGatewayEdit = function() {
+    document.getElementById('murGatewayEditRow').style.display = 'none';
 };
 
-window.saveTriggerServer = async function() {
-    const ip = document.getElementById('triggerServerIpInput').value.trim();
-    const portRaw = document.getElementById('triggerServerPortInput').value.trim();
+window.saveMurGateway = async function() {
+    const ip = document.getElementById('murGatewayIpInput').value.trim();
+    const portRaw = document.getElementById('murGatewayPortInput').value.trim();
     if (!ip) { showMessage('Enter a Mur Gateway IP', 'error'); return; }
     const payload = { mur_gateway_ip: ip };
     if (portRaw) payload.mur_gateway_port = parseInt(portRaw);
@@ -872,7 +982,7 @@ window.saveTriggerServer = async function() {
         });
         if (response.ok) {
             showMessage('Mur Gateway updated', 'success');
-            hideTriggerServerEdit();
+            hideMurGatewayEdit();
             loadMurGateway();
         } else {
             showMessage('Failed to set Mur Gateway', 'error');
