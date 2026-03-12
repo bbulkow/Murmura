@@ -32,7 +32,7 @@ typedef enum {
 typedef struct {
     int track_index;
     track_mode_t mode;
-    bool active;               // Whether this track is enabled/playing
+    bool active;               // Whether this track is enabled (user intent)
     char file_path[MAX_FILE_PATH_LEN];
     int volume_percent;        // 0-100%
     char trigger_name[MAX_TRIGGER_NAME_LEN]; // trigger name to match; empty = none
@@ -63,5 +63,13 @@ esp_err_t http_server_stop(void);
  * @brief Set the track manager reference for the HTTP server
  */
 esp_err_t http_server_set_track_manager(track_manager_t *manager);
+
+/**
+ * @brief Check if a track's audio pipeline is currently playing.
+ *
+ * Reads the decoder element state directly — single source of truth.
+ * Safe to call from any task (read-only access to element state).
+ */
+bool is_track_playing(track_manager_t *mgr, int track_index);
 
 #endif // HTTP_SERVER_H

@@ -320,10 +320,10 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
     cJSON *filename_json  = cJSON_GetObjectItem(request, "filename");
 
     if (cJSON_IsString(file_json) && !file_json->valuestring[0]) {
-        // Explicit clear (file: "") — reject if track is active
-        if (g_track_manager->tracks[track].active) {
+        // Explicit clear (file: "") — reject if track is playing
+        if (is_track_playing(g_track_manager, track)) {
             cJSON_AddBoolToObject(response, "success", false);
-            cJSON_AddStringToObject(response, "error", "Cannot clear file while track is active");
+            cJSON_AddStringToObject(response, "error", "Cannot clear file while track is playing");
             send_json_response(req, response);
             cJSON_Delete(response);
             cJSON_Delete(request);
@@ -435,7 +435,7 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
                 else             { QUEUE_FULL_ERROR("DISABLE_TRACK"); }
             }
         } else if (want_active) {
-            // Loop mode: activate = start playing
+            // Loop mode: activate = enable + start playing
             if (g_track_manager->tracks[track].file_path[0] == '\0') {
                 ESP_LOGE(TAG, "POST /api/track[%d]: cannot activate - no file configured", track);
                 httpd_resp_set_status(req, "400 Bad Request");
@@ -446,6 +446,12 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
                 cJSON_Delete(request);
                 return ESP_OK;
             }
+            // ENABLE_TRACK sets active=true, START_TRACK begins playback
+            audio_control_msg_t enable_msg = { .type = AUDIO_ACTION_ENABLE_TRACK, .data = {} };
+            enable_msg.data.stop_track.track_index = track;
+            if (xQueueSend(g_track_manager->audio_control_queue, &enable_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+                QUEUE_FULL_ERROR("ENABLE_TRACK");
+            }
             audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
             start_msg.data.start_track.track_index = track;
             strncpy(start_msg.data.start_track.file_path,
@@ -455,15 +461,15 @@ static esp_err_t track_post_handler(httpd_req_t *req) {
                 QUEUE_FULL_ERROR("START_TRACK");
             }
         } else {
-            // Loop mode: deactivate = stop playing
-            audio_control_msg_t stop_msg = { .type = AUDIO_ACTION_STOP_TRACK, .data = {} };
-            stop_msg.data.stop_track.track_index = track;
-            if (xQueueSend(g_track_manager->audio_control_queue, &stop_msg, pdMS_TO_TICKS(500)) != pdPASS) {
-                QUEUE_FULL_ERROR("STOP_TRACK");
+            // Loop mode: deactivate = disable (sets active=false + stops pipeline)
+            audio_control_msg_t disable_msg = { .type = AUDIO_ACTION_DISABLE_TRACK, .data = {} };
+            disable_msg.data.stop_track.track_index = track;
+            if (xQueueSend(g_track_manager->audio_control_queue, &disable_msg, pdMS_TO_TICKS(500)) != pdPASS) {
+                QUEUE_FULL_ERROR("DISABLE_TRACK");
             }
         }
-    } else if (file_changed && g_track_manager->tracks[track].active) {
-        // File changed while track was active — restart with new file
+    } else if (file_changed && is_track_playing(g_track_manager, track)) {
+        // File changed while track is playing — restart with new file
         audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
         start_msg.data.start_track.track_index = track;
         strncpy(start_msg.data.start_track.file_path,

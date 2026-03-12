@@ -162,32 +162,31 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
                 sizeof(track_manager->tracks[i].trigger_name) - 1);
         track_manager->tracks[i].trigger_mode = config->tracks[i].trigger_mode;
 
-        // Start or stop based on active flag
-        // Only loop-mode tracks auto-start; other modes wait for external events
-        if (config->tracks[i].active && strlen(config->tracks[i].file_path) > 0
-            && config->tracks[i].mode == TRACK_MODE_LOOP) {
-            audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
-            start_msg.data.start_track.track_index = i;
-            strncpy(start_msg.data.start_track.file_path, config->tracks[i].file_path,
-                    sizeof(start_msg.data.start_track.file_path) - 1);
-            if (xQueueSend(audio_control_queue, &start_msg, pdMS_TO_TICKS(100)) == pdPASS) {
-                track_manager->tracks[i].active = true;
-                ESP_LOGI(TAG, "Started track %d: %s", i, config->tracks[i].file_path);
-            }
-        } else if (config->tracks[i].active
-                   && config->tracks[i].mode == TRACK_MODE_TRIGGER) {
-            // Trigger-mode: enable (arm) — don't start audio, wait for trigger events
+        // Enable/disable and start/stop based on active flag
+        if (config->tracks[i].active) {
+            // Enable track (sets active=true via ENABLE_TRACK handler)
             audio_control_msg_t enable_msg = { .type = AUDIO_ACTION_ENABLE_TRACK, .data = {} };
             enable_msg.data.stop_track.track_index = i;
-            if (xQueueSend(audio_control_queue, &enable_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+            xQueueSend(audio_control_queue, &enable_msg, pdMS_TO_TICKS(100));
+
+            if (config->tracks[i].mode == TRACK_MODE_LOOP
+                && strlen(config->tracks[i].file_path) > 0) {
+                // Loop mode: also start playback
+                audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
+                start_msg.data.start_track.track_index = i;
+                strncpy(start_msg.data.start_track.file_path, config->tracks[i].file_path,
+                        sizeof(start_msg.data.start_track.file_path) - 1);
+                if (xQueueSend(audio_control_queue, &start_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+                    ESP_LOGI(TAG, "Started track %d: %s", i, config->tracks[i].file_path);
+                }
+            } else if (config->tracks[i].mode == TRACK_MODE_TRIGGER) {
                 ESP_LOGI(TAG, "Enabled trigger-mode track %d", i);
             }
         } else if (!config->tracks[i].active && track_manager->tracks[i].active) {
-            audio_control_msg_t stop_msg = { .type = AUDIO_ACTION_STOP_TRACK, .data = {} };
-            stop_msg.data.stop_track.track_index = i;
-            if (xQueueSend(audio_control_queue, &stop_msg, pdMS_TO_TICKS(100)) == pdPASS) {
-                track_manager->tracks[i].active = false;
-            }
+            // Disable track (sets active=false + stops pipeline via DISABLE_TRACK handler)
+            audio_control_msg_t disable_msg = { .type = AUDIO_ACTION_DISABLE_TRACK, .data = {} };
+            disable_msg.data.stop_track.track_index = i;
+            xQueueSend(audio_control_queue, &disable_msg, pdMS_TO_TICKS(100));
         }
     }
 

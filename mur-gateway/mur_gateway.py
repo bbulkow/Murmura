@@ -163,22 +163,29 @@ class MurGateway:
             logger.warning("Trigger event missing 'name': %.100s", line)
             return
 
-        logger.debug("Trigger event: %s", trigger_name)
+        trigger_value = event.get("value", "?")
+        logger.info("Trigger event: %s value=%s", trigger_name, trigger_value)
 
         # Find all device connections subscribed to this trigger
         conn_ids = self.subscriptions.get(trigger_name, set())
         if not conn_ids:
-            logger.debug("No subscribers for trigger '%s'", trigger_name)
+            logger.info("No subscribers for trigger '%s'", trigger_name)
             return
 
         # Fan out — send the original line verbatim
         failed = []
+        sent_count = 0
         for conn_id in list(conn_ids):
             device = self.devices.get(conn_id)
             if device:
                 ok = await device.send_line(line)
-                if not ok:
+                if ok:
+                    logger.info("  → forwarded to %s", device.device_id)
+                    sent_count += 1
+                else:
                     failed.append(conn_id)
+
+        logger.info("Trigger '%s' sent to %d device(s)", trigger_name, sent_count)
 
         # Clean up failed connections
         for conn_id in failed:

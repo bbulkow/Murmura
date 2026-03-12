@@ -370,6 +370,14 @@ static const char *ael_state_name(audio_element_state_t s) {
     }
 }
 
+bool is_track_playing(track_manager_t *mgr, int track_index) {
+    if (!mgr || !mgr->audio_stream || track_index < 0 || track_index >= MAX_TRACKS)
+        return false;
+    audio_element_state_t state = audio_element_get_state(
+        mgr->audio_stream->tracks[track_index].decode_e);
+    return (state == AEL_STATE_RUNNING);
+}
+
 // Log all pipeline element states in a compact block.
 // Call this at START_TRACK and STOP_TRACK to see if the output pipeline
 // goes FINISHED when all tracks are terminated.
@@ -538,8 +546,7 @@ void audio_control_task(void *pvParameters)
                         // is still RUNNING or stayed FINISHED (no sound if FINISHED).
                         log_pipeline_states(stream, track_manager, "post-start");
 
-                        // Update track manager state
-                        track_manager->tracks[track].active = true;
+                        // Update file_path (active is set by ENABLE_TRACK, not here)
                         strncpy(track_manager->tracks[track].file_path, msg.data.start_track.file_path,
                                 sizeof(track_manager->tracks[track].file_path) - 1);
                     }
@@ -560,8 +567,8 @@ void audio_control_task(void *pvParameters)
                         // RUNNING on empty (silent) inputs indefinitely.
                         ESP_LOGI(TAG, "Stopped track %d", track);
 
-                        // Stop: clear active; preserve file_path so track can be restarted
-                        track_manager->tracks[track].active = false;
+                        // Do not touch active — it reflects user intent (set by ENABLE/DISABLE_TRACK).
+                        // Use is_track_playing() to check actual playback state.
 
                         log_pipeline_states(stream, track_manager, "post-stop");
                     }
@@ -619,7 +626,7 @@ void audio_control_task(void *pvParameters)
                     int track = msg.data.stop_track.track_index;
                     if (track >= 0 && track < MAX_TRACKS) {
                         track_manager->tracks[track].active = true;
-                        ESP_LOGI(TAG, "Track %d enabled (trigger mode — waiting for trigger)", track);
+                        ESP_LOGI(TAG, "Track %d enabled", track);
                     }
                     break;
                 }
@@ -631,7 +638,7 @@ void audio_control_task(void *pvParameters)
                         /* Stop the pipeline in case a trigger fired while it was active */
                         audio_pipeline_stop(stream->tracks[track].pipeline);
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
-                        ESP_LOGI(TAG, "Track %d disabled (trigger mode)", track);
+                        ESP_LOGI(TAG, "Track %d disabled", track);
                     }
                     break;
                 }
@@ -710,8 +717,7 @@ void audio_control_task(void *pvParameters)
                         audio_pipeline_run(stream->tracks[i].pipeline);
                         ESP_LOGI(TAG, "Track %d looped: %s", i, current_file);
                     } else {
-                        // Trigger mode or inactive — track finished, clear active
-                        track_manager->tracks[i].active = false;
+                        // Track finished — do not touch active (user intent).
                         ESP_LOGI(TAG, "Track %d finished (mode=%s, not restarting)",
                                  i, (track_manager->tracks[i].mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop");
                     }
@@ -817,7 +823,6 @@ void audio_control_task(void *pvParameters)
                                 audio_pipeline_run(stream->tracks[i].pipeline);
                                 ESP_LOGI(TAG, "Track %d event-looped", i);
                             } else {
-                                track_manager->tracks[i].active = false;
                                 ESP_LOGI(TAG, "Track %d event-finished (no loop)", i);
                             }
                             break;
