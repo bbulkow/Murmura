@@ -6,12 +6,12 @@ A web-based fleet management server for Brian's soundscape devicies, designed to
 
 - **Network Scanning**: Automatically discover ESP32 devices on your local network
 - **Device Dashboard**: View all discovered devices with their status, IP addresses, and current settings
-- **Individual Device Control**: 
-  - Control playback (play/pause/stop)
+- **Individual Device Control**:
+  - Enable/disable tracks (start/stop playback)
   - Adjust volume, globally and per track
   - View loaded files
-  - Change playing loops
-  - Link to device website
+  - Change track file assignments
+  - Link to device web UI
 - **Batch Operations**: 
   - Control multiple devices simultaneously
   - Set volume for multiple devices at once
@@ -133,15 +133,24 @@ The server provides RESTful API endpoints for programmatic access:
 - `POST /api/scan` - Trigger a network scan
 
 ### Device Control
-- `POST /api/device/<device_id>/volume` - Set device volume
-- `POST /api/device/<device_id>/play` - Control playback
+- `POST /api/device/<device_id>/volume` - Set global volume
+- `POST /api/device/<device_id>/play` - Enable/disable all tracks
 - `GET /api/device/<device_id>/files` - Get file list
-- `GET /api/device/<device_id>/loops` - Get loop configuration
-- `POST /api/device/<device_id>/loops` - Set loop configuration
+- `GET /api/device/<device_id>/tracks` - Get track configuration
+- `POST /api/device/<device_id>/tracks` - Set track configuration
+- `POST /api/device/<device_id>/track/control` - Enable/disable individual track
+- `POST /api/device/<device_id>/track/volume` - Set per-track volume
+- `POST /api/device/<device_id>/track/file` - Set track file
+- `POST /api/device/<device_id>/track/trigger` - Set track trigger config
+- `GET /api/device/<device_id>/mur-gateway` - Get Mur Gateway config
+- `POST /api/device/<device_id>/mur-gateway` - Set Mur Gateway config
 
 ### Batch Operations
-- `POST /api/batch/volume` - Set volume for multiple devices
-- `POST /api/batch/play` - Control playback for multiple devices
+- `POST /api/batch/volume` - Set global volume for multiple devices
+- `POST /api/batch/play` - Enable/disable tracks for multiple devices
+- `POST /api/batch/mur-gateway` - Set Mur Gateway on multiple devices
+- `POST /api/batch/save-config` - Save config on multiple devices
+- `POST /api/batch/reboot` - Reboot multiple devices
 
 ## WebSocket Events
 

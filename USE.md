@@ -161,21 +161,21 @@ Configuration (which file plays on which track, volumes) is stored as JSON on th
 
 ## 4. Playback: Loops and Volume
 
-Each Mur has three loop tracks (0, 1, 2) that can play simultaneously, mixed by the hardware codec. You assign an audio file to each track, set per-track volume, and optionally set a global master volume. Configuration can be saved to the SD card so it survives reboots.
+Each Mur has three tracks (0, 1, 2) that can play simultaneously, mixed by the hardware codec. You assign an audio file to each track, set per-track volume, and optionally set a global master volume. A track's `active` flag controls whether it is enabled — in loop mode, enabling a track starts playback; in trigger mode, enabling it arms the track to respond to trigger events. Configuration can be saved to the SD card so it survives reboots.
 
 > **Track limit note:** Three is a practical memory ceiling, not an arbitrary design choice. ESP-ADF spins up a significant number of processes per pipeline, and stereo 48 kHz 16-bit WAV files consume substantial RAM. Whether three simultaneous MP3 tracks will work is not guaranteed — the decoder pipelines add overhead on top of the per-track cost. If you hit stability issues with multiple tracks, reduce to two, or prefer WAV files if RAM is the bottleneck.
 
-### Checking current loop state
+### Checking current track state
 
 ```bash
 # All devices (CLI)
 python batch_controller.py -c status
 
 # Direct (curl)
-curl http://<device-ip>/api/loops
+curl http://<device-ip>/api/tracks
 ```
 
-Via browser: the main page at `http://<device-ip>/` shows all tracks with their current file, play state, and volume bar, and refreshes every 5 seconds.
+Via browser: the main page at `http://<device-ip>/` shows all tracks with their current file, active state, and volume bar, and refreshes every 5 seconds.
 
 ### Assigning a file to a track
 
@@ -186,18 +186,18 @@ curl http://<device-ip>/api/files
 python file_manager.py -c list -i MURMURA-001
 ```
 
-Then assign by index (CLI) or by path (curl):
+Then assign by filename (curl) or by the unified `set-track` command (CLI):
 ```bash
-# CLI — assign file index 2 to track 0 on one device
-python device_controller.py -i MURMURA-001 -c set-file -k 0 -x 2
+# CLI — assign file to track 0 on one device
+python device_controller.py -i MURMURA-001 -c set-track -k 0 --file loop1.wav
 
-# Curl — assign by file path
-curl -X POST http://<device-ip>/api/loop/file \
+# Curl — assign by filename (bare name or full /sdcard/ path)
+curl -X POST http://<device-ip>/api/track \
   -H "Content-Type: application/json" \
-  -d '{"track":0,"file":"/loop1.wav"}'
+  -d '{"track":0,"file":"loop1.wav"}'
 ```
 
-### Starting and stopping playback
+### Enabling and disabling tracks
 
 ```bash
 # Start all tracks on all devices (CLI)
@@ -206,14 +206,14 @@ python batch_controller.py -c start-all
 # Stop all tracks on all devices (CLI)
 python batch_controller.py -c stop-all
 
-# Start/stop a single track on one device (curl)
-curl -X POST http://<device-ip>/api/loop/start \
+# Enable/disable a single track on one device (curl)
+curl -X POST http://<device-ip>/api/track \
   -H "Content-Type: application/json" \
-  -d '{"track":0}'
+  -d '{"track":0,"active":true}'
 
-curl -X POST http://<device-ip>/api/loop/stop \
+curl -X POST http://<device-ip>/api/track \
   -H "Content-Type: application/json" \
-  -d '{"track":0}'
+  -d '{"track":0,"active":false}'
 ```
 
 ### Setting volume
@@ -236,7 +236,7 @@ curl -X POST http://<device-ip>/api/global/volume \
   -d '{"volume":80}'
 
 # Per-track volume on one device (curl)
-curl -X POST http://<device-ip>/api/loop/volume \
+curl -X POST http://<device-ip>/api/track \
   -H "Content-Type: application/json" \
   -d '{"track":0,"volume":75}'
 ```
@@ -245,7 +245,7 @@ Via mur-config-server: select devices and use the batch volume slider for global
 
 ### Saving configuration
 
-Changes to loop assignments and volumes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved config and begins playing automatically.
+Changes to track assignments and volumes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved config and begins playback for any active tracks automatically.
 
 ```bash
 # Save on all devices (CLI)

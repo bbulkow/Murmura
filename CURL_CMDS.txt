@@ -1,23 +1,32 @@
-curl http://192.168.5.74/api/status
-curl http://192.168.5.74/api/id
-curl http://192.168.5.74/api/wifi/status
+# Device info (identity, gateway, wifi status)
+curl http://192.168.5.74/api/device
 
+# Configuration status (current vs saved)
 curl http://192.168.5.74/api/config/status
 
-
+# Track state
 curl http://192.168.5.74/api/tracks
+
+# List audio files
 curl http://192.168.5.74/api/files
 
+# Enable track 0 with a file
 curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 0, "file": "track1.wav", "active": true}'
+
+# Disable track 1
 curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "active": false}'
 
-curl http://192.168.5.74/api/trigger-server
-curl -X POST http://192.168.5.74/api/trigger-server -H "Content-Type: application/json" -d '{"trigger_server_ip": "192.168.5.10", "trigger_server_port": 5002}'
+# Set track 1 as a oneshot trigger
 curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "mode": "trigger", "file": "sting.wav", "trigger_name": "RedButton.Button_1", "trigger_mode": "oneshot"}'
 
-curl -X POST http://192.168.5.74/api/config/save  
+# Set Mur Gateway IP and port (via /api/device)
+curl -X POST http://192.168.5.74/api/device -H "Content-Type: application/json" -d '{"mur_gateway_ip": "192.168.5.10", "mur_gateway_port": 4000}'
 
-curl -X POST http://192.168.5.74/api/global/volume -d '{"volume": 55}'
+# Save config to SD card
+curl -X POST http://192.168.5.74/api/config/save
+
+# Set global volume
+curl -X POST http://192.168.5.74/api/global/volume -H "Content-Type: application/json" -d '{"volume": 55}'
 
 # FILE UPLOAD COMMANDS
 # Upload a file with explicit filename

@@ -52,7 +52,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **WAV and MP3 playback** from SD card
 - **WiFi with multi-network failover** -- stores up to 10 networks, auto-selects the strongest available signal
 - **HTTP API** for full remote control (playback, volume, files, configuration, WiFi, device identity, reboot)
-- **Configuration persistence** -- loop assignments, volumes, and play states saved to SD card and restored on boot
+- **Configuration persistence** -- track assignments, volumes, and active states saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
 - **Fleet management server** (mur-config-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
@@ -190,7 +190,7 @@ Each device exposes a JSON API on port 80. Key endpoints:
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/tracks` | GET | Get status of all 3 tracks |
-| `/api/track` | POST | Control a track — `track` (0-2), plus any of: `active` (bool), `mode` (`loop`\|`trigger`), `file` (filename), `volume` (0-100) |
+| `/api/track` | POST | Configure a track — `track` (0-2), plus any of: `active`, `mode`, `file`, `volume`, `trigger_name`, `trigger_mode` |
 | `/api/global/volume` | POST | Set master volume (0-100) |
 | `/api/files` | GET | List audio files on SD card |
 | `/api/upload` | POST | Upload audio file to SD card |

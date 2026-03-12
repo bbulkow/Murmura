@@ -181,7 +181,7 @@ Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `tr
 # Show device status
 python device_controller.py --id MURMURA-001 --command status
 
-# Get track status (mode, active, playing, file, volume for all three tracks)
+# Get track status (mode, active, file, volume, trigger config for all three tracks)
 python device_controller.py --id MURMURA-001 --command get-tracks
 
 # Start track 0 as a looping ambient sound
@@ -199,9 +199,9 @@ python device_controller.py --id MURMURA-001 --command set-track --track 2 --mod
 # Set track 1 as a momentary trigger (plays while held)
 python device_controller.py --id MURMURA-001 --command set-track --track 1 --mode trigger --file bass.wav --trigger-name "Dial.Pedal" --trigger-mode momentary
 
-# Get/set trigger gateway configuration
-python device_controller.py --id MURMURA-001 --command get-trigger-server
-python device_controller.py --id MURMURA-001 --command set-trigger-server --trigger-ip 192.168.1.10 --trigger-port 5002
+# Get/set Mur Gateway configuration
+python device_controller.py --id MURMURA-001 --command get-mur-gateway
+python device_controller.py --id MURMURA-001 --command set-mur-gateway --trigger-ip 192.168.1.10 --trigger-port 4000
 
 # Set global (master) volume
 python device_controller.py --id MURMURA-001 --command set-volume --volume 75
@@ -227,7 +227,7 @@ python device_controller.py --help
 
 Required arguments:
   --id ID, -i ID        Device ID to control
-  --command {status,get-tracks,set-track,set-volume,set-id,save-config,load-config,reboot,list-files,get-trigger-server,set-trigger-server}, -c
+  --command {status,get-tracks,set-track,set-volume,set-id,save-config,load-config,reboot,list-files,get-mur-gateway,set-mur-gateway}, -c
                         Command to execute on the device
 
 Optional arguments:
@@ -245,9 +245,9 @@ Track control (for set-track):
   --trigger-mode {momentary,oneshot}
                                  momentary: play while held; oneshot: play once on press
 
-Trigger server control (for set-trigger-server):
-  --trigger-ip IP                IP address of the Haven Trigger Gateway
-  --trigger-port PORT            Port of the Trigger Gateway (default 5002)
+Mur Gateway control (for set-mur-gateway):
+  --trigger-ip IP                IP address of the Mur Gateway
+  --trigger-port PORT            Port of the Mur Gateway (default 4000)
 
 Volume control (for set-volume):
   --volume LEVEL, -v LEVEL       Global volume level (0-100)
@@ -260,8 +260,8 @@ Device ID control:
 
 | Mode | Behaviour |
 |------|-----------|
-| `loop` | File plays continuously in a loop while `active=true` |
-| `trigger` | File plays in response to trigger events from the Trigger Gateway |
+| `loop` | File plays continuously in a loop while the track is enabled (`active=true`) |
+| `trigger` | Track is armed when `active=true`; audio plays in response to trigger events from the Mur Gateway |
 
 When `mode=trigger`, set `trigger_name` to the gateway event name and `trigger_mode` to control playback behaviour:
 
@@ -556,8 +556,8 @@ python batch_controller.py --command stop-all --filter-id "^STAGE"
 # Include offline devices in operations
 python batch_controller.py --command status --all-devices
 
-# Control a specific device
-python device_controller.py --id "STAGE-01" --command stop
+# Disable all tracks on a specific device
+python device_controller.py --id "STAGE-01" --command set-track -k 0 --active false
 ```
 
 ### Performance Tuning
@@ -647,7 +647,7 @@ python device_controller.py --id TEST-001 --command status --map-file testing.js
 |------|---------|--------------|
 | `device_scanner.py` | Discover devices on network | `--net 192.168.1.0/24 --action create` (or `-n 192.168.1.0/24 -a create`) |
 | `id_manager.py` | Manage device IDs and identify | `--command find-duplicates/set-id/identify` (or `-c find-duplicates/set-id/identify`) |
-| `device_controller.py` | Control single device by ID | `--id DEVICE --command status/stop/start` (or `-i DEVICE -c status/stop/start`) |
+| `device_controller.py` | Control single device by ID | `--id DEVICE --command status/set-track/set-volume` (or `-i DEVICE -c status/set-track/set-volume`) |
 | `file_manager.py` | Manage audio files | `--command list/upload/sync/delete` (or `-c list/upload/sync/delete`) |
 | `batch_controller.py` | Control all devices at once | `--command status/stop-all/start-all` (or `-c status/stop-all/start-all`) |
 
