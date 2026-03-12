@@ -50,9 +50,12 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **main/murmura.c** - App entry point, audio pipeline setup, audio_control_task
 - **main/http_server.h/c** - HTTP API, type definitions (track_mode_t, track_status_t, track_manager_t)
 - **main/config_manager.h/c** - SD card config persistence (track_config_t, JSON serialization)
-- **main/trigger_listener.h/c** - TCP trigger gateway integration, trigger event processing
+- **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing
 - **main/unit_status_manager.h/c** - Device identity and network status
+- **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
+- **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices)
 - **mur-config-server/** - Flask web UI for managing multiple Murmura devices
+- **trigger-test/** - Trigger longevity test tool (replaces Mur Gateway for automated testing)
 
 # running device manager and mur-config-server
 

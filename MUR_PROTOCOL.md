@@ -21,7 +21,7 @@ Device                          Mur Gateway
   |                                  |
   |          ... time passes ...     |
   |                                  |
-  |<-- {"name":"X","value":"On"} ---|   (4) Trigger event forwarded
+  |<-- {"name":"X","value":"On"} ---|   (4) Trigger event delivered
   |                                  |
 ```
 
@@ -84,7 +84,7 @@ Sent in response to a valid `announce` message.
 
 ### Trigger Event
 
-Forwarded verbatim from the Haven Trigger Server. Same format as the existing trigger protocol.
+Trigger events delivered by the gateway to subscribed devices.
 
 ```json
 {"name": "RedButton.Button_1", "value": "On", "id": 123, "timestamp": "2026-03-11T10:30:00"}
@@ -112,6 +112,4 @@ Forwarded verbatim from the Haven Trigger Server. Same format as the existing tr
 | Port | Purpose |
 |------|---------|
 | 4000 | Mur Gateway — device connections |
-| 5100 | Mur Gateway — upstream (Trigger Server connects here) |
 | 4001 | Mur Gateway — HTTP status endpoint |
-| 5002 | Haven Trigger Server (not part of this protocol) |
