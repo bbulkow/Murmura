@@ -52,6 +52,7 @@ class DeviceConnection:
     triggers: set = field(default_factory=set)
     connected_at: float = field(default_factory=time.time)
     peer: str = ""
+    peer_ip: str = ""
 
     async def send_line(self, data: str) -> bool:
         """Send a newline-terminated JSON string. Returns False on failure."""
@@ -199,12 +200,38 @@ class MurGateway:
         """Handle an incoming TCP connection from a Mur device."""
         peer = writer.get_extra_info("peername")
         conn_id = id(writer)
+        peer_ip = peer[0] if peer else None
         logger.info("Device connection from %s", peer)
+
+        # Enable TCP keepalive so the OS detects dead connections faster
+        sock = writer.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 5)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+
+        # Evict any existing connections from the same IP address
+        if peer_ip:
+            stale = [
+                cid for cid, d in self.devices.items()
+                if d.peer_ip == peer_ip
+            ]
+            for cid in stale:
+                stale_dev = self.devices.get(cid)
+                if stale_dev:
+                    logger.info("Evicting stale connection for %s from %s", stale_dev.device_id, peer_ip)
+                    stale_dev.writer.close()
+                self._remove_device(cid)
 
         device = DeviceConnection(
             device_id="(unannounced)",
             writer=writer,
             peer=str(peer),
+            peer_ip=peer_ip or "",
         )
         self.devices[conn_id] = device
 
