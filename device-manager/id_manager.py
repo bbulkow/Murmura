@@ -233,7 +233,7 @@ class IDManager:
         # Send request to change ID
         try:
             async with aiohttp.ClientSession() as session:
-                url = f"http://{ip}/api/id"
+                url = f"http://{ip}/api/device"
                 data = {'id': new_id}
                 
                 async with session.post(url, json=data, 
@@ -435,7 +435,7 @@ class IDManager:
         Returns:
             Device information if found, None otherwise
         """
-        url = f"http://{ip}/api/status"
+        url = f"http://{ip}/api/device"
         
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
@@ -561,7 +561,7 @@ class IDManager:
             try:
                 logger.info(f"Setting device ID to '{new_id}'...")
                 async with aiohttp.ClientSession() as session:
-                    url = f"http://{ip}/api/id"
+                    url = f"http://{ip}/api/device"
                     data = {'id': new_id}
                     
                     async with session.post(url, json=data, 

@@ -83,7 +83,7 @@ class DeviceScanner:
         Returns:
             Device information if found, None otherwise
         """
-        url = f"http://{ip}/api/status"
+        url = f"http://{ip}/api/device"
         
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:

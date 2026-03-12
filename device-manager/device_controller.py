@@ -105,7 +105,7 @@ class DeviceController:
 
         try:
             async with aiohttp.ClientSession() as session:
-                url = f"http://{ip}/api/status"
+                url = f"http://{ip}/api/device"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -165,17 +165,18 @@ class DeviceController:
         """Show device status."""
         logger.info(f"Getting status for device: {self.device_id}")
 
-        result = await self.send_request('GET', '/api/status')
+        result = await self.send_request('GET', '/api/device')
 
         if result['success'] and result['response']:
             data = result['response']
+            wifi = data.get('wifi', {})
             print(f"\nDevice Status: {self.device_id}")
             print("-" * 40)
             print(f"IP Address:    {data.get('ip_address', self.device['ip_address'])}")
             print(f"MAC Address:   {data.get('mac_address', 'N/A')}")
-            print(f"WiFi Status:   {'Connected' if data.get('wifi_connected') else 'Disconnected'}")
+            print(f"WiFi Status:   {'Connected' if wifi.get('connected') else 'Disconnected'}")
             print(f"Firmware:      {data.get('firmware_version', 'N/A')}")
-            print(f"Uptime:        {data.get('uptime_formatted', 'N/A')}")
+            print(f"Uptime:        {data.get('uptime_seconds', 'N/A')}s")
         else:
             logger.error(f"Failed to get status: {result.get('error', 'Unknown error')}")
 
@@ -238,8 +239,8 @@ class DeviceController:
             logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
 
     async def get_mur_gateway(self) -> None:
-        """Get Mur Gateway configuration."""
-        result = await self.send_request('GET', '/api/mur-gateway')
+        """Get Mur Gateway configuration (via consolidated /api/device)."""
+        result = await self.send_request('GET', '/api/device')
         if result['success'] and result['response']:
             data = result['response']
             print(f"\nMur Gateway Config for {self.device_id}")
@@ -249,13 +250,13 @@ class DeviceController:
             logger.error(f"Failed to get Mur Gateway config: {result.get('error', 'Unknown error')}")
 
     async def set_mur_gateway(self, ip: Optional[str], port: Optional[int]) -> None:
-        """Set Mur Gateway IP and/or port."""
+        """Set Mur Gateway IP and/or port (via consolidated /api/device)."""
         payload: Dict[str, Any] = {}
         if ip is not None:
             payload['mur_gateway_ip'] = ip
         if port is not None:
             payload['mur_gateway_port'] = port
-        result = await self.send_request('POST', '/api/mur-gateway', payload)
+        result = await self.send_request('POST', '/api/device', payload)
         if result['success']:
             resp = result['response']
             logger.info(f"✓ Mur Gateway updated: ip={resp.get('mur_gateway_ip')}, port={resp.get('mur_gateway_port')}")
@@ -277,7 +278,7 @@ class DeviceController:
         """Change the device ID."""
         logger.info(f"Changing device ID from {self.device_id} to {new_id}")
 
-        result = await self.send_request('POST', '/api/id', {'id': new_id})
+        result = await self.send_request('POST', '/api/device', {'id': new_id})
 
         if result['success']:
             logger.info(f"✓ Device ID changed to: {new_id}")

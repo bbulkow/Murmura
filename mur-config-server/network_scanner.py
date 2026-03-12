@@ -58,8 +58,8 @@ class NetworkScanner:
     def check_http_device(self, ip: str) -> Optional[Dict]:
         """Check if IP responds to HTTP and appears to be an ESP32 device."""
         try:
-            # Try to get device status from the HTTP API
-            response = requests.get(f"http://{ip}/api/status", timeout=self.timeout)
+            # Try to get device config/status from the HTTP API
+            response = requests.get(f"http://{ip}/api/device", timeout=self.timeout)
             if response.status_code == 200:
                 data = response.json()
                 return {

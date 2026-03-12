@@ -179,52 +179,6 @@ Adjusts the master volume (affects all tracks via hardware codec).
 
 ---
 
-### Get Mur Gateway Configuration
-
-**GET** `/api/mur-gateway`
-
-Returns the current Mur Gateway IP/port configuration.
-
-**Response:**
-```json
-{
-  "mur_gateway_ip": "192.168.1.10",
-  "mur_gateway_port": 4000
-}
-```
-
-- `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
-- `mur_gateway_port`: Mur Gateway TCP port for device connections (default 4000)
-
----
-
-### Set Mur Gateway Configuration
-
-**POST** `/api/mur-gateway`
-
-Updates the Mur Gateway connection settings. The trigger listener will reconnect using the new values.
-
-**Request Body:**
-```json
-{
-  "mur_gateway_ip": "192.168.1.10",
-  "mur_gateway_port": 4000
-}
-```
-
-Both fields are optional — only the fields present are updated.
-
-**Response:**
-```json
-{
-  "success": true,
-  "mur_gateway_ip": "192.168.1.10",
-  "mur_gateway_port": 4000
-}
-```
-
----
-
 ## Configuration Persistence
 
 ### Get Configuration Status
@@ -294,36 +248,83 @@ Deletes saved configuration. Device uses defaults on next boot.
 
 ---
 
-## WiFi Management
+## Device Configuration
 
-### Get WiFi Status
+### Get Device Configuration and Status
 
-**GET** `/api/wifi/status`
+**GET** `/api/device`
 
-**Response (connected):**
+Returns all device identity, network status, Mur Gateway config, and WiFi info in one response.
+
+**Response:**
 ```json
 {
-  "connected": true,
-  "ssid": "MyNetwork",
+  "id": "MURMURA-001",
+  "mac_address": "AA:BB:CC:DD:EE:FF",
   "ip_address": "192.168.1.100",
-  "rssi": -65,
-  "signal_strength": 75
+  "firmware_version": "2.0",
+  "uptime_seconds": 3600,
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000,
+  "wifi": {
+    "connected": true,
+    "ssid": "MyNetwork",
+    "rssi": -65,
+    "signal_strength": 75,
+    "networks": [
+      { "index": 0, "ssid": "HomeNetwork", "has_password": true, "available": true, "rssi": -65 }
+    ]
+  }
 }
 ```
 
-### List Configured Networks
+**Fields:**
+- `id`: device ID (persisted to `/sdcard/unit_id.txt`)
+- `mac_address`, `ip_address`, `firmware_version`, `uptime_seconds`: read-only device info
+- `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
+- `mur_gateway_port`: Mur Gateway TCP port (default 4000)
+- `wifi.connected`: whether WiFi is connected
+- `wifi.ssid`, `wifi.rssi`, `wifi.signal_strength`: current connection info (only when connected)
+- `wifi.networks`: list of configured WiFi networks
 
-**GET** `/api/wifi/networks`
+---
 
+### Update Device Configuration
+
+**POST** `/api/device`
+
+Patch-style update of settable device fields. All fields are optional — only the fields present in the request are applied.
+
+**Request Body:**
 ```json
 {
-  "networks": [
-    { "index": 0, "ssid": "HomeNetwork", "has_password": true, "available": true, "rssi": -65 }
-  ],
-  "count": 1,
-  "max_networks": 5
+  "id": "MURMURA-STAGE-01",
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000
 }
 ```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "id": "MURMURA-STAGE-01",
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "No valid fields to update"
+}
+```
+
+---
+
+## WiFi Management
 
 ### Add WiFi Network
 
@@ -340,44 +341,6 @@ Deletes saved configuration. Device uses defaults on next boot.
 ```json
 { "ssid": "NetworkName" }
 ```
-
----
-
-## Device Status
-
-### Get Device Status
-
-**GET** `/api/status`
-
-```json
-{
-  "mac_address": "AA:BB:CC:DD:EE:FF",
-  "id": "MURMURA-001",
-  "ip_address": "192.168.1.100",
-  "wifi_connected": true,
-  "firmware_version": "2.0",
-  "uptime_seconds": 3600,
-  "uptime_formatted": "00 01:00:00"
-}
-```
-
-### Get Device ID
-
-**GET** `/api/id`
-
-```json
-{ "id": "MURMURA-001", "success": true }
-```
-
-### Set Device ID
-
-**POST** `/api/id`
-
-```json
-{ "id": "MURMURA-STAGE-01" }
-```
-
-The ID is persisted to `/sdcard/unit_id.txt`.
 
 ---
 
@@ -451,6 +414,14 @@ curl -X POST http://192.168.1.100/api/global/volume \
 
 # Save current configuration
 curl -X POST http://192.168.1.100/api/config/save
+
+# Get device config (identity, gateway, wifi)
+curl http://192.168.1.100/api/device
+
+# Set device ID and mur gateway
+curl -X POST http://192.168.1.100/api/device \
+  -H "Content-Type: application/json" \
+  -d '{"id": "MURMURA-STAGE-01", "mur_gateway_ip": "192.168.1.10"}'
 ```
 
 ### Python
@@ -462,6 +433,10 @@ base_url = "http://192.168.1.100"
 
 # Get all track status
 resp = requests.get(f"{base_url}/api/tracks")
+print(resp.json())
+
+# Get device config (identity, gateway, wifi)
+resp = requests.get(f"{base_url}/api/device")
 print(resp.json())
 
 # Configure track 0 as a looping ambient sound
@@ -483,6 +458,12 @@ resp = requests.post(f"{base_url}/api/track", json={
     "mode": "trigger",
     "file": "sting.wav",
     "active": True
+})
+
+# Update device ID and mur gateway config
+resp = requests.post(f"{base_url}/api/device", json={
+    "id": "MURMURA-STAGE-01",
+    "mur_gateway_ip": "192.168.1.10"
 })
 
 # Save configuration to survive reboot

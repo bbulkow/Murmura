@@ -168,7 +168,7 @@ class BatchController:
         logger.info("=" * 70)
         
         # Get current status from all devices
-        results = await self.batch_request(devices, 'GET', '/api/status')
+        results = await self.batch_request(devices, 'GET', '/api/device')
         
         # Sort by IP for consistent display
         results.sort(key=lambda r: r['ip_address'])

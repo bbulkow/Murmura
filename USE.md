@@ -9,10 +9,10 @@ Each Mur has three ways to interact with it:
 | Method | Best For | Requires |
 |--------|----------|---------|
 | **Device web UI** (`http://<device-ip>/`) | Status display (read-only); change device ID at `/settings` | Browser + device IP |
-| **murmura-config-server** (`http://localhost:8765`) | Fleet overview, batch play/stop/volume | Python on a laptop or Pi |
+| **mur-config-server** (`http://localhost:8765`) | Fleet overview, batch play/stop/volume | Python on a laptop or Pi |
 | **CLI scripts** (`device-manager/`) | Batch file sync, ID assignment, scripting | Python + `device_map.json` |
 
-The device web UI is read-only except for one setting: you can change the device ID at `/settings`. Everything else — WiFi management, file transfers, playback control, volume — requires curl, the CLI scripts, or the murmura-config-server.
+The device web UI is read-only except for one setting: you can change the device ID at `/settings`. Everything else — WiFi management, file transfers, playback control, volume — requires curl, the CLI scripts, or the mur-config-server.
 
 ---
 
@@ -25,10 +25,10 @@ There are two hard coded wifi addresses, others may have been added.
 As a last resort, you can hook up a serial port and use the ESP-IDF tools to listen to the serial port. That will output whether
 the device attached to a wifi, and what its configuration is.
 
-### Option A: murmura-config-server (recommended for fleets)
+### Option A: mur-config-server (recommended for fleets)
 
 ```bash
-cd murmura-config-server
+cd mur-config-server
 pip install -r requirements.txt
 python app.py
 ```
@@ -79,7 +79,7 @@ you can see some statistics.
 
 Via curl:
 ```bash
-curl http://<device-ip>/api/wifi/status
+curl http://<device-ip>/api/device
 ```
 
 ### Adding a WiFi network
@@ -96,7 +96,7 @@ curl -X POST http://<device-ip>/api/wifi/add \
 curl -X POST http://<device-ip>/api/system/reboot
 ```
 
-Via murmura-config-server: not yet supported — use curl.
+Via mur-config-server: not yet supported — use curl.
 
 ### Removing a WiFi network
 
@@ -110,7 +110,7 @@ curl -X POST http://<device-ip>/api/wifi/remove \
 
 ## 3. Managing Files on the SD Card
 
-Audio files (WAV or MP3) live on the SD card of each Mur. You can add or remove files without physically touching the SD card using the HTTP API. The murmura-config-server does not yet support file operations — use the CLI or curl.
+Audio files (WAV or MP3) live on the SD card of each Mur. You can add or remove files without physically touching the SD card using the HTTP API. The mur-config-server does not yet support file operations — use the CLI or curl.
 
 ### Listing files
 
@@ -241,7 +241,7 @@ curl -X POST http://<device-ip>/api/loop/volume \
   -d '{"track":0,"volume":75}'
 ```
 
-Via murmura-config-server: select devices and use the batch volume slider for global volume, or click a device card for per-track control.
+Via mur-config-server: select devices and use the batch volume slider for global volume, or click a device card for per-track control.
 
 ### Saving configuration
 
@@ -259,7 +259,7 @@ curl -X POST http://<device-ip>/api/config/save
 
 ## Quick Reference
 
-| Task | Device web UI | murmura-config-server | CLI / curl |
+| Task | Device web UI | mur-config-server | CLI / curl |
 |------|--------------|--------------|------------|
 | Discover devices | — | Scan Network button | `device_scanner.py -n <subnet> -a create` |
 | Check device status | displays at `http://<ip>/` | Dashboard cards | `batch_controller.py -c status` |
@@ -282,5 +282,5 @@ curl -X POST http://<device-ip>/api/config/save
 ## Further Reading
 
 - [device-manager/README.md](device-manager/README.md) — full CLI tool reference including network scanning, filtering, and ID management
-- [murmura-config-server/README.md](murmura-config-server/README.md) — fleet server setup, systemd auto-start, and web UI reference
+- [mur-config-server/README.md](mur-config-server/README.md) — fleet server setup, systemd auto-start, and web UI reference
 - [HTTP_API.md](HTTP_API.md) — complete HTTP API reference with request/response examples

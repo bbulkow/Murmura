@@ -55,7 +55,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **Configuration persistence** -- loop assignments, volumes, and play states saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
-- **Fleet management server** (murmura-config-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
+- **Fleet management server** (mur-config-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
 - **CLI device tools** (device-manager) -- Python scripts for batch file upload, scanning, ID assignment, and device control
 
 ## Hardware
@@ -90,7 +90,7 @@ main/                   ESP32 firmware source
   music_files.c/h         SD card file enumeration
   unit_status_manager.c/h Device identity and status
 aithinker-adf/          Board support overlay files and build instructions
-murmura-config-server/           Flask web server for fleet management (Python)
+mur-config-server/           Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 ```
 
@@ -155,15 +155,15 @@ it's unlikely that they should be used again.
 
 ### Running the fleet management server
 
-The murmura-config-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
+The mur-config-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
 
 ```bash
-cd murmura-config-server
+cd mur-config-server
 pip install -r requirements.txt
 python app.py
 ```
 
-Access the dashboard at `http://localhost:8765`. See [murmura-config-server/README.md](murmura-config-server/README.md) for full documentation including systemd auto-start setup.
+Access the dashboard at `http://localhost:8765`. See [mur-config-server/README.md](mur-config-server/README.md) for full documentation including systemd auto-start setup.
 
 ### Device Manager CLI Tools
 
@@ -195,11 +195,8 @@ Each device exposes a JSON API on port 80. Key endpoints:
 | `/api/files` | GET | List audio files on SD card |
 | `/api/upload` | POST | Upload audio file to SD card |
 | `/api/file/delete` | DELETE | Delete an audio file from SD card |
-| `/api/status` | GET | Device status (MAC, IP, uptime, firmware version) |
-| `/api/id` | GET | Get device ID |
-| `/api/id` | POST | Set device ID |
-| `/api/wifi/status` | GET | WiFi connection status |
-| `/api/wifi/networks` | GET | List stored WiFi networks |
+| `/api/device` | GET | Device config and status (identity, gateway, wifi) |
+| `/api/device` | POST | Update device config (id, mur gateway) |
 | `/api/wifi/add` | POST | Add a WiFi network |
 | `/api/wifi/remove` | POST | Remove a WiFi network |
 | `/api/config/status` | GET | Compare current state to saved config |
@@ -215,8 +212,8 @@ See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response 
 - [HTTP_API.md](HTTP_API.md) -- complete HTTP API reference
 - [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
 - [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions
-- [murmura-config-server/README.md](murmura-config-server/README.md) -- fleet management server documentation
-- [murmura-config-server/SYSTEMD_INSTALL.md](murmura-config-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
+- [mur-config-server/README.md](mur-config-server/README.md) -- fleet management server documentation
+- [mur-config-server/SYSTEMD_INSTALL.md](mur-config-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
 - [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) -- CLI tools reference
 
 ## License

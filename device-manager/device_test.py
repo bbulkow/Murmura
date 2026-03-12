@@ -17,7 +17,7 @@ Usage:
     # Enable interactive trigger behavior tests
     python device_test.py --device 192.168.5.135 --triggers
 
-NOTE: murmura-config-server endpoints are internal to the murmura-config-server application and are
+NOTE: mur-config-server endpoints are internal to the mur-config-server application and are
 not part of any external API contract. Do not test them from external tooling.
 """
 
@@ -206,10 +206,10 @@ def find_track(files, name):
 def group1_identity(base):
     head("Group 1: Identity & Status")
 
-    # 1.1a — first status call
-    code, data = get(base, "/api/status")
+    # 1.1a — first device config call
+    code, data = get(base, "/api/device")
     if not record(code == 200 and "id" in data,
-                  "1.1a GET /api/status returns 200 with id field",
+                  "1.1a GET /api/device returns 200 with id field",
                   f"HTTP {code}"):
         fail("Cannot continue — device not reachable")
         return None
@@ -226,10 +226,19 @@ def group1_identity(base):
     record(up1 >= 0,           "1.1a uptime_seconds is non-negative",                    str(up1))
     info(f"Device: id={id_}  ip={ip}  mac={mac}  fw={fw}  uptime={up1}s")
 
+    # Check mur_gateway fields are present
+    record("mur_gateway_ip" in data,   "1.1a mur_gateway_ip field present")
+    record("mur_gateway_port" in data, "1.1a mur_gateway_port field present")
+
+    # Check wifi sub-object
+    wifi = data.get("wifi", {})
+    record(isinstance(wifi, dict) and "connected" in wifi,
+           "1.1a wifi object with connected field present")
+
     # 1.1b — second call after delay: uptime must increase
     info("Waiting 4 seconds for uptime check...")
     time.sleep(4)
-    code2, data2 = get(base, "/api/status")
+    code2, data2 = get(base, "/api/device")
     if code2 == 200:
         up2 = data2.get("uptime_seconds", -1)
         record(up2 > up1,       "1.1b uptime increased between calls",   f"{up1}s → {up2}s")
@@ -237,16 +246,11 @@ def group1_identity(base):
         record(data2.get("ip_address")  == ip,  "1.1b ip unchanged",     ip)
         record(data2.get("id")          == id_,  "1.1b id unchanged",    id_)
     else:
-        record(False, "1.1b second GET /api/status call", f"HTTP {code2}")
+        record(False, "1.1b second GET /api/device call", f"HTTP {code2}")
 
-    # 1.2 — GET /api/id
-    code, data = get(base, "/api/id")
-    record(code == 200 and bool(data.get("id")),
-           "1.2 GET /api/id returns non-empty id", data.get("id", ""))
+    # NOTE: POST /api/device with id field (set ID) intentionally omitted — destructive in the field.
 
-    # NOTE: POST /api/id (set ID) intentionally omitted — destructive in the field.
-
-    return id_  # return for use by murmura-config-server group
+    return id_  # return for use by mur-config-server group
 
 # =============================================================================
 # GROUP 2: File Management
@@ -694,26 +698,20 @@ def group7_file_swap(base, files):
 # GROUP 8: WiFi (read-only)
 # =============================================================================
 def group8_wifi(base):
-    head("Group 7: WiFi (read-only)")
+    head("Group 8: WiFi (read-only, via /api/device)")
 
-    code, data = get(base, "/api/wifi/status")
-    record(code == 200, "7.1 GET /api/wifi/status returns 200", f"HTTP {code}")
+    code, data = get(base, "/api/device")
+    record(code == 200, "8.1 GET /api/device returns 200", f"HTTP {code}")
     if code == 200:
-        record(data.get("connected") == True,
-               "7.1 WiFi reports connected=true", str(data.get("connected")))
-        record(bool(data.get("ssid")),
-               "7.1 ssid is non-empty", data.get("ssid", ""))
-        ip = data.get("ip_address", "")
-        record(is_valid_ip(ip),
-               "7.1 ip_address is valid IPv4", ip)
+        wifi = data.get("wifi", {})
+        record(wifi.get("connected") == True,
+               "8.1 wifi.connected is true", str(wifi.get("connected")))
+        record(bool(wifi.get("ssid")),
+               "8.1 wifi.ssid is non-empty", wifi.get("ssid", ""))
 
-    code, data = get(base, "/api/wifi/networks")
-    record(code == 200 and "networks" in data,
-           "7.2 GET /api/wifi/networks returns networks list", f"HTTP {code}")
-    if code == 200:
-        nets = data.get("networks", [])
-        record(len(nets) >= 1,
-               "7.2 At least one configured network", f"{len(nets)} network(s)")
+        nets = wifi.get("networks", [])
+        record(isinstance(nets, list) and len(nets) >= 1,
+               "8.2 wifi.networks has at least one entry", f"{len(nets)} network(s)")
 
 # =============================================================================
 # GROUP 9: Trigger TCP + Status (no trigger behavior tests by default)
@@ -721,37 +719,37 @@ def group8_wifi(base):
 def group9_trigger_basic(base, device_ip, trigger_tests):
     head("Group 9: Trigger System — Basic")
 
-    # 8.1 get mur gateway config
-    code, data = get(base, "/api/mur-gateway")
+    # 9.1 get mur gateway config via /api/device
+    code, data = get(base, "/api/device")
     record(code == 200,
-           "8.1 GET /api/mur-gateway returns 200", f"HTTP {code}")
+           "9.1 GET /api/device returns 200", f"HTTP {code}")
     if code == 200:
         record("mur_gateway_ip"   in data,
-               "8.1 mur-gateway response has mur_gateway_ip field")
+               "9.1 /api/device has mur_gateway_ip field")
         record("mur_gateway_port" in data,
-               "8.1 mur-gateway response has mur_gateway_port field")
+               "9.1 /api/device has mur_gateway_port field")
 
-    # 8.2 (removed — device no longer listens on a TCP port)
+    # 9.2 (removed — device no longer listens on a TCP port)
 
-    # 8.3 set mur gateway IP (dummy value)
-    code, data = post(base, "/api/mur-gateway",
+    # 9.3 set mur gateway IP (dummy value)
+    code, data = post(base, "/api/device",
                       {"mur_gateway_ip": "192.168.5.99", "mur_gateway_port": 4000})
     record(code == 200 and data.get("success"),
-           "8.3 POST /api/mur-gateway accepts IP/port config",
+           "9.3 POST /api/device accepts mur_gateway IP/port config",
            data.get("message", str(data.get("error", ""))))
 
-    # 8.4 verify stored
-    code, data = get(base, "/api/mur-gateway")
+    # 9.4 verify stored
+    code, data = get(base, "/api/device")
     if code == 200:
         stored_ip = data.get("mur_gateway_ip", "")
         record("192.168.5.99" in stored_ip,
-               "8.4 Mur Gateway IP stored correctly", stored_ip)
+               "9.4 Mur Gateway IP stored correctly", stored_ip)
 
-    # 8.5 clear IP
-    code, data = post(base, "/api/mur-gateway",
+    # 9.5 clear IP
+    code, data = post(base, "/api/device",
                       {"mur_gateway_ip": "", "mur_gateway_port": 4000})
     record(code == 200 and data.get("success"),
-           "8.5 POST /api/mur-gateway with empty IP does not crash")
+           "9.5 POST /api/device with empty mur_gateway_ip does not crash")
 
     if not trigger_tests:
         skip("Group 9b trigger behavior tests skipped (use --triggers to enable)")

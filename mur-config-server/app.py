@@ -18,9 +18,9 @@ from network_wrapper import NetworkConfig, DeviceScannerWrapper, DeviceRegistry
 # SERVER CONFIGURATION
 # ============================================================================
 # Default port for the web server (chosen to avoid common port conflicts)
-# Override by setting the MURMURA_CONFIG_SERVER_PORT environment variable
+# Override by setting the MUR_CONFIG_SERVER_PORT environment variable
 DEFAULT_PORT = 8765
-SERVER_PORT = int(os.environ.get('MURMURA_CONFIG_SERVER_PORT', DEFAULT_PORT))
+SERVER_PORT = int(os.environ.get('MUR_CONFIG_SERVER_PORT', DEFAULT_PORT))
 # ============================================================================
 
 # Configure logging with detailed output
@@ -186,9 +186,9 @@ def get_devices():
         logger.info(f"[PROBE START] Device: {formatted['id']} | IP: {ip_address} | Timeout: {probe_timeout}s")
         probe_start_time = time.time()
         
-        # First, check if device is reachable using /api/status (like device_controller.py does)
+        # First, check if device is reachable using /api/device (consolidated endpoint)
         try:
-            status_response = requests.get(f"http://{ip_address}/api/status", timeout=probe_timeout)
+            status_response = requests.get(f"http://{ip_address}/api/device", timeout=probe_timeout)
             probe_elapsed = time.time() - probe_start_time
             
             if status_response.status_code == 200:
@@ -204,7 +204,7 @@ def get_devices():
                     formatted['mac_address'] = mac_address
                     logger.debug(f"MAC Address confirmed: {mac_address}")
                 else:
-                    logger.error(f"WARNING: No MAC address returned from {ip_address}/api/status!")
+                    logger.error(f"WARNING: No MAC address returned from {ip_address}/api/device!")
                 
                 # Check if device ID has changed (ID can be user-configured)
                 new_id = status_data.get('id')
@@ -397,7 +397,7 @@ def get_device(device_id):
         # Try to get fresh status
         try:
             logger.info(f"Getting status for device {device_id} at {device.get('ip_address')}")
-            response = requests.get(f"http://{device.get('ip_address')}/api/status", timeout=2)
+            response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=2)
             if response.status_code == 200:
                 data = response.json()
                 device.update(data)
@@ -754,21 +754,25 @@ def set_track_volume(device_id):
 
 @app.route('/api/device/<device_id>/mur-gateway', methods=['GET'])
 def get_device_mur_gateway(device_id):
-    """Get Mur Gateway config for a device."""
+    """Get Mur Gateway config for a device (via consolidated /api/device)."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
     try:
-        response = requests.get(f"http://{device.get('ip_address')}/api/mur-gateway", timeout=2)
+        response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=2)
         if response.status_code == 200:
-            return jsonify(response.json())
+            data = response.json()
+            return jsonify({
+                'mur_gateway_ip': data.get('mur_gateway_ip', ''),
+                'mur_gateway_port': data.get('mur_gateway_port', 4000)
+            })
         return jsonify({'error': f'HTTP {response.status_code}'}), 500
     except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/device/<device_id>/mur-gateway', methods=['POST'])
 def set_device_mur_gateway(device_id):
-    """Set Mur Gateway config for a device."""
+    """Set Mur Gateway config for a device (via consolidated /api/device)."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
@@ -778,7 +782,7 @@ def set_device_mur_gateway(device_id):
         payload['mur_gateway_port'] = int(data['mur_gateway_port'])
     try:
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/mur-gateway",
+            f"http://{device.get('ip_address')}/api/device",
             json=payload, timeout=2
         )
         if response.status_code == 200:
@@ -789,7 +793,7 @@ def set_device_mur_gateway(device_id):
 
 @app.route('/api/batch/mur-gateway', methods=['POST'])
 def batch_set_mur_gateway():
-    """Set Mur Gateway IP/port on multiple devices."""
+    """Set Mur Gateway IP/port on multiple devices (via consolidated /api/device)."""
     data = request.json
     device_ids = data.get('device_ids', [])
     mur_gateway_ip = data.get('mur_gateway_ip', '')
@@ -806,7 +810,7 @@ def batch_set_mur_gateway():
                 payload['mur_gateway_port'] = int(mur_gateway_port)
             try:
                 response = requests.post(
-                    f"http://{device.get('ip_address')}/api/mur-gateway",
+                    f"http://{device.get('ip_address')}/api/device",
                     json=payload, timeout=2
                 )
                 results.append({'device_id': device_id,

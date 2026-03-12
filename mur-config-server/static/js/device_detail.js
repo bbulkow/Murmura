@@ -795,20 +795,21 @@ function stopAutoRefresh() {
     }
 }
 
-// Load WiFi status (one-time, not refreshed)
+// Load WiFi status from consolidated /api/device endpoint (one-time, not refreshed)
 async function loadWiFiStatus() {
     if (!currentDevice || !deviceInfo.ip) return;
-    
+
     try {
-        const response = await fetch(`http://${deviceInfo.ip}/api/wifi/status`);
-        
+        const response = await fetch(`http://${deviceInfo.ip}/api/device`);
+
         if (response.ok) {
-            const wifiData = await response.json();
-            
+            const deviceData = await response.json();
+            const wifiData = deviceData.wifi || {};
+
             // Update SSID
             if (wifiData.ssid) {
                 document.getElementById('deviceSsid').textContent = wifiData.ssid;
-                
+
                 // Add signal strength display if element exists
                 const signalElement = document.getElementById('deviceSignal');
                 if (signalElement) {
@@ -825,10 +826,10 @@ async function loadWiFiStatus() {
                 }
             }
         } else {
-            console.error(`[WIFI-STATUS] Failed to fetch WiFi status: ${response.status}`);
+            console.error(`[WIFI-STATUS] Failed to fetch device info: ${response.status}`);
         }
     } catch (error) {
-        console.error('[WIFI-STATUS] Error fetching WiFi status:', error);
+        console.error('[WIFI-STATUS] Error fetching device info:', error);
         // Don't show error to user - WiFi status is not critical
     }
 }

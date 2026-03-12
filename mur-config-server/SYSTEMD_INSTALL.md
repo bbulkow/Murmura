@@ -1,11 +1,11 @@
-# Murmura Config Server Systemd Installation Guide
+# Mur Config Server Systemd Installation Guide
 
-This guide explains how to install and configure the Murmura Murmura Config Server as a systemd service on Raspberry Pi (Bookworm or similar).
+This guide explains how to install and configure the Mur Config Server as a systemd service on Raspberry Pi (Bookworm or similar).
 
 ## Features Added
 
 1. **Runs on port 80 by default** - The service file is configured to run on port 80 for easier access (no port number needed in URLs).
-2. **Easy port override** - You can change the port using the `MURMURA_CONFIG_SERVER_PORT` environment variable.
+2. **Easy port override** - You can change the port using the `MUR_CONFIG_SERVER_PORT` environment variable.
 3. **Systemd service file** - Automatically start the server on boot and restart on failure.
 4. **Privileged port support** - Uses systemd capabilities to allow binding to port 80 without running as root.
 
@@ -26,7 +26,7 @@ You can override the port in several ways:
 
 2. **Using environment variable when running manually**:
    ```bash
-   export MURMURA_CONFIG_SERVER_PORT=9000
+   export MUR_CONFIG_SERVER_PORT=9000
    python3 app.py
    ```
 
@@ -38,7 +38,7 @@ You can override the port in several ways:
 
 1. Ensure Python 3 and required dependencies are installed:
    ```bash
-   cd /home/pi/Murmura/murmura-config-server
+   cd /home/pi/Murmura/mur-config-server
    pip3 install -r requirements.txt
    ```
 
@@ -46,7 +46,7 @@ You can override the port in several ways:
 
 1. **Copy the service file to systemd directory**:
    ```bash
-   sudo cp /home/pi/Murmura/murmura-config-server/murmura-config-server.service /etc/systemd/system/
+   sudo cp /home/pi/Murmura/mur-config-server/mur-config-server.service /etc/systemd/system/
    ```
 
 2. **Reload systemd to recognize the new service**:
@@ -56,24 +56,24 @@ You can override the port in several ways:
 
 3. **Enable the service to start on boot**:
    ```bash
-   sudo systemctl enable murmura-config-server.service
+   sudo systemctl enable mur-config-server.service
    ```
 
 4. **Start the service now**:
    ```bash
-   sudo systemctl start murmura-config-server.service
+   sudo systemctl start mur-config-server.service
    ```
 
 ### Verifying the Service
 
 Check the service status:
 ```bash
-sudo systemctl status murmura-config-server.service
+sudo systemctl status mur-config-server.service
 ```
 
 View the logs:
 ```bash
-sudo journalctl -u murmura-config-server.service -f
+sudo journalctl -u mur-config-server.service -f
 ```
 
 ### Changing the Port in Systemd
@@ -82,12 +82,12 @@ To change the port when running as a systemd service:
 
 1. **Edit the service file**:
    ```bash
-   sudo nano /etc/systemd/system/murmura-config-server.service
+   sudo nano /etc/systemd/system/mur-config-server.service
    ```
 
 2. **Modify the port environment variable**:
    ```ini
-   Environment="MURMURA_CONFIG_SERVER_PORT=8765"  # or any port you prefer
+   Environment="MUR_CONFIG_SERVER_PORT=8765"  # or any port you prefer
    ```
 
    **Note**: For ports below 1024 (privileged ports), ensure these lines are present:
@@ -99,21 +99,21 @@ To change the port when running as a systemd service:
 3. **Reload and restart**:
    ```bash
    sudo systemctl daemon-reload
-   sudo systemctl restart murmura-config-server.service
+   sudo systemctl restart mur-config-server.service
    ```
 
 ## Service Management Commands
 
 | Command | Description |
 |---------|-------------|
-| `sudo systemctl start murmura-config-server` | Start the service |
-| `sudo systemctl stop murmura-config-server` | Stop the service |
-| `sudo systemctl restart murmura-config-server` | Restart the service |
-| `sudo systemctl status murmura-config-server` | Check service status |
-| `sudo systemctl enable murmura-config-server` | Enable auto-start on boot |
-| `sudo systemctl disable murmura-config-server` | Disable auto-start on boot |
-| `sudo journalctl -u murmura-config-server -f` | View live logs |
-| `sudo journalctl -u murmura-config-server --since today` | View today's logs |
+| `sudo systemctl start mur-config-server` | Start the service |
+| `sudo systemctl stop mur-config-server` | Stop the service |
+| `sudo systemctl restart mur-config-server` | Restart the service |
+| `sudo systemctl status mur-config-server` | Check service status |
+| `sudo systemctl enable mur-config-server` | Enable auto-start on boot |
+| `sudo systemctl disable mur-config-server` | Disable auto-start on boot |
+| `sudo journalctl -u mur-config-server -f` | View live logs |
+| `sudo journalctl -u mur-config-server --since today` | View today's logs |
 
 ## Accessing the Web Interface
 
@@ -132,9 +132,9 @@ hostname -I
 ## Troubleshooting
 
 ### Service won't start
-1. Check the logs: `sudo journalctl -u murmura-config-server.service -n 50`
+1. Check the logs: `sudo journalctl -u mur-config-server.service -n 50`
 2. Verify Python dependencies are installed: `pip3 list`
-3. Check file permissions: `ls -l /home/pi/Murmura/murmura-config-server/`
+3. Check file permissions: `ls -l /home/pi/Murmura/mur-config-server/`
 
 ### Port already in use
 If you get a "port already in use" error:
@@ -152,11 +152,11 @@ To remove the service:
 
 ```bash
 # Stop and disable the service
-sudo systemctl stop murmura-config-server.service
-sudo systemctl disable murmura-config-server.service
+sudo systemctl stop mur-config-server.service
+sudo systemctl disable mur-config-server.service
 
 # Remove the service file
-sudo rm /etc/systemd/system/murmura-config-server.service
+sudo rm /etc/systemd/system/mur-config-server.service
 
 # Reload systemd
 sudo systemctl daemon-reload

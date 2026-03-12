@@ -54,8 +54,6 @@ static esp_err_t track_post_handler(httpd_req_t *req);
 static esp_err_t global_volume_handler(httpd_req_t *req);
 static esp_err_t root_get_handler(httpd_req_t *req);
 // WiFi management handlers
-static esp_err_t wifi_status_handler(httpd_req_t *req);
-static esp_err_t wifi_networks_handler(httpd_req_t *req);
 static esp_err_t wifi_add_network_handler(httpd_req_t *req);
 static esp_err_t wifi_remove_network_handler(httpd_req_t *req);
 // Configuration management handlers
@@ -63,16 +61,12 @@ static esp_err_t config_save_handler(httpd_req_t *req);
 static esp_err_t config_load_handler(httpd_req_t *req);
 static esp_err_t config_delete_handler(httpd_req_t *req);
 static esp_err_t config_status_handler(httpd_req_t *req);
-// Unit status handlers
-static esp_err_t unit_status_handler(httpd_req_t *req);
-static esp_err_t id_get_handler(httpd_req_t *req);
-static esp_err_t id_set_handler(httpd_req_t *req);
+// Consolidated device configuration handlers
+static esp_err_t device_get_handler(httpd_req_t *req);
+static esp_err_t device_post_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
 static esp_err_t file_delete_handler(httpd_req_t *req);
 static esp_err_t system_reboot_handler(httpd_req_t *req);
-// Mur Gateway configuration handlers
-static esp_err_t mur_gateway_get_handler(httpd_req_t *req);
-static esp_err_t mur_gateway_post_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response (uses SPIRAM via cJSON hooks)
@@ -943,115 +937,163 @@ static esp_err_t global_volume_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/wifi/status - Get current WiFi connection status
+ * @brief GET /api/device - Consolidated device configuration and status
+ * Returns device identity, network status, mur gateway config, and wifi info
  */
-static esp_err_t wifi_status_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/wifi/status");
-    
+static esp_err_t device_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/device");
+
     cJSON *response = cJSON_CreateObject();
-    
-    // Get WiFi connection state
+
+    // --- Device identity and status (from unit_status_manager) ---
+    unit_status_t status;
+    esp_err_t ret = unit_status_get(&status);
+    if (ret == ESP_OK) {
+        cJSON_AddStringToObject(response, "id", status.id);
+        cJSON_AddStringToObject(response, "mac_address", status.mac_address);
+        cJSON_AddStringToObject(response, "ip_address", status.ip_address);
+        cJSON_AddStringToObject(response, "firmware_version", status.firmware_version);
+        cJSON_AddNumberToObject(response, "uptime_seconds", status.uptime_seconds);
+    }
+
+    // --- Mur Gateway config ---
+    if (g_track_manager) {
+        cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
+        cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
+    } else {
+        cJSON_AddStringToObject(response, "mur_gateway_ip", "");
+        cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
+    }
+
+    // --- WiFi status and networks ---
+    cJSON *wifi = cJSON_CreateObject();
+
     bool is_connected = wifi_manager_is_connected();
-    cJSON_AddBoolToObject(response, "connected", is_connected);
-    
+    cJSON_AddBoolToObject(wifi, "connected", is_connected);
+
     if (is_connected) {
-        // Get connected SSID
         char ssid[33] = {0};
         wifi_manager_get_connected_ssid(ssid, sizeof(ssid));
-        cJSON_AddStringToObject(response, "ssid", ssid);
-        
-        // Get IP address
-        char ip_str[16] = {0};
-        wifi_manager_get_ip_string(ip_str, sizeof(ip_str));
-        cJSON_AddStringToObject(response, "ip_address", ip_str);
-        
-        // Get signal strength (RSSI)
+        cJSON_AddStringToObject(wifi, "ssid", ssid);
+
         wifi_ap_record_t ap_info;
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            cJSON_AddNumberToObject(response, "rssi", ap_info.rssi);
-            
-            // Convert RSSI to signal strength percentage (rough approximation)
+            cJSON_AddNumberToObject(wifi, "rssi", ap_info.rssi);
+
             int signal_percent = 0;
-            if (ap_info.rssi >= -50) {
-                signal_percent = 100;
-            } else if (ap_info.rssi >= -60) {
-                signal_percent = 90;
-            } else if (ap_info.rssi >= -67) {
-                signal_percent = 75;
-            } else if (ap_info.rssi >= -70) {
-                signal_percent = 60;
-            } else if (ap_info.rssi >= -80) {
-                signal_percent = 40;
-            } else if (ap_info.rssi >= -90) {
-                signal_percent = 20;
-            } else {
-                signal_percent = 10;
-            }
-            cJSON_AddNumberToObject(response, "signal_strength", signal_percent);
+            if (ap_info.rssi >= -50) signal_percent = 100;
+            else if (ap_info.rssi >= -60) signal_percent = 90;
+            else if (ap_info.rssi >= -67) signal_percent = 75;
+            else if (ap_info.rssi >= -70) signal_percent = 60;
+            else if (ap_info.rssi >= -80) signal_percent = 40;
+            else if (ap_info.rssi >= -90) signal_percent = 20;
+            else signal_percent = 10;
+            cJSON_AddNumberToObject(wifi, "signal_strength", signal_percent);
         }
-    } else {
-        // Get connection state
-        wifiman_state_t state = wifi_manager_get_state();
-        const char *state_str = "disconnected";
-        switch (state) {
-            case WIFIMAN_STATE_SCANNING:
-                state_str = "scanning";
-                break;
-            case WIFIMAN_STATE_CONNECTING:
-                state_str = "connecting";
-                break;
-            case WIFIMAN_STATE_CONNECTION_FAILED:
-                state_str = "connection_failed";
-                break;
-            default:
-                state_str = "disconnected";
-                break;
-        }
-        cJSON_AddStringToObject(response, "state", state_str);
     }
-    
-    esp_err_t ret = send_json_response(req, response);
+
+    // WiFi networks list
+    cJSON *networks_array = cJSON_CreateArray();
+    wifiman_network_entry_t networks[WIFI_MAX_NETWORKS];
+    size_t count = 0;
+    ret = wifi_manager_get_stored_networks(networks, WIFI_MAX_NETWORKS, &count);
+    if (ret == ESP_OK) {
+        for (size_t i = 0; i < count; i++) {
+            cJSON *net = cJSON_CreateObject();
+            cJSON_AddNumberToObject(net, "index", i);
+            cJSON_AddStringToObject(net, "ssid", networks[i].ssid);
+            cJSON_AddBoolToObject(net, "has_password", strlen(networks[i].password) > 0);
+            cJSON_AddBoolToObject(net, "available", networks[i].available);
+            cJSON_AddNumberToObject(net, "rssi", networks[i].rssi);
+            cJSON_AddItemToArray(networks_array, net);
+        }
+    }
+    cJSON_AddItemToObject(wifi, "networks", networks_array);
+
+    cJSON_AddItemToObject(response, "wifi", wifi);
+
+    esp_err_t send_ret = send_json_response(req, response);
     cJSON_Delete(response);
-    
-    return ret;
+    return send_ret;
 }
 
 /**
- * @brief GET /api/wifi/networks - Get list of configured networks
+ * @brief POST /api/device - Patch-style update of settable device fields
+ * All fields optional: id, mur_gateway_ip, mur_gateway_port
  */
-static esp_err_t wifi_networks_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/wifi/networks");
-    
+static esp_err_t device_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/device");
+
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
+        return ESP_FAIL;
+    }
+
+    cJSON *request = parse_json_request(req);
+    if (!request) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
     cJSON *response = cJSON_CreateObject();
-    cJSON *networks_array = cJSON_CreateArray();
-    
-    // Get stored networks
-    wifiman_network_entry_t networks[WIFI_MAX_NETWORKS];
-    size_t count = 0;
-    esp_err_t ret = wifi_manager_get_stored_networks(networks, WIFI_MAX_NETWORKS, &count);
-    
-    if (ret == ESP_OK) {
-        for (size_t i = 0; i < count; i++) {
-            cJSON *network_obj = cJSON_CreateObject();
-            cJSON_AddNumberToObject(network_obj, "index", i);
-            cJSON_AddStringToObject(network_obj, "ssid", networks[i].ssid);
-            // Don't expose the password in the response for security
-            cJSON_AddBoolToObject(network_obj, "has_password", strlen(networks[i].password) > 0);
-            cJSON_AddNumberToObject(network_obj, "auth_fail_count", networks[i].auth_fail_count);
-            cJSON_AddBoolToObject(network_obj, "available", networks[i].available);
-            cJSON_AddNumberToObject(network_obj, "rssi", networks[i].rssi);
-            
-            cJSON_AddItemToArray(networks_array, network_obj);
+    bool any_update = false;
+
+    // --- Device ID ---
+    cJSON *id_json = cJSON_GetObjectItem(request, "id");
+    if (cJSON_IsString(id_json) && strlen(id_json->valuestring) > 0) {
+        esp_err_t ret = unit_status_set_id(id_json->valuestring);
+        if (ret != ESP_OK) {
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "error", "Failed to set unit ID");
+            send_json_response(req, response);
+            cJSON_Delete(response);
+            cJSON_Delete(request);
+            return ESP_OK;
+        }
+        any_update = true;
+    }
+
+    // --- Mur Gateway config ---
+    if (g_track_manager) {
+        cJSON *ip_json = cJSON_GetObjectItem(request, "mur_gateway_ip");
+        if (cJSON_IsString(ip_json)) {
+            strncpy(g_track_manager->mur_gateway_ip, ip_json->valuestring,
+                    sizeof(g_track_manager->mur_gateway_ip) - 1);
+            g_track_manager->mur_gateway_ip[sizeof(g_track_manager->mur_gateway_ip) - 1] = '\0';
+            any_update = true;
+        }
+
+        cJSON *port_json = cJSON_GetObjectItem(request, "mur_gateway_port");
+        if (cJSON_IsNumber(port_json)) {
+            g_track_manager->mur_gateway_port = port_json->valueint;
+            any_update = true;
         }
     }
-    
-    cJSON_AddItemToObject(response, "networks", networks_array);
-    cJSON_AddNumberToObject(response, "count", count);
-    cJSON_AddNumberToObject(response, "max_networks", WIFI_MAX_NETWORKS);
-    
+
+    if (!any_update) {
+        cJSON_AddBoolToObject(response, "success", false);
+        cJSON_AddStringToObject(response, "error", "No valid fields to update");
+        send_json_response(req, response);
+        cJSON_Delete(response);
+        cJSON_Delete(request);
+        return ESP_OK;
+    }
+
+    // Return current state after update
+    cJSON_AddBoolToObject(response, "success", true);
+
+    char id[MAX_UNIT_ID_LEN];
+    if (unit_status_get_id(id, sizeof(id)) == ESP_OK) {
+        cJSON_AddStringToObject(response, "id", id);
+    }
+    if (g_track_manager) {
+        cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
+        cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
+    }
+
     esp_err_t send_ret = send_json_response(req, response);
     cJSON_Delete(response);
-    
+    cJSON_Delete(request);
     return send_ret;
 }
 
@@ -1368,121 +1410,6 @@ static esp_err_t config_delete_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/status - Get unit status including MAC, IP, unit ID, uptime
- */
-static esp_err_t unit_status_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/status");
-    
-    cJSON *response = cJSON_CreateObject();
-    
-    // Get unit status
-    unit_status_t status;
-    esp_err_t ret = unit_status_get(&status);
-    
-    if (ret == ESP_OK) {
-        cJSON_AddStringToObject(response, "mac_address", status.mac_address);
-        cJSON_AddStringToObject(response, "id", status.id);
-        cJSON_AddStringToObject(response, "ip_address", status.ip_address);
-        cJSON_AddBoolToObject(response, "wifi_connected", status.wifi_connected);
-        cJSON_AddStringToObject(response, "firmware_version", status.firmware_version);
-        cJSON_AddNumberToObject(response, "uptime_seconds", status.uptime_seconds);
-        
-        // Add human-readable uptime
-        int days = status.uptime_seconds / 86400;
-        int hours = (status.uptime_seconds % 86400) / 3600;
-        int minutes = (status.uptime_seconds % 3600) / 60;
-        int seconds = status.uptime_seconds % 60;
-        
-        char uptime_str[64];
-        snprintf(uptime_str, sizeof(uptime_str), "%02d %02d:%02d:%02d", days, hours, minutes, seconds);
-        cJSON_AddStringToObject(response, "uptime_formatted", uptime_str);
-    } else {
-        cJSON_AddBoolToObject(response, "error", true);
-        cJSON_AddStringToObject(response, "message", "Failed to get unit status");
-    }
-    
-    esp_err_t send_ret = send_json_response(req, response);
-    cJSON_Delete(response);
-    
-    return send_ret;
-}
-
-/**
- * @brief GET /api/id - Get the current ID
- */
-static esp_err_t id_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/id");
-    
-    cJSON *response = cJSON_CreateObject();
-    
-    char id[MAX_UNIT_ID_LEN];
-    esp_err_t ret = unit_status_get_id(id, sizeof(id));
-    
-    if (ret == ESP_OK) {
-        cJSON_AddStringToObject(response, "id", id);
-        cJSON_AddBoolToObject(response, "success", true);
-    } else {
-        cJSON_AddBoolToObject(response, "success", false);
-        cJSON_AddStringToObject(response, "error", "Failed to get unit ID");
-    }
-    
-    esp_err_t send_ret = send_json_response(req, response);
-    cJSON_Delete(response);
-    
-    return send_ret;
-}
-
-/**
- * @brief POST /api/id - Set the ID
- * Body: { "id": "MURMURA-001" }
- */
-static esp_err_t id_set_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "POST /api/id");
-    
-    if (req->content_len == 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
-        return ESP_FAIL;
-    }
-    
-    cJSON *request = parse_json_request(req);
-    if (!request) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-        return ESP_FAIL;
-    }
-    
-    cJSON *response = cJSON_CreateObject();
-    
-    // Get unit ID from request
-    cJSON *id_json = cJSON_GetObjectItem(request, "id");
-    if (!cJSON_IsString(id_json) || strlen(id_json->valuestring) == 0) {
-        cJSON_AddBoolToObject(response, "success", false);
-        cJSON_AddStringToObject(response, "error", "Missing or invalid id");
-        send_json_response(req, response);
-        cJSON_Delete(response);
-        cJSON_Delete(request);
-        return ESP_OK;
-    }
-    
-    // Set the unit ID
-    esp_err_t ret = unit_status_set_id(id_json->valuestring);
-    
-    if (ret == ESP_OK) {
-        cJSON_AddBoolToObject(response, "success", true);
-        cJSON_AddStringToObject(response, "message", "Unit ID updated successfully");
-        cJSON_AddStringToObject(response, "id", id_json->valuestring);
-    } else {
-        cJSON_AddBoolToObject(response, "success", false);
-        cJSON_AddStringToObject(response, "error", "Failed to set unit ID");
-    }
-    
-    esp_err_t send_ret = send_json_response(req, response);
-    cJSON_Delete(response);
-    cJSON_Delete(request);
-    
-    return send_ret;
-}
-
-/**
  * @brief POST /api/upload - Upload audio file to SD card
  * Handles large file uploads by streaming directly to SD card
  */
@@ -1765,77 +1692,6 @@ static esp_err_t system_reboot_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/mur-gateway — return Mur Gateway IP/port config
- */
-static esp_err_t mur_gateway_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/mur-gateway");
-
-    cJSON *response = cJSON_CreateObject();
-    if (g_track_manager) {
-        cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
-        cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
-    } else {
-        cJSON_AddStringToObject(response, "mur_gateway_ip", "");
-        cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
-    }
-
-    esp_err_t ret = send_json_response(req, response);
-    cJSON_Delete(response);
-    return ret;
-}
-
-/**
- * @brief POST /api/mur-gateway — update Mur Gateway IP and/or port
- * Body: { "mur_gateway_ip": "192.168.1.10", "mur_gateway_port": 4000 }
- */
-static esp_err_t mur_gateway_post_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "POST /api/mur-gateway");
-
-    if (req->content_len == 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
-        return ESP_FAIL;
-    }
-
-    cJSON *request = parse_json_request(req);
-    if (!request) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-        return ESP_FAIL;
-    }
-
-    cJSON *response = cJSON_CreateObject();
-
-    if (!g_track_manager) {
-        cJSON_AddBoolToObject(response, "success", false);
-        cJSON_AddStringToObject(response, "error", "Audio system not initialized");
-        send_json_response(req, response);
-        cJSON_Delete(response);
-        cJSON_Delete(request);
-        return ESP_OK;
-    }
-
-    cJSON *ip_json = cJSON_GetObjectItem(request, "mur_gateway_ip");
-    if (cJSON_IsString(ip_json)) {
-        strncpy(g_track_manager->mur_gateway_ip, ip_json->valuestring,
-                sizeof(g_track_manager->mur_gateway_ip) - 1);
-        g_track_manager->mur_gateway_ip[sizeof(g_track_manager->mur_gateway_ip) - 1] = '\0';
-    }
-
-    cJSON *port_json = cJSON_GetObjectItem(request, "mur_gateway_port");
-    if (cJSON_IsNumber(port_json)) {
-        g_track_manager->mur_gateway_port = port_json->valueint;
-    }
-
-    cJSON_AddBoolToObject(response, "success", true);
-    cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
-    cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
-
-    esp_err_t ret = send_json_response(req, response);
-    cJSON_Delete(response);
-    cJSON_Delete(request);
-    return ret;
-}
-
-/**
  * @brief GET /favicon.ico - Favicon handler (returns empty icon to avoid 404)
  */
 static esp_err_t favicon_handler(httpd_req_t *req) {
@@ -2033,7 +1889,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "console.log('[S1] Script start');"
         "function loadCurrentId() {"
         "  console.log('[S2] loadCurrentId called');"
-        "  fetch('/api/id')"
+        "  fetch('/api/device')"
         "    .then(function(r) {"
         "      console.log('[S3] Got resp:', r.status);"
         "      if (!r.ok) throw new Error('HTTP err');"
@@ -2041,7 +1897,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "    })"
         "    .then(function(d) {"
         "      console.log('[S4] Data:', d);"
-        "      if (d.success && d.id) {"
+        "      if (d.id) {"
         "        document.getElementById('current-id').textContent = d.id;"
         "        document.getElementById('device-id').value = d.id;"
         "      } else {"
@@ -2062,7 +1918,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "    msg.textContent = 'Please enter a device ID';"
         "    return;"
         "  }"
-        "  fetch('/api/id', {"
+        "  fetch('/api/device', {"
         "    method: 'POST',"
         "    headers: {'Content-Type': 'application/json'},"
         "    body: JSON.stringify({id: id})"
@@ -2339,7 +2195,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         
         "<script>"
         "function fetchStatus() {"
-        "  fetch('/api/status')"
+        "  fetch('/api/device')"
         "    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })"
         "    .then(function(data) {"
         "      var c = document.getElementById('status-content');"
@@ -2348,9 +2204,10 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "      h += '<div class=\"status-item\"><span class=\"label\">ID</span><span class=\"value\">' + (data.id || 'Not Set') + '</span></div>';"
         "      h += '<div class=\"status-item\"><span class=\"label\">IP Address</span><span class=\"value\">' + (data.ip_address || 'N/A') + '</span></div>';"
         "      h += '<div class=\"status-item\"><span class=\"label\">MAC Address</span><span class=\"value\">' + (data.mac_address || 'N/A') + '</span></div>';"
-        "      h += '<div class=\"status-item\"><span class=\"label\">WiFi Status</span><span class=\"value\">' + (data.wifi_connected ? 'Connected' : 'Disconnected') + '</span></div>';"
+        "      h += '<div class=\"status-item\"><span class=\"label\">WiFi Status</span><span class=\"value\">' + (data.wifi && data.wifi.connected ? 'Connected' : 'Disconnected') + '</span></div>';"
         "      h += '<div class=\"status-item\"><span class=\"label\">Firmware</span><span class=\"value\">' + (data.firmware_version || 'Unknown') + '</span></div>';"
-        "      h += '<div class=\"status-item\"><span class=\"label\">Uptime</span><span class=\"value\">' + (data.uptime_formatted || 'N/A') + '</span></div>';"
+        "      var secs = data.uptime_seconds || 0; var h2 = Math.floor(secs/3600); var m = Math.floor((secs%3600)/60); var s = secs%60;"
+        "      h += '<div class=\"status-item\"><span class=\"label\">Uptime</span><span class=\"value\">' + h2 + 'h ' + m + 'm ' + s + 's</span></div>';"
         "      c.innerHTML = h;"
         "    })"
         "    .catch(function(e) {"
@@ -2442,7 +2299,7 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.stack_size = 8192;
-    config.max_uri_handlers = 27;  // Increased to handle all handlers including reboot endpoint
+    config.max_uri_handlers = 22;  // Reduced after consolidating device config endpoints
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
     
@@ -2533,29 +2390,30 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         ESP_LOGE(TAG, "Failed to register handler for /api/global/volume: %s", esp_err_to_name(ret));
     }
     
+    // Register consolidated device configuration endpoint
+    httpd_uri_t device_get_uri = {
+        .uri = "/api/device",
+        .method = HTTP_GET,
+        .handler = device_get_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &device_get_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for GET /api/device: %s", esp_err_to_name(ret));
+    }
+
+    httpd_uri_t device_post_uri = {
+        .uri = "/api/device",
+        .method = HTTP_POST,
+        .handler = device_post_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &device_post_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for POST /api/device: %s", esp_err_to_name(ret));
+    }
+
     // Register WiFi management endpoints
-    httpd_uri_t wifi_status_uri = {
-        .uri = "/api/wifi/status",
-        .method = HTTP_GET,
-        .handler = wifi_status_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &wifi_status_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/status: %s", esp_err_to_name(ret));
-    }
-    
-    httpd_uri_t wifi_networks_uri = {
-        .uri = "/api/wifi/networks",
-        .method = HTTP_GET,
-        .handler = wifi_networks_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &wifi_networks_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/wifi/networks: %s", esp_err_to_name(ret));
-    }
-    
     httpd_uri_t wifi_add_uri = {
         .uri = "/api/wifi/add",
         .method = HTTP_POST,
@@ -2623,40 +2481,6 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         ESP_LOGE(TAG, "Failed to register handler for /api/config/delete: %s", esp_err_to_name(ret));
     }
     
-    // Register unit status endpoints
-    httpd_uri_t unit_status_uri = {
-        .uri = "/api/status",
-        .method = HTTP_GET,
-        .handler = unit_status_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &unit_status_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for /api/status: %s", esp_err_to_name(ret));
-    }
-    
-    httpd_uri_t id_get_uri = {
-        .uri = "/api/id",
-        .method = HTTP_GET,
-        .handler = id_get_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &id_get_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for GET /api/id: %s", esp_err_to_name(ret));
-    }
-    
-    httpd_uri_t id_set_uri = {
-        .uri = "/api/id",
-        .method = HTTP_POST,
-        .handler = id_set_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &id_set_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register handler for POST /api/id: %s", esp_err_to_name(ret));
-    }
-    
     httpd_uri_t upload_uri = {
         .uri = "/api/upload",
         .method = HTTP_POST,
@@ -2689,28 +2513,6 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     ret = httpd_register_uri_handler(server, &system_reboot_uri);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for /api/system/reboot: %s", esp_err_to_name(ret));
-    }
-
-    httpd_uri_t mur_gateway_get_uri = {
-        .uri     = "/api/mur-gateway",
-        .method  = HTTP_GET,
-        .handler = mur_gateway_get_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &mur_gateway_get_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register GET /api/mur-gateway: %s", esp_err_to_name(ret));
-    }
-
-    httpd_uri_t mur_gateway_post_uri = {
-        .uri     = "/api/mur-gateway",
-        .method  = HTTP_POST,
-        .handler = mur_gateway_post_handler,
-        .user_ctx = NULL
-    };
-    ret = httpd_register_uri_handler(server, &mur_gateway_post_uri);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register POST /api/mur-gateway: %s", esp_err_to_name(ret));
     }
 
     // Initialize unit status manager
