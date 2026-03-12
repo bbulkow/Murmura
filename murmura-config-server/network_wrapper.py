@@ -15,7 +15,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 import time
 
-# Add device-manager directory (parallel to scape_server) to path
+# Add device-manager directory (parallel to murmura_config_server) to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 device_manager_path = os.path.join(parent_dir, 'device-manager')
 sys.path.insert(0, device_manager_path)
@@ -32,7 +32,7 @@ logger = logging.getLogger('murmura_server.network')
 class NetworkConfig:
     """Manages network configuration and persistence."""
     
-    def __init__(self, config_file: str = 'scape_server/network_config.json'):
+    def __init__(self, config_file: str = 'murmura_config_server/network_config.json'):
         self.config_file = Path(config_file)
         self.config = self.load_config()
         
@@ -141,7 +141,7 @@ class DeviceScannerWrapper:
     def __init__(self, config: NetworkConfig, progress_callback=None):
         self.config = config
         self.progress_callback = progress_callback
-        self.device_map_file = Path('scape_server/device_map.json')
+        self.device_map_file = Path('murmura_config_server/device_map.json')
         self.device_map_file.parent.mkdir(parents=True, exist_ok=True)
         self.total_hosts = 0
         self.scanned_hosts = 0
@@ -327,7 +327,7 @@ class DeviceScannerWrapper:
 class DeviceRegistry:
     """Compatible device registry using device_scanner.py format."""
     
-    def __init__(self, registry_file: str = 'scape_server/device_map.json'):
+    def __init__(self, registry_file: str = 'murmura_config_server/device_map.json'):
         self.registry_file = Path(registry_file)
         self.devices = {}
         self.load_registry()

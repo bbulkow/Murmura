@@ -426,10 +426,12 @@ void audio_control_task(void *pvParameters)
         // Update HTTP server with loop manager reference
         http_server_set_track_manager(track_manager);
 
-        // Initialize trigger listener (listens for gateway TCP connections)
+        // Initialize trigger listener (connects outbound to Mur Gateway)
         esp_err_t trig_ret = trigger_listener_init(track_manager);
         if (trig_ret == ESP_OK) {
-            ESP_LOGI(TAG, "Trigger listener initialized on port %d", TRIGGER_LISTEN_PORT);
+            ESP_LOGI(TAG, "Trigger listener initialized (gateway %s:%d)",
+                     track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
+                     track_manager->mur_gateway_port);
         } else {
             ESP_LOGW(TAG, "Trigger listener init failed: %s", esp_err_to_name(trig_ret));
         }

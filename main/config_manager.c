@@ -53,8 +53,8 @@ esp_err_t config_save(const track_manager_t *manager) {
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
-    cJSON_AddStringToObject(root, "trigger_server_ip", manager->trigger_server_ip);
-    cJSON_AddNumberToObject(root, "trigger_server_port", manager->trigger_server_port);
+    cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
+    cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -182,9 +182,9 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
     }
 
     track_manager->global_volume_percent = config->global_volume_percent;
-    strncpy(track_manager->trigger_server_ip, config->trigger_server_ip,
-            sizeof(track_manager->trigger_server_ip) - 1);
-    track_manager->trigger_server_port = config->trigger_server_port;
+    strncpy(track_manager->mur_gateway_ip, config->mur_gateway_ip,
+            sizeof(track_manager->mur_gateway_ip) - 1);
+    track_manager->mur_gateway_port = config->mur_gateway_port;
     ESP_LOGI(TAG, "Configuration applied successfully");
     return ESP_OK;
 }
@@ -264,8 +264,8 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
-    cJSON_AddStringToObject(root, "trigger_server_ip", manager->trigger_server_ip);
-    cJSON_AddNumberToObject(root, "trigger_server_port", manager->trigger_server_port);
+    cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
+    cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -299,8 +299,8 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     // Defaults
     memset(config, 0, sizeof(track_config_t));
     config->global_volume_percent = 75;
-    config->trigger_server_ip[0] = '\0';
-    config->trigger_server_port = 5002;
+    config->mur_gateway_ip[0] = '\0';
+    config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
     for (int i = 0; i < MAX_TRACKS; i++) {
         config->tracks[i].mode = TRACK_MODE_LOOP;
         config->tracks[i].active = false;
@@ -315,15 +315,18 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
         config->global_volume_percent = global_vol->valueint;
     }
 
-    cJSON *trig_ip = cJSON_GetObjectItem(root, "trigger_server_ip");
-    if (cJSON_IsString(trig_ip) && trig_ip->valuestring) {
-        strncpy(config->trigger_server_ip, trig_ip->valuestring,
-                sizeof(config->trigger_server_ip) - 1);
+    /* Try new key names first, fall back to old names for backward compat */
+    cJSON *gw_ip = cJSON_GetObjectItem(root, "mur_gateway_ip");
+    if (!gw_ip) gw_ip = cJSON_GetObjectItem(root, "trigger_server_ip");
+    if (cJSON_IsString(gw_ip) && gw_ip->valuestring) {
+        strncpy(config->mur_gateway_ip, gw_ip->valuestring,
+                sizeof(config->mur_gateway_ip) - 1);
     }
 
-    cJSON *trig_port = cJSON_GetObjectItem(root, "trigger_server_port");
-    if (cJSON_IsNumber(trig_port)) {
-        config->trigger_server_port = trig_port->valueint;
+    cJSON *gw_port = cJSON_GetObjectItem(root, "mur_gateway_port");
+    if (!gw_port) gw_port = cJSON_GetObjectItem(root, "trigger_server_port");
+    if (cJSON_IsNumber(gw_port)) {
+        config->mur_gateway_port = gw_port->valueint;
     }
 
     cJSON *tracks_arr = cJSON_GetObjectItem(root, "tracks");
@@ -387,8 +390,8 @@ esp_err_t config_get_default(track_config_t *config) {
         };
         memset(config, 0, sizeof(track_config_t));
         config->global_volume_percent = 75;
-        config->trigger_server_ip[0] = '\0';
-        config->trigger_server_port = 5002;
+        config->mur_gateway_ip[0] = '\0';
+        config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
         for (int i = 0; i < MAX_TRACKS; i++) {
             config->tracks[i].mode = TRACK_MODE_LOOP;
             config->tracks[i].active = (i == 0);

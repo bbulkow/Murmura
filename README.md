@@ -55,7 +55,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **Configuration persistence** -- loop assignments, volumes, and play states saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
-- **Fleet management server** (scape-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
+- **Fleet management server** (murmura-config-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
 - **CLI device tools** (device-manager) -- Python scripts for batch file upload, scanning, ID assignment, and device control
 
 ## Hardware
@@ -90,7 +90,7 @@ main/                   ESP32 firmware source
   music_files.c/h         SD card file enumeration
   unit_status_manager.c/h Device identity and status
 aithinker-adf/          Board support overlay files and build instructions
-scape-server/           Flask web server for fleet management (Python)
+murmura-config-server/           Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 ```
 
@@ -155,15 +155,15 @@ it's unlikely that they should be used again.
 
 ### Running the fleet management server
 
-The scape-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
+The murmura-config-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
 
 ```bash
-cd scape-server
+cd murmura-config-server
 pip install -r requirements.txt
 python app.py
 ```
 
-Access the dashboard at `http://localhost:8765`. See [scape-server/README.md](scape-server/README.md) for full documentation including systemd auto-start setup.
+Access the dashboard at `http://localhost:8765`. See [murmura-config-server/README.md](murmura-config-server/README.md) for full documentation including systemd auto-start setup.
 
 ### Device Manager CLI Tools
 
@@ -215,8 +215,8 @@ See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response 
 - [HTTP_API.md](HTTP_API.md) -- complete HTTP API reference
 - [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
 - [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions
-- [scape-server/README.md](scape-server/README.md) -- fleet management server documentation
-- [scape-server/SYSTEMD_INSTALL.md](scape-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
+- [murmura-config-server/README.md](murmura-config-server/README.md) -- fleet management server documentation
+- [murmura-config-server/SYSTEMD_INSTALL.md](murmura-config-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
 - [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) -- CLI tools reference
 
 ## License

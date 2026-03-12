@@ -78,8 +78,8 @@ async function loadDeviceData() {
             updateLoops(loopData);
         }
 
-        // Get trigger server config
-        loadTriggerServer();
+        // Get mur gateway config
+        loadMurGateway();
     } catch (error) {
         console.error('[DEVICE-DETAIL] Error loading device data:', error);
         // Show clear error message if Flask server is down
@@ -833,14 +833,14 @@ async function loadWiFiStatus() {
     }
 }
 
-// Load and display trigger server config
-async function loadTriggerServer() {
+// Load and display Mur Gateway config
+async function loadMurGateway() {
     try {
-        const response = await fetch(`/api/device/${currentDevice}/trigger-server`);
+        const response = await fetch(`/api/device/${currentDevice}/mur-gateway`);
         if (!response.ok) return;
         const data = await response.json();
-        const ip = data.trigger_server_ip || '';
-        const port = data.trigger_server_port || '';
+        const ip = data.mur_gateway_ip || '';
+        const port = data.mur_gateway_port || '';
         const display = ip ? `${ip}${port ? ':' + port : ''}` : '—';
         document.getElementById('triggerServerDisplay').textContent = display;
     } catch (e) {
@@ -860,24 +860,24 @@ window.hideTriggerServerEdit = function() {
 window.saveTriggerServer = async function() {
     const ip = document.getElementById('triggerServerIpInput').value.trim();
     const portRaw = document.getElementById('triggerServerPortInput').value.trim();
-    if (!ip) { showMessage('Enter a trigger server IP', 'error'); return; }
-    const payload = { trigger_server_ip: ip };
-    if (portRaw) payload.trigger_server_port = parseInt(portRaw);
+    if (!ip) { showMessage('Enter a Mur Gateway IP', 'error'); return; }
+    const payload = { mur_gateway_ip: ip };
+    if (portRaw) payload.mur_gateway_port = parseInt(portRaw);
     try {
-        const response = await fetch(`/api/device/${currentDevice}/trigger-server`, {
+        const response = await fetch(`/api/device/${currentDevice}/mur-gateway`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
         });
         if (response.ok) {
-            showMessage('Trigger server updated', 'success');
+            showMessage('Mur Gateway updated', 'success');
             hideTriggerServerEdit();
-            loadTriggerServer();
+            loadMurGateway();
         } else {
-            showMessage('Failed to set trigger server', 'error');
+            showMessage('Failed to set Mur Gateway', 'error');
         }
     } catch (e) {
-        showMessage('Error setting trigger server', 'error');
+        showMessage('Error setting Mur Gateway', 'error');
     }
 };
 

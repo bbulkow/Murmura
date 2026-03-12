@@ -52,8 +52,8 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **main/config_manager.h/c** - SD card config persistence (track_config_t, JSON serialization)
 - **main/trigger_listener.h/c** - TCP trigger gateway integration, trigger event processing
 - **main/unit_status_manager.h/c** - Device identity and network status
-- **scape-server/** - Flask web UI for managing multiple Murmura devices
+- **murmura-config-server/** - Flask web UI for managing multiple Murmura devices
 
-# running device manager and scape-server
+# running device manager and murmura-config-server
 
-For the device-manager and scape-server, please execute a set of python commands to make sure the basic function is correct.
+For the device-manager and murmura-config-server, please execute a set of python commands to make sure the basic function is correct.

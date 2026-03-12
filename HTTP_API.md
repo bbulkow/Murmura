@@ -14,10 +14,10 @@ Each device has three tracks (0, 1, 2). Each track has:
 
 There is also a global/master volume that scales all tracks.
 
-The device can connect to a Haven Trigger Gateway to receive trigger events:
-- **trigger_server_ip**: IP address of the Trigger Gateway (empty = disabled)
-- **trigger_server_port**: port of the Trigger Gateway (default 5002)
-- The device listens for incoming TCP connections from the gateway on port 5100
+The device connects outbound to a Mur Gateway to receive trigger events:
+- **mur_gateway_ip**: IP address of the Mur Gateway (empty = disabled)
+- **mur_gateway_port**: port of the Mur Gateway (default 4000)
+- The device connects to the gateway, announces its ID, and subscribes to triggers
 
 ## API Endpoints
 
@@ -179,38 +179,36 @@ Adjusts the master volume (affects all tracks via hardware codec).
 
 ---
 
-### Get Trigger Server Configuration
+### Get Mur Gateway Configuration
 
-**GET** `/api/trigger-server`
+**GET** `/api/mur-gateway`
 
-Returns the current trigger gateway IP/port and the local listen port.
+Returns the current Mur Gateway IP/port configuration.
 
 **Response:**
 ```json
 {
-  "trigger_server_ip": "192.168.1.10",
-  "trigger_server_port": 5002,
-  "trigger_listen_port": 5100
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000
 }
 ```
 
-- `trigger_server_ip`: IP of the Haven Trigger Gateway; empty string if not configured
-- `trigger_server_port`: gateway HTTP port (default 5002)
-- `trigger_listen_port`: port this device listens on for incoming TCP events (fixed: 5100)
+- `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
+- `mur_gateway_port`: Mur Gateway TCP port for device connections (default 4000)
 
 ---
 
-### Set Trigger Server Configuration
+### Set Mur Gateway Configuration
 
-**POST** `/api/trigger-server`
+**POST** `/api/mur-gateway`
 
-Updates the trigger gateway connection settings. The trigger listener will use these values on its next registration attempt (every 30 s) or immediately if `trigger_listener_register_with_gateway()` is called.
+Updates the Mur Gateway connection settings. The trigger listener will reconnect using the new values.
 
 **Request Body:**
 ```json
 {
-  "trigger_server_ip": "192.168.1.10",
-  "trigger_server_port": 5002
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000
 }
 ```
 
@@ -220,8 +218,8 @@ Both fields are optional — only the fields present are updated.
 ```json
 {
   "success": true,
-  "trigger_server_ip": "192.168.1.10",
-  "trigger_server_port": 5002
+  "mur_gateway_ip": "192.168.1.10",
+  "mur_gateway_port": 4000
 }
 ```
 

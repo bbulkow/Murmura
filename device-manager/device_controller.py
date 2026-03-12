@@ -237,29 +237,28 @@ class DeviceController:
             resp = result.get('response', {}) or {}
             logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
 
-    async def get_trigger_server(self) -> None:
-        """Get trigger server configuration."""
-        result = await self.send_request('GET', '/api/trigger-server')
+    async def get_mur_gateway(self) -> None:
+        """Get Mur Gateway configuration."""
+        result = await self.send_request('GET', '/api/mur-gateway')
         if result['success'] and result['response']:
             data = result['response']
-            print(f"\nTrigger Server Config for {self.device_id}")
-            print(f"  Gateway IP:   {data.get('trigger_server_ip') or '(not set)'}")
-            print(f"  Gateway port: {data.get('trigger_server_port', 5002)}")
-            print(f"  Listen port:  {data.get('trigger_listen_port', 5100)}")
+            print(f"\nMur Gateway Config for {self.device_id}")
+            print(f"  Gateway IP:   {data.get('mur_gateway_ip') or '(not set)'}")
+            print(f"  Gateway port: {data.get('mur_gateway_port', 4000)}")
         else:
-            logger.error(f"Failed to get trigger server config: {result.get('error', 'Unknown error')}")
+            logger.error(f"Failed to get Mur Gateway config: {result.get('error', 'Unknown error')}")
 
-    async def set_trigger_server(self, ip: Optional[str], port: Optional[int]) -> None:
-        """Set trigger server IP and/or port."""
+    async def set_mur_gateway(self, ip: Optional[str], port: Optional[int]) -> None:
+        """Set Mur Gateway IP and/or port."""
         payload: Dict[str, Any] = {}
         if ip is not None:
-            payload['trigger_server_ip'] = ip
+            payload['mur_gateway_ip'] = ip
         if port is not None:
-            payload['trigger_server_port'] = port
-        result = await self.send_request('POST', '/api/trigger-server', payload)
+            payload['mur_gateway_port'] = port
+        result = await self.send_request('POST', '/api/mur-gateway', payload)
         if result['success']:
             resp = result['response']
-            logger.info(f"✓ Trigger server updated: ip={resp.get('trigger_server_ip')}, port={resp.get('trigger_server_port')}")
+            logger.info(f"✓ Mur Gateway updated: ip={resp.get('mur_gateway_ip')}, port={resp.get('mur_gateway_port')}")
         else:
             resp = result.get('response', {}) or {}
             logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
@@ -407,7 +406,7 @@ Examples:
                           required=True,
                           choices=['status', 'get-tracks', 'set-track', 'set-volume',
                                    'set-id', 'save-config', 'load-config', 'reboot', 'list-files',
-                                   'get-trigger-server', 'set-trigger-server'],
+                                   'get-mur-gateway', 'set-mur-gateway'],
                           help='Command to execute on the device')
 
     # Optional arguments
@@ -454,15 +453,15 @@ Examples:
                               choices=['momentary', 'oneshot'],
                               help='momentary: play while held; oneshot: play once on press')
 
-    # Trigger server control
-    trig_group = parser.add_argument_group('trigger server control (for set-trigger-server)')
+    # Mur Gateway control
+    trig_group = parser.add_argument_group('mur gateway control (for set-mur-gateway)')
     trig_group.add_argument('--trigger-ip',
                              metavar='IP',
-                             help='IP address of the Haven Trigger Gateway')
+                             help='IP address of the Mur Gateway')
     trig_group.add_argument('--trigger-port',
                              type=int,
                              metavar='PORT',
-                             help='Port of the Haven Trigger Gateway (default 5002)')
+                             help='Port of the Mur Gateway (default 4000)')
 
     # Volume control
     volume_group = parser.add_argument_group('volume control')
@@ -553,14 +552,14 @@ Examples:
         elif args.command == 'list-files':
             asyncio.run(controller.list_files())
 
-        elif args.command == 'get-trigger-server':
-            asyncio.run(controller.get_trigger_server())
+        elif args.command == 'get-mur-gateway':
+            asyncio.run(controller.get_mur_gateway())
 
-        elif args.command == 'set-trigger-server':
+        elif args.command == 'set-mur-gateway':
             if args.trigger_ip is None and args.trigger_port is None:
                 logger.error("Provide --trigger-ip and/or --trigger-port")
                 sys.exit(1)
-            asyncio.run(controller.set_trigger_server(
+            asyncio.run(controller.set_mur_gateway(
                 ip=args.trigger_ip,
                 port=args.trigger_port
             ))

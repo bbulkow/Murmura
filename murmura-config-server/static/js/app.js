@@ -1453,13 +1453,13 @@ async function batchReboot() {
     }
 }
 
-// Batch set trigger server IP/port
+// Batch set Mur Gateway IP/port
 async function batchSetTriggerServer() {
     const ip = document.getElementById('batchTriggerIp').value.trim();
     const portRaw = document.getElementById('batchTriggerPort').value.trim();
 
     if (!ip) {
-        showError('Please enter a trigger server IP address');
+        showError('Please enter a Mur Gateway IP address');
         return;
     }
 
@@ -1472,20 +1472,20 @@ async function batchSetTriggerServer() {
         return;
     }
 
-    const payload = { device_ids: targetDevices, trigger_server_ip: ip };
-    if (portRaw) payload.trigger_server_port = parseInt(portRaw);
+    const payload = { device_ids: targetDevices, mur_gateway_ip: ip };
+    if (portRaw) payload.mur_gateway_port = parseInt(portRaw);
 
     try {
-        const response = await fetch('/api/batch/trigger-server', {
+        const response = await fetch('/api/batch/mur-gateway', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
         });
         const data = await response.json();
         const successCount = data.results.filter(r => r.status === 'success').length;
-        showSuccess(`Trigger server set on ${successCount}/${targetDevices.length} device(s)`);
+        showSuccess(`Mur Gateway set on ${successCount}/${targetDevices.length} device(s)`);
     } catch (error) {
-        console.error('Error setting trigger server:', error);
-        showError('Failed to set trigger server');
+        console.error('Error setting Mur Gateway:', error);
+        showError('Failed to set Mur Gateway');
     }
 }

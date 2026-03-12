@@ -34,7 +34,7 @@ A web-based fleet management server for Brian's soundscape devicies, designed to
 ### Setup
 
 ```bash
-cd scape-server
+cd murmura-config-server
 pip install -r requirements.txt
 ```
 
@@ -49,7 +49,7 @@ python app.py
 Open PowerShell 7 as Administrator (required for network scanning), then:
 
 ```powershell
-cd C:\Users\<username>\dev\esp\Murmura\scape-server
+cd C:\Users\<username>\dev\esp\Murmura\murmura-config-server
 pip install -r requirements.txt
 python app.py
 ```
@@ -62,7 +62,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### macOS / Linux / Raspberry Pi
 
 ```bash
-cd ~/Murmura/scape-server
+cd ~/Murmura/murmura-config-server
 pip3 install -r requirements.txt
 python3 app.py
 ```
@@ -73,7 +73,7 @@ Once running, the server will be accessible at:
 - Local machine: `http://localhost:8765`
 - Network access: `http://<your-ip>:8765`
 
-**Note**: The default port was changed from 5000 to 8765 to avoid conflicts with commonly used applications. You can override this by setting the `SCAPE_SERVER_PORT` environment variable.
+**Note**: The default port was changed from 5000 to 8765 to avoid conflicts with commonly used applications. You can override this by setting the `MURMURA_CONFIG_SERVER_PORT` environment variable.
 
 To find your IP address:
 - **Windows**: `ipconfig` in PowerShell
@@ -169,7 +169,7 @@ Edit `network_scanner.py` to adjust:
 
 Edit `app.py` to modify:
 - `DEFAULT_PORT`: Server port (default: 8765)
-- `SERVER_PORT`: Override using `SCAPE_SERVER_PORT` environment variable
+- `SERVER_PORT`: Override using `MURMURA_CONFIG_SERVER_PORT` environment variable
 - `host`: Server host (default: 0.0.0.0 for network access)
 - `debug`: Flask debug mode (default: True)
 
@@ -179,7 +179,7 @@ You can override the default port in several ways:
 
 1. **Environment variable** (recommended):
    ```bash
-   export SCAPE_SERVER_PORT=9000
+   export MURMURA_CONFIG_SERVER_PORT=9000
    python3 app.py
    ```
 
@@ -218,7 +218,7 @@ The server maintains a persistent registry of discovered devices in `device_regi
 
 ### Auto-start on Boot with Systemd
 
-The scape-server includes a pre-configured systemd service file for easy installation on Raspberry Pi.
+The murmura-config-server includes a pre-configured systemd service file for easy installation on Raspberry Pi.
 
 **For detailed installation instructions, see [SYSTEMD_INSTALL.md](SYSTEMD_INSTALL.md)**
 
@@ -226,19 +226,19 @@ Quick installation:
 
 1. Copy the service file:
 ```bash
-sudo cp /home/pi/Murmura/scape-server/scape-server.service /etc/systemd/system/
+sudo cp /home/pi/Murmura/murmura-config-server/murmura-config-server.service /etc/systemd/system/
 ```
 
 2. Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable scape-server.service
-sudo systemctl start scape-server.service
+sudo systemctl enable murmura-config-server.service
+sudo systemctl start murmura-config-server.service
 ```
 
 3. Check status:
 ```bash
-sudo systemctl status scape-server.service
+sudo systemctl status murmura-config-server.service
 ```
 
 The service includes:

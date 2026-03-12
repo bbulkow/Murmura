@@ -13,10 +13,8 @@
 #define JSON_BUFFER_SIZE 1024
 #define MAX_FILE_PATH_LEN 64
 #define MAX_TRIGGER_NAME_LEN 64
-#define TRIGGER_SERVER_IP_LEN 64
-
-// Port on which this device listens for incoming trigger events from the gateway
-#define TRIGGER_LISTEN_PORT 5100
+#define MUR_GATEWAY_IP_LEN 64
+#define MUR_GATEWAY_DEFAULT_PORT 4000
 
 // Track playback mode
 typedef enum {
@@ -47,8 +45,8 @@ typedef struct {
     int global_volume_percent;  // 0-100%
     audio_stream_t *audio_stream;
     QueueHandle_t audio_control_queue;
-    char trigger_server_ip[TRIGGER_SERVER_IP_LEN]; // empty = no trigger server
-    int trigger_server_port;                        // default 5002
+    char mur_gateway_ip[MUR_GATEWAY_IP_LEN];       // empty = no mur gateway
+    int mur_gateway_port;                           // default 4000
 } track_manager_t;
 
 /**

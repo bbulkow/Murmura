@@ -70,9 +70,9 @@ static esp_err_t id_set_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
 static esp_err_t file_delete_handler(httpd_req_t *req);
 static esp_err_t system_reboot_handler(httpd_req_t *req);
-// Trigger server configuration handlers
-static esp_err_t trigger_server_get_handler(httpd_req_t *req);
-static esp_err_t trigger_server_post_handler(httpd_req_t *req);
+// Mur Gateway configuration handlers
+static esp_err_t mur_gateway_get_handler(httpd_req_t *req);
+static esp_err_t mur_gateway_post_handler(httpd_req_t *req);
 
 /**
  * @brief Send JSON response (uses SPIRAM via cJSON hooks)
@@ -1765,20 +1765,18 @@ static esp_err_t system_reboot_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief GET /api/trigger-server — return trigger gateway IP/port config
+ * @brief GET /api/mur-gateway — return Mur Gateway IP/port config
  */
-static esp_err_t trigger_server_get_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /api/trigger-server");
+static esp_err_t mur_gateway_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/mur-gateway");
 
     cJSON *response = cJSON_CreateObject();
     if (g_track_manager) {
-        cJSON_AddStringToObject(response, "trigger_server_ip", g_track_manager->trigger_server_ip);
-        cJSON_AddNumberToObject(response, "trigger_server_port", g_track_manager->trigger_server_port);
-        cJSON_AddNumberToObject(response, "trigger_listen_port", TRIGGER_LISTEN_PORT);
+        cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
+        cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
     } else {
-        cJSON_AddStringToObject(response, "trigger_server_ip", "");
-        cJSON_AddNumberToObject(response, "trigger_server_port", 5002);
-        cJSON_AddNumberToObject(response, "trigger_listen_port", TRIGGER_LISTEN_PORT);
+        cJSON_AddStringToObject(response, "mur_gateway_ip", "");
+        cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
     }
 
     esp_err_t ret = send_json_response(req, response);
@@ -1787,11 +1785,11 @@ static esp_err_t trigger_server_get_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief POST /api/trigger-server — update trigger gateway IP and/or port
- * Body: { "trigger_server_ip": "192.168.1.10", "trigger_server_port": 5002 }
+ * @brief POST /api/mur-gateway — update Mur Gateway IP and/or port
+ * Body: { "mur_gateway_ip": "192.168.1.10", "mur_gateway_port": 4000 }
  */
-static esp_err_t trigger_server_post_handler(httpd_req_t *req) {
-    ESP_LOGI(TAG, "POST /api/trigger-server");
+static esp_err_t mur_gateway_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "POST /api/mur-gateway");
 
     if (req->content_len == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request body");
@@ -1815,21 +1813,21 @@ static esp_err_t trigger_server_post_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    cJSON *ip_json = cJSON_GetObjectItem(request, "trigger_server_ip");
+    cJSON *ip_json = cJSON_GetObjectItem(request, "mur_gateway_ip");
     if (cJSON_IsString(ip_json)) {
-        strncpy(g_track_manager->trigger_server_ip, ip_json->valuestring,
-                sizeof(g_track_manager->trigger_server_ip) - 1);
-        g_track_manager->trigger_server_ip[sizeof(g_track_manager->trigger_server_ip) - 1] = '\0';
+        strncpy(g_track_manager->mur_gateway_ip, ip_json->valuestring,
+                sizeof(g_track_manager->mur_gateway_ip) - 1);
+        g_track_manager->mur_gateway_ip[sizeof(g_track_manager->mur_gateway_ip) - 1] = '\0';
     }
 
-    cJSON *port_json = cJSON_GetObjectItem(request, "trigger_server_port");
+    cJSON *port_json = cJSON_GetObjectItem(request, "mur_gateway_port");
     if (cJSON_IsNumber(port_json)) {
-        g_track_manager->trigger_server_port = port_json->valueint;
+        g_track_manager->mur_gateway_port = port_json->valueint;
     }
 
     cJSON_AddBoolToObject(response, "success", true);
-    cJSON_AddStringToObject(response, "trigger_server_ip", g_track_manager->trigger_server_ip);
-    cJSON_AddNumberToObject(response, "trigger_server_port", g_track_manager->trigger_server_port);
+    cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
+    cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
 
     esp_err_t ret = send_json_response(req, response);
     cJSON_Delete(response);
@@ -2693,26 +2691,26 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
         ESP_LOGE(TAG, "Failed to register handler for /api/system/reboot: %s", esp_err_to_name(ret));
     }
 
-    httpd_uri_t trigger_server_get_uri = {
-        .uri     = "/api/trigger-server",
+    httpd_uri_t mur_gateway_get_uri = {
+        .uri     = "/api/mur-gateway",
         .method  = HTTP_GET,
-        .handler = trigger_server_get_handler,
+        .handler = mur_gateway_get_handler,
         .user_ctx = NULL
     };
-    ret = httpd_register_uri_handler(server, &trigger_server_get_uri);
+    ret = httpd_register_uri_handler(server, &mur_gateway_get_uri);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register GET /api/trigger-server: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to register GET /api/mur-gateway: %s", esp_err_to_name(ret));
     }
 
-    httpd_uri_t trigger_server_post_uri = {
-        .uri     = "/api/trigger-server",
+    httpd_uri_t mur_gateway_post_uri = {
+        .uri     = "/api/mur-gateway",
         .method  = HTTP_POST,
-        .handler = trigger_server_post_handler,
+        .handler = mur_gateway_post_handler,
         .user_ctx = NULL
     };
-    ret = httpd_register_uri_handler(server, &trigger_server_post_uri);
+    ret = httpd_register_uri_handler(server, &mur_gateway_post_uri);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register POST /api/trigger-server: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to register POST /api/mur-gateway: %s", esp_err_to_name(ret));
     }
 
     // Initialize unit status manager

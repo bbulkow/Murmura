@@ -17,7 +17,7 @@ Usage:
     # Enable interactive trigger behavior tests
     python device_test.py --device 192.168.5.135 --triggers
 
-NOTE: scape-server endpoints are internal to the scape-server application and are
+NOTE: murmura-config-server endpoints are internal to the murmura-config-server application and are
 not part of any external API contract. Do not test them from external tooling.
 """
 
@@ -246,7 +246,7 @@ def group1_identity(base):
 
     # NOTE: POST /api/id (set ID) intentionally omitted — destructive in the field.
 
-    return id_  # return for use by scape-server group
+    return id_  # return for use by murmura-config-server group
 
 # =============================================================================
 # GROUP 2: File Management
@@ -721,48 +721,37 @@ def group8_wifi(base):
 def group9_trigger_basic(base, device_ip, trigger_tests):
     head("Group 9: Trigger System — Basic")
 
-    # 8.1 trigger status
-    code, data = get(base, "/api/trigger/status")
-    record(code == 200 and data.get("success"),
-           "8.1 GET /api/trigger/status returns success", f"HTTP {code}")
+    # 8.1 get mur gateway config
+    code, data = get(base, "/api/mur-gateway")
+    record(code == 200,
+           "8.1 GET /api/mur-gateway returns 200", f"HTTP {code}")
     if code == 200:
-        record("server_ip"   in data or "trigger_server_ip"   in data,
-               "8.1 trigger status has server IP field")
-        record("server_port" in data or "trigger_server_port" in data,
-               "8.1 trigger status has server port field")
-        record("connected"   in data,
-               "8.1 trigger status has connected field")
+        record("mur_gateway_ip"   in data,
+               "8.1 mur-gateway response has mur_gateway_ip field")
+        record("mur_gateway_port" in data,
+               "8.1 mur-gateway response has mur_gateway_port field")
 
-    # 8.2 TCP connect to listener port
-    listener_port = 6100
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(4)
-        sock.connect((device_ip, listener_port))
-        sock.close()
-        record(True, f"8.2 TCP connect to {device_ip}:{listener_port} succeeds")
-    except Exception as e:
-        record(False, f"8.2 TCP connect to {device_ip}:{listener_port}", str(e))
+    # 8.2 (removed — device no longer listens on a TCP port)
 
-    # 8.3 set trigger server IP (dummy value)
-    code, data = post(base, "/api/trigger/server",
-                      {"ip": "192.168.5.99", "port": 5002, "listener_port": 6100})
+    # 8.3 set mur gateway IP (dummy value)
+    code, data = post(base, "/api/mur-gateway",
+                      {"mur_gateway_ip": "192.168.5.99", "mur_gateway_port": 4000})
     record(code == 200 and data.get("success"),
-           "8.3 POST /api/trigger/server accepts IP/port config",
+           "8.3 POST /api/mur-gateway accepts IP/port config",
            data.get("message", str(data.get("error", ""))))
 
     # 8.4 verify stored
-    code, data = get(base, "/api/trigger/status")
+    code, data = get(base, "/api/mur-gateway")
     if code == 200:
-        stored_ip = data.get("server_ip") or data.get("trigger_server_ip", "")
+        stored_ip = data.get("mur_gateway_ip", "")
         record("192.168.5.99" in stored_ip,
-               "8.4 Trigger server IP stored correctly", stored_ip)
+               "8.4 Mur Gateway IP stored correctly", stored_ip)
 
     # 8.5 clear IP
-    code, data = post(base, "/api/trigger/server",
-                      {"ip": "", "port": 5002, "listener_port": 6100})
+    code, data = post(base, "/api/mur-gateway",
+                      {"mur_gateway_ip": "", "mur_gateway_port": 4000})
     record(code == 200 and data.get("success"),
-           "8.5 POST /api/trigger/server with empty IP does not crash")
+           "8.5 POST /api/mur-gateway with empty IP does not crash")
 
     if not trigger_tests:
         skip("Group 9b trigger behavior tests skipped (use --triggers to enable)")

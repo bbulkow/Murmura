@@ -18,9 +18,9 @@ from network_wrapper import NetworkConfig, DeviceScannerWrapper, DeviceRegistry
 # SERVER CONFIGURATION
 # ============================================================================
 # Default port for the web server (chosen to avoid common port conflicts)
-# Override by setting the SCAPE_SERVER_PORT environment variable
+# Override by setting the MURMURA_CONFIG_SERVER_PORT environment variable
 DEFAULT_PORT = 8765
-SERVER_PORT = int(os.environ.get('SCAPE_SERVER_PORT', DEFAULT_PORT))
+SERVER_PORT = int(os.environ.get('MURMURA_CONFIG_SERVER_PORT', DEFAULT_PORT))
 # ============================================================================
 
 # Configure logging with detailed output
@@ -752,33 +752,33 @@ def set_track_volume(device_id):
         logger.error(f"Error setting volume for track {track} on {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/device/<device_id>/trigger-server', methods=['GET'])
-def get_device_trigger_server(device_id):
-    """Get trigger server config for a device."""
+@app.route('/api/device/<device_id>/mur-gateway', methods=['GET'])
+def get_device_mur_gateway(device_id):
+    """Get Mur Gateway config for a device."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
     try:
-        response = requests.get(f"http://{device.get('ip_address')}/api/trigger-server", timeout=2)
+        response = requests.get(f"http://{device.get('ip_address')}/api/mur-gateway", timeout=2)
         if response.status_code == 200:
             return jsonify(response.json())
         return jsonify({'error': f'HTTP {response.status_code}'}), 500
     except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/device/<device_id>/trigger-server', methods=['POST'])
-def set_device_trigger_server(device_id):
-    """Set trigger server config for a device."""
+@app.route('/api/device/<device_id>/mur-gateway', methods=['POST'])
+def set_device_mur_gateway(device_id):
+    """Set Mur Gateway config for a device."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
     data = request.json
-    payload = {'trigger_server_ip': data.get('trigger_server_ip', '')}
-    if data.get('trigger_server_port'):
-        payload['trigger_server_port'] = int(data['trigger_server_port'])
+    payload = {'mur_gateway_ip': data.get('mur_gateway_ip', '')}
+    if data.get('mur_gateway_port'):
+        payload['mur_gateway_port'] = int(data['mur_gateway_port'])
     try:
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/trigger-server",
+            f"http://{device.get('ip_address')}/api/mur-gateway",
             json=payload, timeout=2
         )
         if response.status_code == 200:
@@ -787,26 +787,26 @@ def set_device_trigger_server(device_id):
     except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/batch/trigger-server', methods=['POST'])
-def batch_set_trigger_server():
-    """Set trigger server IP/port on multiple devices."""
+@app.route('/api/batch/mur-gateway', methods=['POST'])
+def batch_set_mur_gateway():
+    """Set Mur Gateway IP/port on multiple devices."""
     data = request.json
     device_ids = data.get('device_ids', [])
-    trigger_server_ip = data.get('trigger_server_ip', '')
-    trigger_server_port = data.get('trigger_server_port')
+    mur_gateway_ip = data.get('mur_gateway_ip', '')
+    mur_gateway_port = data.get('mur_gateway_port')
 
-    logger.info(f"Batch setting trigger server to {trigger_server_ip} for {len(device_ids)} devices")
+    logger.info(f"Batch setting mur gateway to {mur_gateway_ip} for {len(device_ids)} devices")
     results = []
 
     for device_id in device_ids:
         device = registry.get_device(device_id)
         if device:
-            payload = {'trigger_server_ip': trigger_server_ip}
-            if trigger_server_port:
-                payload['trigger_server_port'] = int(trigger_server_port)
+            payload = {'mur_gateway_ip': mur_gateway_ip}
+            if mur_gateway_port:
+                payload['mur_gateway_port'] = int(mur_gateway_port)
             try:
                 response = requests.post(
-                    f"http://{device.get('ip_address')}/api/trigger-server",
+                    f"http://{device.get('ip_address')}/api/mur-gateway",
                     json=payload, timeout=2
                 )
                 results.append({'device_id': device_id,

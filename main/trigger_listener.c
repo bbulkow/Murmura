@@ -1,21 +1,22 @@
 /*
  * trigger_listener.c
  *
- * Registers with the Haven Trigger Gateway and listens for incoming trigger
- * events over a persistent TCP_SOCKET connection.  When a matching event
- * arrives it queues an audio control message (START_TRACK / STOP_TRACK) on
- * the main audio_control_queue.
+ * Connects to the Mur Gateway over a persistent TCP connection.
+ * On connect, announces the device ID and subscribes to all trigger
+ * names configured on tracks.  Receives newline-delimited JSON trigger
+ * events and dispatches them to the audio control queue.
  *
- * Protocol (from Trigger Gateway):
- *   - This device registers via  POST /api/register  with protocol TCP_SOCKET
- *     and its own listen port.  The gateway then connects back and sends
- *     newline-delimited JSON events:
- *       {"name":"SomeTrigger","value":"On","id":123,"timestamp":"..."}\n
+ * Mur Protocol (device → gateway):
+ *   {"type":"announce","id":"MURMURA-001"}\n
+ *   {"type":"subscribe","triggers":["Button_1","Dial.Number"]}\n
+ *
+ * Mur Protocol (gateway → device):
+ *   {"type":"welcome","gateway":"mur-gateway","version":"1.0"}\n
+ *   {"name":"Button_1","value":"On","id":123,"timestamp":"..."}\n
  *
  * Trigger modes:
  *   TRIGGER_MODE_MOMENTARY  – START_TRACK on "On", STOP_TRACK on "Off"
  *   TRIGGER_MODE_ONESHOT    – START_TRACK on "On", nothing on "Off"
- *                             (track plays to natural completion)
  */
 
 #include "freertos/FreeRTOS.h"
@@ -32,7 +33,6 @@
 #include "esp_netif.h"
 #include <string.h>
 #include <errno.h>
-#include <fcntl.h>
 
 static const char *TAG = "TRIGGER_LISTENER";
 
@@ -40,20 +40,23 @@ static const char *TAG = "TRIGGER_LISTENER";
 #define TASK_PRIORITY       4
 #define RECV_BUF_SIZE       256
 #define LINE_BUF_SIZE       512
-#define REREGISTER_INTERVAL_MS  30000   /* re-register every 30 s */
 
-/* Module state — kept in internal RAM (never in SPIRAM) to satisfy the
- * S32C1I constraint: the task handle and fd are accessed by multiple
- * tasks and must not live behind the SPI cache. */
+/* Reconnect backoff: 1s → 2s → 4s → 8s → 16s → 30s cap */
+#define INITIAL_BACKOFF_MS  1000
+#define MAX_BACKOFF_MS      30000
+
+/* Module state */
 static track_manager_t *s_manager     = NULL;
 static TaskHandle_t     s_task_handle = NULL;
-static int              s_server_fd   = -1;
+static volatile bool    s_resubscribe = false;
 
 /* ---- forward declarations ----------------------------------------- */
 static void  trigger_task(void *arg);
 static void  process_line(const char *line);
 static void  dispatch_event(const char *trigger_name, const char *value);
-static esp_err_t do_register(void);
+static int   connect_to_gateway(void);
+static bool  send_announce(int sock);
+static bool  send_subscribe(int sock);
 
 /* ================================================================== */
 /*  Public API                                                          */
@@ -64,47 +67,13 @@ esp_err_t trigger_listener_init(track_manager_t *manager)
     if (!manager) return ESP_ERR_INVALID_ARG;
     s_manager = manager;
 
-    /* Create TCP server socket */
-    s_server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_server_fd < 0) {
-        ESP_LOGE(TAG, "socket() failed: %d", errno);
-        return ESP_FAIL;
-    }
-
-    int opt = 1;
-    setsockopt(s_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr = {
-        .sin_family      = AF_INET,
-        .sin_addr.s_addr = htonl(INADDR_ANY),
-        .sin_port        = htons(TRIGGER_LISTEN_PORT),
-    };
-
-    if (bind(s_server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        ESP_LOGE(TAG, "bind() failed on port %d: %d", TRIGGER_LISTEN_PORT, errno);
-        close(s_server_fd);
-        s_server_fd = -1;
-        return ESP_FAIL;
-    }
-
-    if (listen(s_server_fd, 1) < 0) {
-        ESP_LOGE(TAG, "listen() failed: %d", errno);
-        close(s_server_fd);
-        s_server_fd = -1;
-        return ESP_FAIL;
-    }
-
-    /* Make accept() non-blocking so the task can poll for re-registration */
-    int flags = fcntl(s_server_fd, F_GETFL, 0);
-    fcntl(s_server_fd, F_SETFL, flags | O_NONBLOCK);
-
-    ESP_LOGI(TAG, "Listening for trigger gateway on port %d", TRIGGER_LISTEN_PORT);
+    ESP_LOGI(TAG, "Mur Gateway client starting (gateway at %s:%d)",
+             s_manager->mur_gateway_ip[0] ? s_manager->mur_gateway_ip : "(not set)",
+             s_manager->mur_gateway_port);
 
     if (xTaskCreate(trigger_task, "trigger_listener", TASK_STACK_SIZE,
                     NULL, TASK_PRIORITY, &s_task_handle) != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate failed");
-        close(s_server_fd);
-        s_server_fd = -1;
         return ESP_FAIL;
     }
 
@@ -117,16 +86,13 @@ void trigger_listener_stop(void)
         vTaskDelete(s_task_handle);
         s_task_handle = NULL;
     }
-    if (s_server_fd >= 0) {
-        close(s_server_fd);
-        s_server_fd = -1;
-    }
     s_manager = NULL;
 }
 
-esp_err_t trigger_listener_register_with_gateway(void)
+esp_err_t trigger_listener_resubscribe(void)
 {
-    return do_register();
+    s_resubscribe = true;
+    return ESP_OK;
 }
 
 /* ================================================================== */
@@ -134,96 +100,119 @@ esp_err_t trigger_listener_register_with_gateway(void)
 /* ================================================================== */
 
 /*
- * do_register — send POST /api/register to the trigger gateway using a
- * raw TCP socket and hand-crafted HTTP/1.1 request.
- * Returns ESP_OK on HTTP 200/201, ESP_ERR_INVALID_STATE if not configured,
- * ESP_FAIL on network error.
+ * connect_to_gateway — open a TCP connection to the Mur Gateway.
+ * Returns socket fd on success, -1 on failure.
  */
-static esp_err_t do_register(void)
+static int connect_to_gateway(void)
 {
-    if (!s_manager || s_manager->trigger_server_ip[0] == '\0') {
-        ESP_LOGD(TAG, "No trigger server IP configured, skipping registration");
-        return ESP_ERR_INVALID_STATE;
+    if (!s_manager || s_manager->mur_gateway_ip[0] == '\0') {
+        return -1;
     }
-
-    /* Get our own IP address so the gateway knows where to connect back */
-    char my_ip[16] = "0.0.0.0";
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif) {
-        esp_netif_ip_info_t ip_info;
-        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-            snprintf(my_ip, sizeof(my_ip), IPSTR, IP2STR(&ip_info.ip));
-        }
-    }
-
-    /* Build JSON body — include "host" so the gateway connects to us, not localhost */
-    char device_id[MAX_UNIT_ID_LEN] = "Murmura";
-    unit_status_get_id(device_id, sizeof(device_id));
-
-    char body[160];
-    int body_len = snprintf(body, sizeof(body),
-        "{\"name\":\"%s\",\"host\":\"%s\",\"port\":%d,\"protocol\":\"TCP_SOCKET\"}",
-        device_id, my_ip, TRIGGER_LISTEN_PORT);
-
-    /* Build HTTP request */
-    char req[512];
-    int req_len = snprintf(req, sizeof(req),
-        "POST /api/register HTTP/1.1\r\n"
-        "Host: %s:%d\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %d\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s",
-        s_manager->trigger_server_ip, s_manager->trigger_server_port,
-        body_len, body);
 
     struct sockaddr_in srv = {
         .sin_family = AF_INET,
-        .sin_port   = htons((uint16_t)s_manager->trigger_server_port),
+        .sin_port   = htons((uint16_t)s_manager->mur_gateway_port),
     };
-    if (inet_pton(AF_INET, s_manager->trigger_server_ip, &srv.sin_addr) != 1) {
-        ESP_LOGW(TAG, "Invalid trigger server IP: %s", s_manager->trigger_server_ip);
-        return ESP_FAIL;
+    if (inet_pton(AF_INET, s_manager->mur_gateway_ip, &srv.sin_addr) != 1) {
+        ESP_LOGW(TAG, "Invalid Mur Gateway IP: %s", s_manager->mur_gateway_ip);
+        return -1;
     }
 
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) return ESP_FAIL;
+    if (sock < 0) return -1;
 
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     if (connect(sock, (struct sockaddr *)&srv, sizeof(srv)) < 0) {
-        ESP_LOGW(TAG, "Cannot connect to trigger gateway %s:%d",
-                 s_manager->trigger_server_ip, s_manager->trigger_server_port);
+        ESP_LOGW(TAG, "Cannot connect to Mur Gateway %s:%d",
+                 s_manager->mur_gateway_ip, s_manager->mur_gateway_port);
         close(sock);
-        return ESP_FAIL;
+        return -1;
     }
 
-    send(sock, req, req_len, 0);
+    /* Set 200ms recv timeout for the event loop */
+    struct timeval recv_tv = { .tv_sec = 0, .tv_usec = 200000 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recv_tv, sizeof(recv_tv));
 
-    /* Drain HTTP response to determine status code */
-    char resp[256];
-    int rlen = recv(sock, resp, sizeof(resp) - 1, 0);
-    close(sock);
+    ESP_LOGI(TAG, "Connected to Mur Gateway %s:%d",
+             s_manager->mur_gateway_ip, s_manager->mur_gateway_port);
+    return sock;
+}
 
-    if (rlen > 0) {
-        resp[rlen] = '\0';
-        /* First line: "HTTP/1.1 200 OK\r\n" */
-        int status = 0;
-        sscanf(resp, "HTTP/%*s %d", &status);
-        if (status == 200 || status == 201) {
-            ESP_LOGI(TAG, "Registered with trigger gateway at %s:%d",
-                     s_manager->trigger_server_ip, s_manager->trigger_server_port);
-            return ESP_OK;
+/*
+ * send_announce — send the announce message with this device's ID.
+ */
+static bool send_announce(int sock)
+{
+    char device_id[MAX_UNIT_ID_LEN] = "Murmura";
+    unit_status_get_id(device_id, sizeof(device_id));
+
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"type\":\"announce\",\"id\":\"%s\"}\n", device_id);
+
+    if (send(sock, buf, len, 0) != len) {
+        ESP_LOGW(TAG, "Failed to send announce");
+        return false;
+    }
+    ESP_LOGI(TAG, "Announced as '%s'", device_id);
+    return true;
+}
+
+/*
+ * send_subscribe — subscribe to all trigger names configured on tracks.
+ */
+static bool send_subscribe(int sock)
+{
+    if (!s_manager) return false;
+
+    /* Collect unique trigger names from all tracks */
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "subscribe");
+    cJSON *triggers = cJSON_CreateArray();
+
+    int count = 0;
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        const char *tn = s_manager->tracks[i].trigger_name;
+        if (tn[0] == '\0') continue;
+        if (s_manager->tracks[i].mode != TRACK_MODE_TRIGGER) continue;
+
+        /* Check for duplicates in the array so far */
+        bool dup = false;
+        cJSON *item;
+        cJSON_ArrayForEach(item, triggers) {
+            if (strcmp(item->valuestring, tn) == 0) { dup = true; break; }
         }
-        ESP_LOGW(TAG, "Trigger gateway registration returned HTTP %d", status);
-        return ESP_FAIL;
+        if (!dup) {
+            cJSON_AddItemToArray(triggers, cJSON_CreateString(tn));
+            count++;
+        }
     }
+    cJSON_AddItemToObject(msg, "triggers", triggers);
 
-    ESP_LOGW(TAG, "No response from trigger gateway");
-    return ESP_FAIL;
+    char *json_str = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (!json_str) return false;
+
+    int len = strlen(json_str);
+    /* Append newline */
+    char *line = malloc(len + 2);
+    if (!line) { free(json_str); return false; }
+    memcpy(line, json_str, len);
+    line[len] = '\n';
+    line[len + 1] = '\0';
+    free(json_str);
+
+    bool ok = (send(sock, line, len + 1, 0) == len + 1);
+    free(line);
+
+    if (ok) {
+        ESP_LOGI(TAG, "Subscribed to %d trigger name(s)", count);
+    } else {
+        ESP_LOGW(TAG, "Failed to send subscribe");
+    }
+    return ok;
 }
 
 /*
@@ -246,7 +235,6 @@ static void dispatch_event(const char *trigger_name, const char *value)
         if (t->trigger_name[0] == '\0')      continue;
         if (strcmp(t->trigger_name, trigger_name) != 0) continue;
 
-        /* Name matched — always log that we found it */
         if (!t->active) {
             ESP_LOGI(TAG, "Trigger '%s' matched track %d but track is disabled — ignored",
                      trigger_name, i);
@@ -292,7 +280,7 @@ static void dispatch_event(const char *trigger_name, const char *value)
 
 /*
  * process_line — parse a single newline-terminated JSON event string and
- * dispatch it.
+ * dispatch it.  Handles both trigger events and gateway protocol messages.
  */
 static void process_line(const char *line)
 {
@@ -302,6 +290,21 @@ static void process_line(const char *line)
         return;
     }
 
+    /* Check if this is a gateway protocol message (has "type" field) */
+    cJSON *type_j = cJSON_GetObjectItem(event, "type");
+    if (cJSON_IsString(type_j)) {
+        if (strcmp(type_j->valuestring, "welcome") == 0) {
+            cJSON *ver = cJSON_GetObjectItem(event, "version");
+            ESP_LOGI(TAG, "Gateway welcome (version %s)",
+                     cJSON_IsString(ver) ? ver->valuestring : "?");
+        } else {
+            ESP_LOGD(TAG, "Gateway message type='%s'", type_j->valuestring);
+        }
+        cJSON_Delete(event);
+        return;
+    }
+
+    /* Otherwise it's a trigger event */
     cJSON *name_j  = cJSON_GetObjectItem(event, "name");
     cJSON *value_j = cJSON_GetObjectItem(event, "value");
 
@@ -320,68 +323,63 @@ static void process_line(const char *line)
  * trigger_task — main FreeRTOS task.
  *
  * Loop:
- *   1. Periodically (re-)register with gateway
- *   2. Non-blocking accept() on server socket
- *   3. If connected: blocking recv() with 200 ms timeout; accumulate lines
- *   4. On disconnect: back to accept loop
+ *   1. Connect to Mur Gateway (with backoff on failure)
+ *   2. Send announce + subscribe
+ *   3. Read events, dispatch them
+ *   4. On disconnect: back to connect loop
  */
 static void trigger_task(void *arg)
 {
     char recv_buf[RECV_BUF_SIZE];
     char line_buf[LINE_BUF_SIZE];
     int  line_pos = 0;
-
-    TickType_t last_reg_tick = xTaskGetTickCount() - pdMS_TO_TICKS(REREGISTER_INTERVAL_MS);
+    int  backoff_ms = INITIAL_BACKOFF_MS;
 
     while (1) {
-        /* Re-register if interval has elapsed */
-        TickType_t now = xTaskGetTickCount();
-        if ((now - last_reg_tick) >= pdMS_TO_TICKS(REREGISTER_INTERVAL_MS)) {
-            do_register();
-            last_reg_tick = xTaskGetTickCount();
-        }
-
-        /* Non-blocking accept */
-        struct sockaddr_in client_addr;
-        socklen_t addr_len = sizeof(client_addr);
-        int client_fd = accept(s_server_fd, (struct sockaddr *)&client_addr, &addr_len);
-
-        if (client_fd < 0) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                vTaskDelay(pdMS_TO_TICKS(200));
-                continue;
-            }
-            ESP_LOGE(TAG, "accept() error %d — retrying", errno);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        /* Wait if no gateway configured */
+        if (!s_manager || s_manager->mur_gateway_ip[0] == '\0') {
+            vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
 
-        ESP_LOGI(TAG, "Trigger gateway connected from %s",
-                 inet_ntoa(client_addr.sin_addr));
+        /* Connect to gateway */
+        int sock = connect_to_gateway();
+        if (sock < 0) {
+            ESP_LOGD(TAG, "Retry in %d ms", backoff_ms);
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            backoff_ms = (backoff_ms * 2 > MAX_BACKOFF_MS) ? MAX_BACKOFF_MS : backoff_ms * 2;
+            continue;
+        }
 
-        /* 200 ms receive timeout on client socket */
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
-        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        /* Connected — reset backoff */
+        backoff_ms = INITIAL_BACKOFF_MS;
 
+        /* Send announce and subscribe */
+        if (!send_announce(sock) || !send_subscribe(sock)) {
+            close(sock);
+            continue;
+        }
+
+        s_resubscribe = false;
         line_pos = 0;
 
+        /* Event receive loop */
         while (1) {
-            /* Re-register while connected too */
-            now = xTaskGetTickCount();
-            if ((now - last_reg_tick) >= pdMS_TO_TICKS(REREGISTER_INTERVAL_MS)) {
-                do_register();
-                last_reg_tick = xTaskGetTickCount();
+            /* Check if we need to re-subscribe (config changed) */
+            if (s_resubscribe) {
+                send_subscribe(sock);
+                s_resubscribe = false;
             }
 
-            int len = recv(client_fd, recv_buf, sizeof(recv_buf) - 1, 0);
+            int len = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
 
             if (len < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) continue; /* normal timeout */
+                if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
                 ESP_LOGW(TAG, "recv() error %d — disconnecting", errno);
                 break;
             }
             if (len == 0) {
-                ESP_LOGI(TAG, "Trigger gateway disconnected");
+                ESP_LOGI(TAG, "Mur Gateway disconnected");
                 break;
             }
 
@@ -400,7 +398,8 @@ static void trigger_task(void *arg)
             }
         }
 
-        close(client_fd);
+        close(sock);
+        ESP_LOGI(TAG, "Connection closed, will reconnect...");
     }
 
     vTaskDelete(NULL);
