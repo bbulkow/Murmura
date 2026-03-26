@@ -256,6 +256,10 @@ The service includes:
 - Easy port customization via environment variable
 - Full logging to systemd journal
 
+## Offline / No-Internet Operation
+
+This server is designed to run on standalone networks at art installations **with no internet access**. All resources (JS, CSS, fonts) must be served locally — no CDN links or external URLs. When adding dependencies, always bundle them in `static/` rather than linking to external CDNs.
+
 ## Security Considerations
 
 **Warning**: This server is designed for use in controlled environments (art installations) and does not include authentication or encryption. For production use:
