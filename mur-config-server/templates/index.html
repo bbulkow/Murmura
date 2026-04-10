@@ -29,8 +29,8 @@
             
             <div class="batch-controls">
                 <div class="batch-selection-controls" style="padding-bottom: 15px; margin-bottom: 15px; border-bottom: 2px solid #c1dce5;">
-                    <button id="selectAllBtn" class="btn btn-secondary btn-small">Select All</button>
-                    <button id="deselectAllBtn" class="btn btn-secondary btn-small">Deselect All</button>
+                    <button id="selectAllBtn" class="btn btn-secondary" style="padding: 8px 15px; font-size: 14px;">Select All</button>
+                    <button id="deselectAllBtn" class="btn btn-secondary" style="padding: 8px 15px; font-size: 14px;">Deselect All</button>
                     <span id="selectedCount" class="selected-count" style="margin-left: 15px; font-weight: 500;">0 devices selected</span>
                 </div>
                 
@@ -43,6 +43,21 @@
                     <button id="batchRebootBtn" class="btn btn-batch btn-danger" style="padding: 8px 15px; font-size: 14px;">
                         <span class="btn-icon">🔄</span>
                         Reboot
+                    </button>
+                </div>
+
+                <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
+                    <label style="font-weight: 500; white-space: nowrap;">Scene:</label>
+                    <select id="batchSceneSelect" style="min-width: 160px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                        <option value="">-- no scenes available --</option>
+                    </select>
+                    <button id="batchActivateSceneBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                        Activate
+                    </button>
+                    <span style="color: #aaa;">|</span>
+                    <input type="text" id="batchNewSceneName" placeholder="New scene name" style="width: 160px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <button id="batchCreateSceneBtn" class="btn btn-batch btn-secondary" style="padding: 8px 15px; font-size: 14px;">
+                        Create Scene
                     </button>
                 </div>
 

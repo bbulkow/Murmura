@@ -110,7 +110,9 @@ function attachEventListeners() {
     document.getElementById('batchSaveConfigBtn').addEventListener('click', batchSaveConfig);
     document.getElementById('batchRebootBtn').addEventListener('click', batchReboot);
     document.getElementById('batchTriggerServerBtn').addEventListener('click', batchSetTriggerServer);
-    
+    document.getElementById('batchActivateSceneBtn').addEventListener('click', batchActivateScene);
+    document.getElementById('batchCreateSceneBtn').addEventListener('click', batchCreateScene);
+
     // Modal controls
     document.querySelector('.close').addEventListener('click', closeModal);
     document.getElementById('modalStartBtn').addEventListener('click', () => controlDevicePlayback('start'));
@@ -167,7 +169,8 @@ async function loadDevices() {
         devices = data.devices;
         updateDeviceList(devices);
         updateStatusBar(data.count, data.online, data.registry_only || 0);
-        
+        updateBatchSceneDropdown();
+
         // Update refresh indicator
         updateRefreshIndicator();
         
@@ -227,20 +230,38 @@ function updateRefreshIndicator() {
 // Update device list in UI
 function updateDeviceList(deviceList) {
     const container = document.getElementById('deviceList');
-    
+
     if (deviceList.length === 0) {
         container.innerHTML = '<div class="loading"><p>No devices found. Click "Scan Network" to discover devices.</p></div>';
         return;
     }
-    
+
+    // Auto-select newly-online devices, deselect offline ones
+    const previousOnlineIds = new Set(
+        devices.filter(d => d.status === 'online').map(d => d.id || d.ip)
+    );
+    deviceList.forEach(device => {
+        const deviceId = device.id || device.ip;
+        if (device.status === 'online') {
+            // Auto-select if newly online (first load, or was offline/unknown before)
+            if (!previousOnlineIds.has(deviceId)) {
+                selectedDevices.add(deviceId);
+            }
+        } else {
+            // Remove offline devices from selection
+            selectedDevices.delete(deviceId);
+        }
+    });
+
     container.innerHTML = '';
-    
+
     deviceList.forEach(device => {
         const card = createDeviceCard(device);
         container.appendChild(card);
     });
-    
+
     devices = deviceList;
+    updateSelectedCount();
 }
 
 // Create device card element
@@ -455,19 +476,10 @@ function updateSelectedCount() {
 
 // Batch control playback
 async function batchControlPlayback(action) {
-    // If no devices selected, use all devices
-    let targetDevices = [];
-    if (selectedDevices.size === 0) {
-        // No selection means apply to all devices
-        targetDevices = devices.map(d => d.id || d.ip);
-        console.log(`No devices selected, applying ${action} to all ${targetDevices.length} devices`);
-    } else {
-        targetDevices = Array.from(selectedDevices);
-        console.log(`Applying ${action} to ${targetDevices.length} selected devices`);
-    }
-    
+    const targetDevices = Array.from(selectedDevices);
+
     if (targetDevices.length === 0) {
-        alert('No devices available');
+        showError('No devices selected');
         return;
     }
     
@@ -494,19 +506,10 @@ async function batchControlPlayback(action) {
 
 // Batch set volume
 async function batchSetVolume() {
-    // If no devices selected, use all devices
-    let targetDevices = [];
-    if (selectedDevices.size === 0) {
-        // No selection means apply to all devices
-        targetDevices = devices.map(d => d.id || d.ip);
-        console.log(`No devices selected, setting volume for all ${targetDevices.length} devices`);
-    } else {
-        targetDevices = Array.from(selectedDevices);
-        console.log(`Setting volume for ${targetDevices.length} selected devices`);
-    }
-    
+    const targetDevices = Array.from(selectedDevices);
+
     if (targetDevices.length === 0) {
-        alert('No devices available');
+        showError('No devices selected');
         return;
     }
     
@@ -1146,19 +1149,10 @@ function showSuccess(message) {
 
 // Batch save configuration
 async function batchSaveConfig() {
-    // If no devices selected, use all devices
-    let targetDevices = [];
-    if (selectedDevices.size === 0) {
-        // No selection means apply to all devices
-        targetDevices = devices.map(d => d.id || d.ip);
-        console.log(`No devices selected, saving config for all ${targetDevices.length} devices`);
-    } else {
-        targetDevices = Array.from(selectedDevices);
-        console.log(`Saving config for ${targetDevices.length} selected devices`);
-    }
-    
+    const targetDevices = Array.from(selectedDevices);
+
     if (targetDevices.length === 0) {
-        alert('No devices available');
+        showError('No devices selected');
         return;
     }
     
@@ -1412,19 +1406,10 @@ async function refreshLoopData() {
 
 // Batch reboot devices
 async function batchReboot() {
-    // If no devices selected, use all devices
-    let targetDevices = [];
-    if (selectedDevices.size === 0) {
-        // No selection means apply to all devices
-        targetDevices = devices.map(d => d.id || d.ip);
-        console.log(`No devices selected, rebooting all ${targetDevices.length} devices`);
-    } else {
-        targetDevices = Array.from(selectedDevices);
-        console.log(`Rebooting ${targetDevices.length} selected devices`);
-    }
-    
+    const targetDevices = Array.from(selectedDevices);
+
     if (targetDevices.length === 0) {
-        alert('No devices available');
+        showError('No devices selected');
         return;
     }
     
@@ -1473,12 +1458,10 @@ async function batchSetTriggerServer() {
         return;
     }
 
-    let targetDevices = selectedDevices.size > 0
-        ? Array.from(selectedDevices)
-        : devices.filter(d => d.status === 'online').map(d => d.id);
+    const targetDevices = Array.from(selectedDevices);
 
     if (targetDevices.length === 0) {
-        showError('No devices selected or online');
+        showError('No devices selected');
         return;
     }
 
@@ -1497,5 +1480,117 @@ async function batchSetTriggerServer() {
     } catch (error) {
         console.error('Error setting Mur Gateway:', error);
         showError('Failed to set Mur Gateway');
+    }
+}
+
+// Update the batch scene dropdown with the union of all scene names from online devices
+function updateBatchSceneDropdown() {
+    const select = document.getElementById('batchSceneSelect');
+    if (!select) return;
+
+    const sceneCounts = {};
+    let onlineCount = 0;
+
+    devices.forEach(device => {
+        if (device.status !== 'online' || !device.scenes) return;
+        onlineCount++;
+        Object.keys(device.scenes).forEach(name => {
+            sceneCounts[name] = (sceneCounts[name] || 0) + 1;
+        });
+    });
+
+    const previousValue = select.value;
+    select.innerHTML = '';
+
+    const sceneNames = Object.keys(sceneCounts).sort();
+
+    if (sceneNames.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '-- no scenes available --';
+        select.appendChild(opt);
+        return;
+    }
+
+    sceneNames.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        let label = name;
+        if (sceneCounts[name] < onlineCount) {
+            label += ` (${sceneCounts[name]}/${onlineCount} devices)`;
+        }
+        opt.textContent = label;
+        select.appendChild(opt);
+    });
+
+    if (previousValue && sceneNames.includes(previousValue)) {
+        select.value = previousValue;
+    }
+}
+
+// Batch activate scene
+async function batchActivateScene() {
+    const select = document.getElementById('batchSceneSelect');
+    const sceneName = select.value;
+
+    if (!sceneName) {
+        showError('Please select a scene to activate');
+        return;
+    }
+
+    const targetDevices = Array.from(selectedDevices);
+
+    if (targetDevices.length === 0) {
+        showError('No devices selected');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/batch/scene/activate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ device_ids: targetDevices, scene: sceneName })
+        });
+        const data = await response.json();
+        const successCount = data.results.filter(r => r.status === 'success').length;
+        showSuccess(`Scene '${sceneName}' activated on ${successCount}/${targetDevices.length} device(s)`);
+        setTimeout(loadDevices, 1000);
+    } catch (error) {
+        console.error('Error activating scene:', error);
+        showError('Failed to activate scene');
+    }
+}
+
+// Batch create scene
+async function batchCreateScene() {
+    const input = document.getElementById('batchNewSceneName');
+    const sceneName = input.value.trim();
+
+    if (!sceneName) {
+        showError('Please enter a scene name to create');
+        return;
+    }
+
+    const targetDevices = Array.from(selectedDevices);
+
+    if (targetDevices.length === 0) {
+        showError('No devices selected');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/batch/scene/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ device_ids: targetDevices, scene: sceneName })
+        });
+        const data = await response.json();
+        const successCount = data.results.filter(r => r.status === 'success').length;
+        showSuccess(`Scene '${sceneName}' created on ${successCount}/${targetDevices.length} device(s)`);
+        input.value = '';
+        setTimeout(loadDevices, 1000);
+    } catch (error) {
+        console.error('Error creating scene:', error);
+        showError('Failed to create scene');
     }
 }

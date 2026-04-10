@@ -704,18 +704,65 @@ def batch_activate_scene():
             try:
                 response = requests.post(
                     f"http://{device.get('ip_address')}/api/scene",
-                    json={'action': 'activate', 'scene': scene_name},
+                    json={'action': 'activate', 'name': scene_name},
                     timeout=2
                 )
                 if response.status_code == 200:
-                    results.append({'device_id': device_id, 'status': 'success'})
-                    logger.debug(f"Activated scene '{scene_name}' on {device_id}")
+                    resp_data = response.json()
+                    if resp_data.get('success'):
+                        results.append({'device_id': device_id, 'status': 'success'})
+                        logger.debug(f"Activated scene '{scene_name}' on {device_id}")
+                    else:
+                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
+                        logger.warning(f"Failed to activate scene on {device_id}: {resp_data.get('error')}")
                 else:
                     results.append({'device_id': device_id, 'status': 'failed'})
                     logger.warning(f"Failed to activate scene on {device_id}: HTTP {response.status_code}")
             except requests.RequestException as e:
                 results.append({'device_id': device_id, 'status': 'error'})
                 logger.error(f"Error activating scene on {device_id}: {e}")
+        else:
+            results.append({'device_id': device_id, 'status': 'not_found'})
+
+    return jsonify({'results': results})
+
+@app.route('/api/batch/scene/create', methods=['POST'])
+def batch_create_scene():
+    """Create a scene across multiple devices (idempotent — 'already exists' counts as success)."""
+    data = request.json
+    device_ids = data.get('device_ids', [])
+    scene_name = data.get('scene')
+
+    if not scene_name:
+        return jsonify({'error': 'Missing required field: scene'}), 400
+
+    logger.info(f"Batch creating scene '{scene_name}' on {len(device_ids)} devices")
+    results = []
+
+    for device_id in device_ids:
+        device = registry.get_device(device_id)
+        if device:
+            try:
+                response = requests.post(
+                    f"http://{device.get('ip_address')}/api/scene",
+                    json={'action': 'create', 'name': scene_name},
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    resp_data = response.json()
+                    # Treat "already exists" as success (idempotent)
+                    if resp_data.get('success') or resp_data.get('error') == 'Scene already exists':
+                        results.append({'device_id': device_id, 'status': 'success'})
+                        logger.debug(f"Created scene '{scene_name}' on {device_id}")
+                    else:
+                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
+                        logger.warning(f"Failed to create scene on {device_id}: {resp_data.get('error')}")
+                else:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    logger.warning(f"Failed to create scene on {device_id}: HTTP {response.status_code}")
+            except requests.RequestException as e:
+                results.append({'device_id': device_id, 'status': 'error'})
+                logger.error(f"Error creating scene on {device_id}: {e}")
         else:
             results.append({'device_id': device_id, 'status': 'not_found'})
 
