@@ -7,6 +7,34 @@ let volumeDebounceTimers = {};  // For debouncing volume changes
 let lastVolumeValues = {};      // Track last sent values to avoid duplicates
 let activeSceneName = 'default'; // Active scene name from last fetch
 let lastScenesData = null;       // Full scenes response from last fetch
+let deviceMurGatewayIp = '';     // Mur Gateway IP for this device
+let deviceMurGatewayPort = 4000; // Mur Gateway device port
+let cachedTriggerNames = null;   // Cached trigger name list from gateway
+let triggerNamesFetchPromise = null; // Dedup concurrent fetches
+
+async function fetchTriggerNames(forceRefresh = false) {
+    if (cachedTriggerNames && !forceRefresh) return cachedTriggerNames;
+    if (triggerNamesFetchPromise) return triggerNamesFetchPromise;
+    if (!deviceMurGatewayIp) return [];
+
+    triggerNamesFetchPromise = (async () => {
+        try {
+            const resp = await fetch(`/api/triggers?gateway_ip=${encodeURIComponent(deviceMurGatewayIp)}&gateway_port=${deviceMurGatewayPort}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                cachedTriggerNames = data.trigger_names || [];
+            } else {
+                cachedTriggerNames = [];
+            }
+        } catch (e) {
+            console.warn('[TRIGGERS] Failed to fetch trigger names:', e);
+            cachedTriggerNames = [];
+        }
+        triggerNamesFetchPromise = null;
+        return cachedTriggerNames;
+    })();
+    return triggerNamesFetchPromise;
+}
 
 // Helper: build a scenes patch body for a track update in a specific scene
 function buildSceneTrackPatch(trackIndex, fields, sceneName) {
@@ -59,13 +87,16 @@ async function loadDeviceData() {
             updateDeviceInfo(deviceData);
         }
         
-        // Get scenes
+        // Get scenes (skip re-render if user is editing a trigger name)
         const scenesResponse = await fetch(`/api/device/${currentDevice}/scenes`);
         if (scenesResponse.ok) {
             const scenesData = await scenesResponse.json();
             lastScenesData = scenesData;
             activeSceneName = scenesData.active_scene || 'default';
-            renderAllScenes(scenesData);
+            const editOpen = document.querySelector('.trigger-name-edit-row[style*="flex"]');
+            if (!editOpen) {
+                renderAllScenes(scenesData);
+            }
         }
 
         // Get mur gateway config
@@ -146,8 +177,10 @@ function updateLoops(loopData) {
                 <div class="trigger-name-edit-row" data-track="${track.track}" style="display:none; align-items:center; gap:4px;">
                     <input type="text" class="trigger-name-input" data-track="${track.track}"
                            placeholder="trigger name" value="${triggerName}"
-                           style="width:160px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
+                           list="triggerList-legacy-${track.track}" autocomplete="off"
+                           style="width:200px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
                            title="Trigger name from Haven Gateway">
+                    <datalist id="triggerList-legacy-${track.track}"></datalist>
                     <button class="trigger-name-ok-btn" data-track="${track.track}"
                             style="padding:2px 8px; font-size:12px; border:1px solid #2a5298; border-radius:4px; cursor:pointer; background:#2a5298; color:#fff;">
                         OK
@@ -156,6 +189,9 @@ function updateLoops(loopData) {
                             style="padding:2px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer; background:#eee; color:#333;">
                         Cancel
                     </button>
+                    <button class="trigger-list-refresh-btn" data-track="${track.track}"
+                            style="padding:2px 6px;font-size:11px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#555;"
+                            title="Refresh trigger list">&#x21bb;</button>
                 </div>
                 <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
                         data-track="${track.track}" data-tmode="momentary"
@@ -320,7 +356,7 @@ function attachTrackHandlers() {
     // Trigger name input: save on Enter or blur
     // Trigger name edit buttons
     document.querySelectorAll('.trigger-name-edit-btn').forEach(btn => {
-        btn.addEventListener('click', function(e) {
+        btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const track = this.dataset.track;
             const editRow = document.querySelector(`.trigger-name-edit-row[data-track="${track}"]`);
@@ -328,7 +364,15 @@ function attachTrackHandlers() {
             this.style.display = 'none';
             display.style.display = 'none';
             editRow.style.display = 'flex';
-            editRow.querySelector('.trigger-name-input').focus();
+            const input = editRow.querySelector('.trigger-name-input');
+            input.focus();
+            // Populate datalist from gateway in background
+            fetchTriggerNames().then(names => {
+                const datalist = document.getElementById(`triggerList-legacy-${track}`);
+                if (datalist && names.length > 0) {
+                    datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
+                }
+            });
         });
     });
 
@@ -361,6 +405,19 @@ function attachTrackHandlers() {
                 okBtn.click();
             } else if (e.key === 'Escape') {
                 closeTriggerNameEdit(parseInt(this.dataset.track));
+            }
+        });
+    });
+
+    // Trigger list refresh button (legacy path)
+    document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const track = this.dataset.track;
+            const names = await fetchTriggerNames(true);
+            const datalist = document.getElementById(`triggerList-legacy-${track}`);
+            if (datalist) {
+                datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
             }
         });
     });
@@ -898,7 +955,9 @@ async function loadMurGateway() {
         if (!response.ok) return;
         const data = await response.json();
         const ip = data.mur_gateway_ip || '';
-        const port = data.mur_gateway_port || '';
+        const port = data.mur_gateway_port || 4000;
+        deviceMurGatewayIp = ip;
+        deviceMurGatewayPort = port;
         const display = ip ? `${ip}${port ? ':' + port : ''}` : '—';
         document.getElementById('murGatewayDisplay').textContent = display;
     } catch (e) {
@@ -1026,11 +1085,16 @@ function renderAllScenes(scenesData) {
                     <div class="trigger-name-edit-row" data-scene="${sceneName}" data-track="${track.track}" style="display:none;align-items:center;gap:4px;">
                         <input type="text" class="trigger-name-input" data-scene="${sceneName}" data-track="${track.track}"
                                placeholder="trigger name" value="${triggerName}"
-                               style="width:160px;padding:3px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+                               list="triggerList-${sceneName}-${track.track}" autocomplete="off"
+                               style="width:200px;padding:3px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+                        <datalist id="triggerList-${sceneName}-${track.track}"></datalist>
                         <button class="trigger-name-ok-btn" data-scene="${sceneName}" data-track="${track.track}"
                                 style="padding:2px 8px;font-size:12px;border:1px solid #2a5298;border-radius:4px;cursor:pointer;background:#2a5298;color:#fff;">OK</button>
                         <button class="trigger-name-cancel-btn" data-scene="${sceneName}" data-track="${track.track}"
                                 style="padding:2px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#eee;color:#333;">Cancel</button>
+                        <button class="trigger-list-refresh-btn" data-scene="${sceneName}" data-track="${track.track}"
+                                style="padding:2px 6px;font-size:11px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#555;"
+                                title="Refresh trigger list">&#x21bb;</button>
                     </div>
                     <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
                             data-scene="${sceneName}" data-track="${track.track}" data-tmode="momentary"
@@ -1148,14 +1212,25 @@ function attachAllSceneHandlers() {
 
     // Trigger name edit/OK/cancel
     document.querySelectorAll('.trigger-name-edit-btn').forEach(btn => {
-        btn.addEventListener('click', function(e) {
+        btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const {track, scene} = this.dataset;
             const editRow = document.querySelector(`.trigger-name-edit-row[data-scene="${scene}"][data-track="${track}"]`);
             const display = document.querySelector(`.trigger-name-display[data-scene="${scene}"][data-track="${track}"]`);
             this.style.display = 'none';
             if (display) display.style.display = 'none';
-            if (editRow) { editRow.style.display = 'flex'; editRow.querySelector('.trigger-name-input').focus(); }
+            if (editRow) {
+                editRow.style.display = 'flex';
+                const input = editRow.querySelector('.trigger-name-input');
+                input.select();
+                // Populate datalist from gateway in background
+                fetchTriggerNames().then(names => {
+                    const datalist = document.getElementById(`triggerList-${scene}-${track}`);
+                    if (datalist && names.length > 0) {
+                        datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
+                    }
+                });
+            }
         });
     });
 
@@ -1164,7 +1239,9 @@ function attachAllSceneHandlers() {
             e.stopPropagation();
             const {track, scene} = this.dataset;
             const input = document.querySelector(`.trigger-name-input[data-scene="${scene}"][data-track="${track}"]`);
+            const editRow = document.querySelector(`.trigger-name-edit-row[data-scene="${scene}"][data-track="${track}"]`);
             await setTrackTriggerConfig(parseInt(track), { trigger_name: input.value.trim() }, scene);
+            if (editRow) editRow.style.display = 'none';
             setTimeout(loadDeviceData, 400);
         });
     });
@@ -1191,6 +1268,19 @@ function attachAllSceneHandlers() {
             } else if (e.key === 'Escape') {
                 const cancelBtn = document.querySelector(`.trigger-name-cancel-btn[data-scene="${this.dataset.scene}"][data-track="${this.dataset.track}"]`);
                 if (cancelBtn) cancelBtn.click();
+            }
+        });
+    });
+
+    // Trigger list refresh button
+    document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const {track, scene} = this.dataset;
+            const names = await fetchTriggerNames(true);
+            const datalist = document.getElementById(`triggerList-${scene}-${track}`);
+            if (datalist) {
+                datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
             }
         });
     });

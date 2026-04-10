@@ -347,6 +347,29 @@ class MurGateway:
         }
         return web.json_response(body)
 
+    async def _handle_triggers(self, request: web.Request) -> web.Response:
+        """GET /triggers — proxy trigger list from upstream Trigger Server."""
+        url = f"http://{self.trigger_host}:{self.trigger_port}/api/triggers"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        triggers = data.get("triggers", [])
+                        names = sorted(t.get("name", "") for t in triggers if t.get("name"))
+                        return web.json_response({"trigger_names": names})
+                    else:
+                        return web.json_response(
+                            {"error": f"Trigger Server returned HTTP {resp.status}"},
+                            status=502,
+                        )
+        except Exception as e:
+            logger.warning("Failed to fetch triggers from %s: %s", url, e)
+            return web.json_response(
+                {"error": f"Cannot reach Trigger Server: {e}"},
+                status=502,
+            )
+
     # -------------------------------------------------------------------
     #  Utilities
     # -------------------------------------------------------------------
@@ -387,11 +410,12 @@ class MurGateway:
         # Start HTTP status server
         status_app = web.Application()
         status_app.router.add_get("/status", self._handle_status)
+        status_app.router.add_get("/triggers", self._handle_triggers)
         runner = web.AppRunner(status_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", self.status_port)
         await site.start()
-        logger.info("Status HTTP on port %d (GET /status)", self.status_port)
+        logger.info("Status HTTP on port %d (GET /status, GET /triggers)", self.status_port)
 
         # Start registration loop
         self._register_task = asyncio.create_task(self._registration_loop())

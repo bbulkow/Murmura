@@ -830,6 +830,30 @@ def set_device_mur_gateway(device_id):
     except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/triggers')
+def get_trigger_list():
+    """Fetch available trigger names via a device's Mur Gateway.
+
+    The Mur Gateway status HTTP server runs on device_port + 1 (convention).
+    """
+    gateway_ip = request.args.get('gateway_ip', '').strip()
+    gateway_port = int(request.args.get('gateway_port', '4000'))
+    if not gateway_ip:
+        return jsonify({'trigger_names': [], 'error': 'No gateway_ip provided'}), 200
+
+    status_port = gateway_port + 1
+    url = f"http://{gateway_ip}:{status_port}/triggers"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            logger.warning(f"Mur Gateway {gateway_ip} returned HTTP {response.status_code} for /triggers")
+            return jsonify({'trigger_names': [], 'error': f'Gateway returned HTTP {response.status_code}'}), 200
+    except requests.RequestException as e:
+        logger.warning(f"Failed to fetch triggers from {url}: {e}")
+        return jsonify({'trigger_names': [], 'error': str(e)}), 200
+
 @app.route('/api/batch/mur-gateway', methods=['POST'])
 def batch_set_mur_gateway():
     """Set Mur Gateway IP/port on multiple devices (via consolidated /api/device)."""
