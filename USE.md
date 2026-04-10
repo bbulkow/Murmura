@@ -159,101 +159,94 @@ Configuration (which file plays on which track, volumes) is stored as JSON on th
 
 ---
 
-## 4. Playback: Loops and Volume
+## 4. Scenes and Playback
 
-Each Mur has three tracks (0, 1, 2) that can play simultaneously, mixed by the hardware codec. You assign an audio file to each track, set per-track volume, and optionally set a global master volume. A track's `active` flag controls whether it is enabled — in loop mode, enabling a track starts playback; in trigger mode, enabling it arms the track to respond to trigger events. Configuration can be saved to the SD card so it survives reboots.
+All playback configuration is organized into **scenes**. A scene is a named configuration ("day", "night", "show") containing a global volume and settings for all 3 tracks. One scene is active (playing) at a time, and one can be set as the default for boot. Creating a new scene clones the active scene's config.
+
+Each Mur has three tracks (0, 1, 2) per scene that can play simultaneously, mixed by the hardware codec. Each track has a file, volume, mode (loop or trigger), and active state.
 
 > **Track limit note:** Three is a practical memory ceiling, not an arbitrary design choice. ESP-ADF spins up a significant number of processes per pipeline, and stereo 48 kHz 16-bit WAV files consume substantial RAM. Whether three simultaneous MP3 tracks will work is not guaranteed — the decoder pipelines add overhead on top of the per-track cost. If you hit stability issues with multiple tracks, reduce to two, or prefer WAV files if RAM is the bottleneck.
 
-### Checking current track state
+### Checking current state
 
 ```bash
-# All devices (CLI)
-python batch_controller.py -c status
+# Get all scenes (curl)
+curl http://<device-ip>/api/scenes
 
-# Direct (curl)
-curl http://<device-ip>/api/tracks
+# Get all scenes (CLI)
+python device_controller.py --id MURMURA-001 --command get-scenes
 ```
 
-Via browser: the main page at `http://<device-ip>/` shows all tracks with their current file, active state, and volume bar, and refreshes every 5 seconds.
+Via mur-config-server: click a device card to see all scenes with their full track configs.
 
-### Assigning a file to a track
-
-First, get the list of available files and their indices:
-```bash
-curl http://<device-ip>/api/files
-# or
-python file_manager.py -c list -i MURMURA-001
-```
-
-Then assign by filename (curl) or by the unified `set-track` command (CLI):
-```bash
-# CLI — assign file to track 0 on one device
-python device_controller.py -i MURMURA-001 -c set-track -k 0 --file loop1.wav
-
-# Curl — assign by filename (bare name or full /sdcard/ path)
-curl -X POST http://<device-ip>/api/track \
-  -H "Content-Type: application/json" \
-  -d '{"track":0,"file":"loop1.wav"}'
-```
-
-### Enabling and disabling tracks
+### Managing scenes
 
 ```bash
-# Start all tracks on all devices (CLI)
-python batch_controller.py -c start-all
-
-# Stop all tracks on all devices (CLI)
-python batch_controller.py -c stop-all
-
-# Enable/disable a single track on one device (curl)
-curl -X POST http://<device-ip>/api/track \
+# Create a new scene (clones the active scene)
+curl -X POST http://<device-ip>/api/scene \
   -H "Content-Type: application/json" \
-  -d '{"track":0,"active":true}'
+  -d '{"action": "create", "name": "night"}'
 
-curl -X POST http://<device-ip>/api/track \
+# Activate a scene (applies to hardware immediately)
+curl -X POST http://<device-ip>/api/scene \
   -H "Content-Type: application/json" \
-  -d '{"track":0,"active":false}'
+  -d '{"action": "activate", "name": "night"}'
+
+# Set the default boot scene
+curl -X POST http://<device-ip>/api/scene \
+  -H "Content-Type: application/json" \
+  -d '{"action": "set_default", "name": "day"}'
+
+# Delete a scene (cannot delete the active scene)
+curl -X POST http://<device-ip>/api/scene \
+  -H "Content-Type: application/json" \
+  -d '{"action": "delete", "name": "night"}'
 ```
 
-### Setting volume
+### Configuring tracks within a scene
 
-Volume is 0–100. Per-track volume and global master volume are independent.
+All track changes go through `POST /api/scenes` with the scene name as a key. Only stated fields change — omitted fields are untouched.
 
 ```bash
-# Global master volume on all devices (CLI)
-python batch_controller.py -c set-volume -g -v 80
-
-# Per-track volume on all devices (CLI)
-python batch_controller.py -c set-volume -k 0 -v 75
-
-# Single device, per-track (CLI)
-python device_controller.py -i MURMURA-001 -c set-volume -k 0 -v 75
-
-# Global volume on one device (curl)
-curl -X POST http://<device-ip>/api/global/volume \
+# Assign a file and enable track 0 in the "day" scene
+curl -X POST http://<device-ip>/api/scenes \
   -H "Content-Type: application/json" \
-  -d '{"volume":80}'
+  -d '{"day": {"tracks": [{"track": 0, "file_path": "loop1.wav", "active": true}]}}'
 
-# Per-track volume on one device (curl)
-curl -X POST http://<device-ip>/api/track \
+# Set per-track volume
+curl -X POST http://<device-ip>/api/scenes \
   -H "Content-Type: application/json" \
-  -d '{"track":0,"volume":75}'
+  -d '{"day": {"tracks": [{"track": 0, "volume": 75}]}}'
+
+# Set global volume for a scene
+curl -X POST http://<device-ip>/api/scenes \
+  -H "Content-Type: application/json" \
+  -d '{"day": {"global_volume": 80}}'
+
+# Disable a track
+curl -X POST http://<device-ip>/api/scenes \
+  -H "Content-Type: application/json" \
+  -d '{"day": {"tracks": [{"track": 0, "active": false}]}}'
+
+# CLI — set track 0 volume in "night" scene
+python device_controller.py --id MURMURA-001 --command set-scene --scene night --track 0 --volume 75
 ```
 
-Via mur-config-server: select devices and use the batch volume slider for global volume, or click a device card for per-track control.
+If the scene being edited is the active scene, changes take effect on the hardware immediately.
 
 ### Saving configuration
 
-Changes to track assignments and volumes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved config and begins playback for any active tracks automatically.
+Changes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved scenes and activates the default scene.
 
 ```bash
-# Save on all devices (CLI)
-python batch_controller.py -c save-config
-
 # Save on one device (curl)
 curl -X POST http://<device-ip>/api/config/save
+
+# Save on one device (CLI)
+python device_controller.py --id MURMURA-001 --command save-config
 ```
+
+Via mur-config-server: the **Download Config** / **Upload Config** buttons let you save scenes as a JSON file and clone them to other devices.
 
 ---
 
@@ -262,20 +255,22 @@ curl -X POST http://<device-ip>/api/config/save
 | Task | Device web UI | mur-config-server | CLI / curl |
 |------|--------------|--------------|------------|
 | Discover devices | — | Scan Network button | `device_scanner.py -n <subnet> -a create` |
-| Check device status | displays at `http://<ip>/` | Dashboard cards | `batch_controller.py -c status` |
+| Check device status | displays at `http://<ip>/` | Dashboard cards | `device_controller.py -c status` |
+| View all scenes | — | Device detail page | `curl GET /api/scenes` |
+| Create a scene | — | Create Scene input | `curl POST /api/scene {"action":"create","name":"..."}` |
+| Activate a scene | — | Activate button | `curl POST /api/scene {"action":"activate","name":"..."}` |
+| Set default boot scene | — | Set Default button | `curl POST /api/scene {"action":"set_default","name":"..."}` |
+| Edit track in a scene | — | Track controls | `curl POST /api/scenes {"scene": {"tracks":[...]}}` |
+| Set scene volume | — | Scene volume slider | `curl POST /api/scenes {"scene": {"global_volume":N}}` |
+| Download/upload config | — | Download/Upload buttons | `curl GET /api/scenes` (save JSON) |
 | Add WiFi network | — | — | `curl POST /api/wifi/add` |
 | Remove WiFi network | — | — | `curl POST /api/wifi/remove` |
-| List SD card files | — | — | `file_manager.py -c list` |
+| List SD card files | — | View Files button | `curl GET /api/files` |
 | Upload a file | — | — | `file_manager.py -c upload -f file.wav` |
-| Sync a folder of files | — | — | `file_manager.py -c sync -d ./dir` |
-| Delete a file | — | — | `file_manager.py -c delete -f file.wav` |
-| Assign file to a track | — | Device card | `device_controller.py -c set-file` |
-| Set per-track volume | — | Device card slider | `batch_controller.py -c set-volume -k N -v N` |
-| Set global volume | — | Batch volume slider | `batch_controller.py -c set-volume -g -v N` |
-| Start / stop all | — | Batch play/stop buttons | `batch_controller.py -c start-all / stop-all` |
-| Save config to SD card | — | — | `batch_controller.py -c save-config` |
-| Change device ID | `/settings` page | — | `device_controller.py -c set-id -n NEW-ID` |
-| Reboot a device | — | — | `curl POST /api/system/reboot` |
+| Delete a file | — | — | `curl DELETE /api/file/delete` |
+| Save config to SD card | — | Save Config button | `curl POST /api/config/save` |
+| Change device ID | `/settings` page | — | `device_controller.py -c set-id --new-id NEW-ID` |
+| Reboot a device | — | Reboot button | `curl POST /api/system/reboot` |
 
 ---
 

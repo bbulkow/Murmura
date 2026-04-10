@@ -58,6 +58,7 @@
 #include "wifi_manager.h"
 #include "http_server.h"
 #include "config_manager.h"
+#include "scene_manager.h"
 #include "mur_listener.h"
 #include <math.h>  // For log10f
 #include "esp_heap_caps.h"
@@ -431,67 +432,65 @@ void audio_control_task(void *pvParameters)
     if (http_ret == ESP_OK) {
         ESP_LOGI(TAG, "HTTP server initialized successfully");
         ESP_LOGI(TAG, "Access the API documentation at http://<device-ip>/");
-        // Update HTTP server with loop manager reference
+        // Update HTTP server with track manager reference
         http_server_set_track_manager(track_manager);
-
-        // Initialize Mur Gateway listener (connects outbound to Mur Gateway)
-        esp_err_t mur_ret = mur_listener_init(track_manager);
-        if (mur_ret == ESP_OK) {
-            ESP_LOGI(TAG, "Mur listener initialized (gateway %s:%d)",
-                     track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
-                     track_manager->mur_gateway_port);
-        } else {
-            ESP_LOGW(TAG, "Mur listener init failed: %s", esp_err_to_name(mur_ret));
-        }
     } else {
         ESP_LOGW(TAG, "Failed to initialize HTTP server: %s", esp_err_to_name(http_ret));
     }
-    
-    ESP_LOGI(TAG, "audio_control: Load configuration (from file or default)");
-    
-    // Load configuration FIRST - either from file or use default
-    track_config_t startup_config;
-    if (config_load_or_default(&startup_config) == ESP_OK) {
-        ESP_LOGI(TAG, "Configuration loaded:");
-        ESP_LOGI(TAG, "  Global volume: %d%%", startup_config.global_volume_percent);
-        for (int i = 0; i < MAX_TRACKS; i++) {
-            if (strlen(startup_config.tracks[i].file_path) > 0) {
-                ESP_LOGI(TAG, "  Track %d: %s (volume=%d%%, active=%s, mode=%s)",
-                         i, startup_config.tracks[i].file_path,
-                         startup_config.tracks[i].volume_percent,
-                         startup_config.tracks[i].active ? "yes" : "no",
-                         startup_config.tracks[i].mode == TRACK_MODE_TRIGGER ? "trigger" : "loop");
-            }
+
+    // --- Scene Manager + Boot Flow ---
+    ESP_LOGI(TAG, "audio_control: Initialize scene manager");
+
+    scene_manager_t *scene_mgr = NULL;
+    esp_err_t scene_ret = scene_manager_init(&scene_mgr);
+    if (scene_ret != ESP_OK || !scene_mgr) {
+        ESP_LOGE(TAG, "Failed to initialize scene manager!");
+    } else {
+        // Set scene manager on HTTP server
+        http_server_set_scene_manager(scene_mgr);
+
+        // Load gateway config from track_config.json (non-scene settings)
+        track_config_t gw_config;
+        if (config_load(&gw_config) == ESP_OK) {
+            strncpy(track_manager->mur_gateway_ip, gw_config.mur_gateway_ip,
+                    sizeof(track_manager->mur_gateway_ip) - 1);
+            track_manager->mur_gateway_port = gw_config.mur_gateway_port;
+            ESP_LOGI(TAG, "Gateway config: %s:%d",
+                     track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
+                     track_manager->mur_gateway_port);
         }
-        
-        // Start the audio system infrastructure (output pipeline only)
-        ESP_LOGI(TAG, "Starting audio system infrastructure...");
-        
-        // Send START message to initialize audio infrastructure
-        audio_control_msg_t start_msg = {
-            .type = AUDIO_ACTION_START,
-            .data = {}
-        };
-        xQueueSend(control_queue, &start_msg, portMAX_DELAY);
-        
-        // Wait for audio system to be ready
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        
-        // Apply the configuration through the message queue (thread-safe)
-        ESP_LOGI(TAG, "Applying configuration through message queue...");
-        if (config_apply(&startup_config, control_queue, track_manager) == ESP_OK) {
-            ESP_LOGI(TAG, "Configuration messages sent successfully");
+
+        // Initialize Mur Gateway listener
+        esp_err_t mur_ret = mur_listener_init(track_manager);
+        if (mur_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Mur listener initialized");
         } else {
-            ESP_LOGW(TAG, "Failed to send some configuration messages");
+            ESP_LOGW(TAG, "Mur listener init failed: %s", esp_err_to_name(mur_ret));
+        }
+    }
+
+    // Start the audio system infrastructure (output pipeline only)
+    ESP_LOGI(TAG, "Starting audio system infrastructure...");
+    audio_control_msg_t start_msg = {
+        .type = AUDIO_ACTION_START,
+        .data = {}
+    };
+    xQueueSend(control_queue, &start_msg, portMAX_DELAY);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    // Activate the default scene
+    if (scene_mgr && scene_mgr->scene_count > 0) {
+        const char *boot_scene = scene_mgr->default_scene[0] != '\0'
+                                 ? scene_mgr->default_scene
+                                 : scene_mgr->scenes[0].name;
+        ESP_LOGI(TAG, "Activating boot scene: '%s'", boot_scene);
+        if (scene_activate(scene_mgr, boot_scene, control_queue, track_manager) == ESP_OK) {
+            ESP_LOGI(TAG, "Boot scene activated successfully");
+        } else {
+            ESP_LOGW(TAG, "Failed to activate boot scene '%s'", boot_scene);
         }
     } else {
-        ESP_LOGW(TAG, "Failed to load configuration, starting with empty tracks");
-        // Start audio infrastructure anyway but with no tracks
-        audio_control_msg_t start_msg = {
-            .type = AUDIO_ACTION_START,
-            .data = {}
-        };
-        xQueueSend(control_queue, &start_msg, portMAX_DELAY);
+        ESP_LOGW(TAG, "No scenes available, starting with empty tracks");
     }
 
     ESP_LOGI(TAG, "audio_control: start listener");
@@ -885,7 +884,7 @@ void app_main(void)
     if (read_ret != ESP_OK || existing_config.network_count == 0) {
         // No networks stored yet, add them for the first time
         ESP_LOGI(TAG, "No WiFi networks found in NVS, adding initial networks...");
-        wifi_manager_add_network("medea", "!medea4u");
+        // wifi_manager_add_network("medea", "!medea4u");
         wifi_manager_add_network("flg-haven", "fuckoffanddie");
         // wifi_manager_add_network("YourMobileHotspot", "YourHotspotPassword");
         ESP_LOGI(TAG, "WiFi networks stored in NVS");
@@ -915,19 +914,23 @@ void app_main(void)
             ESP_LOGI(TAG, " Network: flg-haven NOT found, adding");
             wifi_manager_add_network("flg-haven", "fuckoffanddie");
         }
+
         found = false;
         for (int i=0; i < existing_config.network_count; i++) {
-            if (strcmp(existing_config.networks[i].ssid, "medea") == 0) { 
-                ESP_LOGI(TAG, " Network: medea found, no need to write");
-                found = true;
-                break;
-            }
+             if (strcmp(existing_config.networks[i].ssid, "medea") == 0) { 
+                 ESP_LOGI(TAG, " Network: medea found, no need to write");
+                 found = true;
+                 break;
+             }
         }
         if (found == false) {
-            ESP_LOGI(TAG, " Network: medea NOT found, writing");
-            wifi_manager_add_network("medea", "!medea4u");
+             ESP_LOGI(TAG, " Network: medea NOT found, writing");
+             wifi_manager_add_network("medea", "!medea4u");
         }
         
+        // Force-remove medea from NVS if it exists from previous firmware flashes
+        // wifi_manager_remove_network("medea");
+
         // Clear auth failures if any exist (allows retry after password change or temporary issues)
         if (has_auth_failures) {
             ESP_LOGI(TAG, "Clearing authentication failures to allow reconnection attempts...");

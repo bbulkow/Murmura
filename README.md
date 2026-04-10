@@ -52,7 +52,8 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **WAV and MP3 playback** from SD card
 - **WiFi with multi-network failover** -- stores up to 10 networks, auto-selects the strongest available signal
 - **HTTP API** for full remote control (playback, volume, files, configuration, WiFi, device identity, reboot)
-- **Configuration persistence** -- track assignments, volumes, and active states saved to SD card and restored on boot
+- **Scenes** -- named playback configurations ("day", "night", "show") with instant switching, default boot scene, full config per scene
+- **Configuration persistence** -- scene configs saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
 - **Fleet management server** (mur-config-server) -- web UI with network scanning, device dashboard, batch operations, and WebSocket live updates
@@ -84,14 +85,17 @@ See [aithinker-adf/README.md](aithinker-adf/README.md) for board setup instructi
 main/                   ESP32 firmware source
   murmura.c/h             Audio pipeline and multi-track looper
   http_server.c/h         HTTP API server
-  config_manager.c/h      Configuration persistence (JSON on SD card)
+  scene_manager.c/h       Scene system (named playback configs, CRUD, activate, patch)
+  config_manager.c/h      Configuration persistence and shared JSON helpers
   wifi_manager_async.c    WiFi manager with multi-network support
   wifi_manager.h          WiFi manager API
   music_files.c/h         SD card file enumeration
   unit_status_manager.c/h Device identity and status
+  mur_listener.c/h        Mur Gateway TCP client for trigger events
 aithinker-adf/          Board support overlay files and build instructions
-mur-config-server/           Flask web server for fleet management (Python)
+mur-config-server/      Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
+mur-gateway/            Mur Gateway server (bridges trigger sources to devices)
 ```
 
 ## Building and Running a Mur
@@ -189,19 +193,19 @@ Each device exposes a JSON API on port 80. Key endpoints:
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/tracks` | GET | Get status of all 3 tracks |
-| `/api/track` | POST | Configure a track — `track` (0-2), plus any of: `active`, `mode`, `file`, `volume`, `trigger_name`, `trigger_mode` |
-| `/api/global/volume` | POST | Set master volume (0-100) |
+| `/api/scenes` | GET | Get all scene configurations + metadata (active, default) |
+| `/api/scenes` | POST | Patch-style update of scene configs (atomic, body keys = scene names) |
+| `/api/scene` | POST | Scene management: create, delete, activate, set_default |
+| `/api/device` | GET | Device config and status (identity, gateway, wifi) |
+| `/api/device` | POST | Update device config (id, mur gateway) |
 | `/api/files` | GET | List audio files on SD card |
 | `/api/upload` | POST | Upload audio file to SD card |
 | `/api/file/delete` | DELETE | Delete an audio file from SD card |
-| `/api/device` | GET | Device config and status (identity, gateway, wifi) |
-| `/api/device` | POST | Update device config (id, mur gateway) |
 | `/api/wifi/add` | POST | Add a WiFi network |
 | `/api/wifi/remove` | POST | Remove a WiFi network |
-| `/api/config/status` | GET | Compare current state to saved config |
-| `/api/config/save` | POST | Save current state to SD card |
-| `/api/config/load` | POST | Load and apply saved configuration |
+| `/api/config/save` | POST | Save scenes + gateway config to SD card |
+| `/api/config/load` | POST | Load scenes from SD card, activate default |
+| `/api/config/status` | GET | Config file status (scene count, active, default) |
 | `/api/config/delete` | DELETE | Delete saved configuration |
 | `/api/system/reboot` | POST | Reboot the device |
 

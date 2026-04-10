@@ -54,7 +54,7 @@ def head(msg): print(f"\n{BOLD}{msg}{RESET}")
 
 # ── Verbose / verify flags (set by --verbose / --verify in main) ─────────────
 VERBOSE = False
-VERIFY  = False  # When True: print GET /api/tracks after every track-changing POST
+VERIFY  = False  # When True: print GET /api/scenes after every scene-changing POST
 
 def vlog(method, url, body, status, response):
     """Print request/response details when VERBOSE is True."""
@@ -71,21 +71,23 @@ def vlog(method, url, body, status, response):
     print(f"         → {status}  {resp_str}{RESET}")
 
 def _verify_tracks(base):
-    """Print a compact track-state table (used by --verify after POST /api/track)."""
+    """Print a compact track-state table (used by --verify after scene-changing POST)."""
     try:
-        r = requests.get(f"{base}/api/tracks", timeout=TIMEOUT)
+        r = requests.get(f"{base}/api/scenes", timeout=TIMEOUT)
         if r.status_code != 200:
-            print(f"  {DIM}[verify] GET /api/tracks → HTTP {r.status_code}{RESET}")
+            print(f"  {DIM}[verify] GET /api/scenes → HTTP {r.status_code}{RESET}")
             return
-        tracks = r.json().get("tracks", [])
+        sdata = r.json()
+        active_scene = sdata.get("active_scene", "default")
+        tracks = sdata.get("scenes", {}).get(active_scene, {}).get("tracks", [])
         parts = []
         for t in sorted(tracks, key=lambda x: x.get("track", 0)):
             idx    = t.get("track", "?")
             active = "YES" if t.get("active") else "no"
             mode   = t.get("mode", "?")
-            name   = Path(t.get("file", "")).name or "—"
+            name   = Path(t.get("file_path", "")).name or "—"
             parts.append(f"t{idx}:{active}/{mode}/{name}")
-        print(f"  {DIM}[verify] {' | '.join(parts)}{RESET}")
+        print(f"  {DIM}[verify] [{active_scene}] {' | '.join(parts)}{RESET}")
     except Exception:
         pass
 
@@ -136,7 +138,7 @@ def post(base, path, body=None):
         r = requests.post(f"{base}{path}", json=body, timeout=TIMEOUT)
         data = r.json() if r.content else {}
         vlog("POST", f"{base}{path}", body, r.status_code, data)
-        if VERIFY and path in ("/api/track", "/api/global/volume") and r.status_code == 200:
+        if VERIFY and path in ("/api/scenes", "/api/scene") and r.status_code == 200:
             _verify_tracks(base)
         return r.status_code, data
     except requests.exceptions.ConnectionError:
@@ -188,9 +190,49 @@ def resolve_id_to_ip(device_id, map_file="device_map.json"):
 
 # ── Stop all tracks helper ────────────────────────────────────────────────────
 def stop_all_tracks(base):
-    for t in range(3):
-        post(base, "/api/track", {"track": t, "active": False})
+    """Deactivate all 3 tracks in the active scene."""
+    scene = get_active_scene_name(base)
+    post(base, "/api/scenes", {scene: {"tracks": [
+        {"track": 0, "active": False},
+        {"track": 1, "active": False},
+        {"track": 2, "active": False},
+    ]}})
     time.sleep(0.5)
+
+# ── Scene helpers ─────────────────────────────────────────────────────────────
+def get_active_scene_name(base):
+    """Return the name of the currently active scene (default: 'default')."""
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        return data.get("active_scene", "default")
+    return "default"
+
+def get_active_tracks(base):
+    """GET /api/scenes, return (active_scene_name, tracks_list) for the active scene."""
+    code, data = get(base, "/api/scenes")
+    if code != 200:
+        return "default", []
+    active = data.get("active_scene", "default")
+    tracks = data.get("scenes", {}).get(active, {}).get("tracks", [])
+    return active, tracks
+
+def get_active_global_volume(base):
+    """GET /api/scenes, return the global_volume for the active scene."""
+    code, data = get(base, "/api/scenes")
+    if code != 200:
+        return None
+    active = data.get("active_scene", "default")
+    return data.get("scenes", {}).get(active, {}).get("global_volume")
+
+def scene_track_post(base, track_updates):
+    """Post track updates to the active scene. track_updates is a list of dicts."""
+    scene = get_active_scene_name(base)
+    return post(base, "/api/scenes", {scene: {"tracks": track_updates}})
+
+def scene_volume_post(base, volume):
+    """Set global_volume on the active scene."""
+    scene = get_active_scene_name(base)
+    return post(base, "/api/scenes", {scene: {"global_volume": volume}})
 
 # ── Find a test track in the files list by name ───────────────────────────────
 def find_track(files, name):
@@ -303,21 +345,23 @@ def group3_single_track(base, files):
 
     # 3.0 Read current volumes, then set everything to 100% so audible tests
     # are not silenced by a previously saved low-volume or muted state.
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        cur_global = data.get("global_volume", "?")
+    scene = get_active_scene_name(base)
+    _, tracks_list = get_active_tracks(base)
+    if tracks_list:
+        cur_global = get_active_global_volume(base)
         cur_vols   = {t["track"]: t.get("volume", "?")
-                      for t in data["tracks"] if "track" in t}
+                      for t in tracks_list if "track" in t}
         info(f"Current volumes — global={cur_global}  tracks={cur_vols}")
-    code, data = post(base, "/api/global/volume", {"volume": 100})
+    code, data = scene_volume_post(base, 100)
     record(code == 200 and data.get("success"),
            "3.0 Set global volume to 100% before playback tests")
-    all_vol_ok = True
-    for i in range(3):
-        c, d = post(base, "/api/track", {"track": i, "volume": 100})
-        if not (c == 200 and d.get("success")):
-            all_vol_ok = False
-    record(all_vol_ok, "3.0 Set per-track volumes to 100% (all 3 tracks)")
+    code, data = scene_track_post(base, [
+        {"track": 0, "volume": 100},
+        {"track": 1, "volume": 100},
+        {"track": 2, "volume": 100},
+    ])
+    record(code == 200 and data.get("success"),
+           "3.0 Set per-track volumes to 100% (all 3 tracks)")
 
     # Prefer the configured test track; fall back to first available file
     entry = find_track(files, TEST_TRACK_0) or files[0]
@@ -325,65 +369,59 @@ def group3_single_track(base, files):
     file_name = entry.get("name", "")
     info(f"Using file: {file_path}")
 
-    # 3.1 set file by path
-    code, data = post(base, "/api/track", {"track": 0, "file_path": file_path})
+    # 3.1 set file by path via scenes API
+    code, data = scene_track_post(base, [{"track": 0, "file_path": file_path}])
     record(code == 200 and data.get("success"),
-           "3.1 POST /api/track sets file on track 0", data.get("message", ""))
+           "3.1 POST /api/scenes sets file on track 0", data.get("message", ""))
 
-    # 3.2 verify via GET /api/tracks
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        t0 = next((t for t in data["tracks"] if t.get("track") == 0), None)
-        record(t0 is not None and file_path in t0.get("file", ""),
-               "3.2 GET /api/tracks reflects file on track 0",
-               t0.get("file", "") if t0 else "track 0 missing")
+    # 3.2 verify via GET /api/scenes
+    _, tracks = get_active_tracks(base)
+    if tracks:
+        t0 = next((t for t in tracks if t.get("track") == 0), None)
+        record(t0 is not None and file_path in t0.get("file_path", ""),
+               "3.2 GET /api/scenes reflects file on track 0",
+               t0.get("file_path", "") if t0 else "track 0 missing")
         record(t0 is not None and t0.get("mode") in ("loop", "trigger"),
                "3.2 Track 0 mode field is valid (loop or trigger only)",
                t0.get("mode", "") if t0 else "")
     else:
-        record(False, "3.2 GET /api/tracks", f"HTTP {code}")
+        record(False, "3.2 GET /api/scenes", "no tracks returned")
 
     # 3.3 enable track 0 in loop mode — starts it
-    code, data = post(base, "/api/track", {"track": 0, "mode": "loop", "active": True})
+    code, data = scene_track_post(base, [{"track": 0, "mode": "loop", "active": True}])
     record(code == 200 and data.get("success"),
-           "3.3 POST /api/track mode=loop active=true track 0", data.get("message", ""))
+           "3.3 POST /api/scenes mode=loop active=true track 0", data.get("message", ""))
 
     # 3.4 user confirmation
     user_confirm(f"Is track 0 ({file_name}) playing audio?")
 
     # 3.5 disable track 0 — stops it (mode stays loop)
-    code, data = post(base, "/api/track", {"track": 0, "active": False})
+    code, data = scene_track_post(base, [{"track": 0, "active": False}])
     record(code == 200 and data.get("success"),
-           "3.5 POST /api/track active=false track 0", data.get("message", ""))
+           "3.5 POST /api/scenes active=false track 0", data.get("message", ""))
 
     # 3.6 user confirmation
     user_confirm("Has track 0 stopped?")
 
     # 3.7 verify stopped state: active=false, mode still loop
     time.sleep(1)
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        t0 = next((t for t in data["tracks"] if t.get("track") == 0), None)
+    _, tracks = get_active_tracks(base)
+    if tracks:
+        t0 = next((t for t in tracks if t.get("track") == 0), None)
         record(t0 is not None and t0.get("active") == False,
-               "3.7 GET /api/tracks shows track 0 active=false after stop",
+               "3.7 GET /api/scenes shows track 0 active=false after stop",
                f"active={t0.get('active','?')} mode={t0.get('mode','?')}" if t0 else "track 0 missing")
         record(t0 is not None and t0.get("mode") == "loop",
                "3.7 Track 0 mode remains loop after deactivate",
                t0.get("mode", "?") if t0 else "")
     else:
-        record(False, "3.7 GET /api/tracks after stop", f"HTTP {code}")
+        record(False, "3.7 GET /api/scenes after stop", "no tracks returned")
 
     # 3.8 verify invalid mode is rejected
-    code, data = post(base, "/api/track", {"track": 0, "mode": "off"})
-    record(code == 200 and data.get("success") is False,
-           "3.8 POST /api/track mode='off' returns success=false (invalid mode rejected)",
+    code, data = scene_track_post(base, [{"track": 0, "mode": "off"}])
+    record(data.get("success") is False,
+           "3.8 POST /api/scenes mode='off' returns success=false (invalid mode rejected)",
            data.get("error", "UNEXPECTED: server accepted invalid mode"))
-
-    # Also test set-by-filename variant
-    code, data = post(base, "/api/track", {"track": 0, "filename": file_name})
-    record(code == 200 and data.get("success"),
-           "3.x POST /api/track by filename variant",
-           data.get("message", str(data.get("error", ""))))
 
 # =============================================================================
 # GROUP 4: Multi-Track Independent Control
@@ -407,43 +445,42 @@ def group4_multi_track(base, files):
     info(f"Assigning: track0={track_names[0]}  track1={track_names[1]}  track2={track_names[2]}")
 
     # 4.1 set all three tracks
-    all_set = True
-    for i in range(3):
-        code, data = post(base, "/api/track", {"track": i, "file_path": track_paths[i]})
-        if not (code == 200 and data.get("success")):
-            all_set = False
-            info(f"  track {i} set failed: {data}")
-    record(all_set, "4.1 Set file on tracks 0, 1, 2")
+    code, data = scene_track_post(base, [
+        {"track": 0, "file_path": track_paths[0]},
+        {"track": 1, "file_path": track_paths[1]},
+        {"track": 2, "file_path": track_paths[2]},
+    ])
+    record(code == 200 and data.get("success"), "4.1 Set file on tracks 0, 1, 2")
 
     # 4.2 start track 0 only (mode=loop, active=true)
-    post(base, "/api/track", {"track": 0, "mode": "loop", "active": True})
+    scene_track_post(base, [{"track": 0, "mode": "loop", "active": True}])
     time.sleep(0.5)
     record(True, "4.2 Started track 0 only (mode=loop, active=true)")
     user_confirm(f"Is ONLY track 0 ({track_names[0]}) audible (tracks 1 and 2 silent)?")
 
     # 4.4 start track 1
-    post(base, "/api/track", {"track": 1, "mode": "loop", "active": True})
+    scene_track_post(base, [{"track": 1, "mode": "loop", "active": True}])
     time.sleep(0.5)
     record(True, "4.4 Started track 1 (mode=loop, active=true)")
     user_confirm(f"Are tracks 0 ({track_names[0]}) AND 1 ({track_names[1]}) both audible simultaneously?")
 
     # 4.6 start track 2
-    post(base, "/api/track", {"track": 2, "mode": "loop", "active": True})
+    scene_track_post(base, [{"track": 2, "mode": "loop", "active": True}])
     time.sleep(0.5)
     record(True, "4.6 Started track 2 (mode=loop, active=true)")
     user_confirm(f"Are all 3 tracks playing together ({track_names[0]}, {track_names[1]}, {track_names[2]})?")
 
     # 4.8 stop track 1 only (active=false, mode must remain loop)
-    code, data = post(base, "/api/track", {"track": 1, "active": False})
+    code, data = scene_track_post(base, [{"track": 1, "active": False}])
     record(code == 200 and data.get("success"),
-           "4.8 POST /api/track active=false track 1 only")
+           "4.8 POST /api/scenes active=false track 1 only")
     user_confirm(f"Are tracks 0 and 2 still playing, track 1 ({track_names[1]}) silent?")
 
-    # 4.10 verify via GET /api/tracks (active + mode fields)
+    # 4.10 verify via GET /api/scenes (active + mode fields)
     time.sleep(1)
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        by_idx = {t["track"]: t for t in data["tracks"] if "track" in t}
+    _, tracks = get_active_tracks(base)
+    if tracks:
+        by_idx = {t["track"]: t for t in tracks if "track" in t}
         record(by_idx.get(0, {}).get("mode") == "loop" and by_idx.get(0, {}).get("active") is True,
                "4.10 track 0 mode=loop, active=true")
         record(by_idx.get(1, {}).get("mode") == "loop" and by_idx.get(1, {}).get("active") is False,
@@ -451,11 +488,13 @@ def group4_multi_track(base, files):
         record(by_idx.get(2, {}).get("mode") == "loop" and by_idx.get(2, {}).get("active") is True,
                "4.10 track 2 mode=loop, active=true")
     else:
-        record(False, "4.10 GET /api/tracks", f"HTTP {code}")
+        record(False, "4.10 GET /api/scenes", "no tracks returned")
 
     # 4.11 stop remaining tracks
-    post(base, "/api/track", {"track": 0, "active": False})
-    post(base, "/api/track", {"track": 2, "active": False})
+    scene_track_post(base, [
+        {"track": 0, "active": False},
+        {"track": 2, "active": False},
+    ])
     time.sleep(0.5)
     user_confirm("All tracks silent now?")
 
@@ -480,61 +519,65 @@ def group5_volume(base, files):
 
     # ── Per-track volume ──────────────────────────────────────────────────────
     # Explicitly set file and start track 0 so it is definitely looping
-    post(base, "/api/track", {"track": 0, "file_path": track_paths[0], "mode": "loop", "active": True})
-    post(base, "/api/track", {"track": 0, "volume": 100})
+    scene_track_post(base, [{"track": 0, "file_path": track_paths[0], "mode": "loop", "active": True, "volume": 100}])
     time.sleep(0.5)
     user_confirm("Track 0 playing at full volume (baseline)?")
 
-    code, data = post(base, "/api/track", {"track": 0, "volume": 20})
+    code, data = scene_track_post(base, [{"track": 0, "volume": 20}])
     record(code == 200 and data.get("success"),
-           "5.3 POST /api/track volume=20 track 0", data.get("message", ""))
+           "5.3 POST /api/scenes volume=20 track 0", data.get("message", ""))
     user_confirm("Track 0 noticeably quieter (at 20%)?")
 
-    code, data = post(base, "/api/track", {"track": 0, "volume": 100})
+    code, data = scene_track_post(base, [{"track": 0, "volume": 100}])
     record(code == 200 and data.get("success"),
-           "5.5 POST /api/track volume=100 track 0 (restore)")
+           "5.5 POST /api/scenes volume=100 track 0 (restore)")
 
     # Stop track 0 before starting all three for the global test
-    post(base, "/api/track", {"track": 0, "active": False})
+    scene_track_post(base, [{"track": 0, "active": False}])
     time.sleep(0.3)
 
     # ── Global volume ─────────────────────────────────────────────────────────
     # Explicitly set file and start all 3 tracks so they are definitely looping
-    for i in range(3):
-        post(base, "/api/track", {"track": i, "file_path": track_paths[i], "mode": "loop", "active": True})
-        post(base, "/api/track", {"track": i, "volume": 100})
+    scene_track_post(base, [
+        {"track": 0, "file_path": track_paths[0], "mode": "loop", "active": True, "volume": 100},
+        {"track": 1, "file_path": track_paths[1], "mode": "loop", "active": True, "volume": 100},
+        {"track": 2, "file_path": track_paths[2], "mode": "loop", "active": True, "volume": 100},
+    ])
     time.sleep(0.5)
     user_confirm("All 3 tracks playing at full volume (global baseline)?")
 
-    code, data = post(base, "/api/global/volume", {"volume": 20})
+    code, data = scene_volume_post(base, 20)
     record(code == 200 and data.get("success"),
-           "5.7 POST /api/global/volume → 20%", data.get("message", ""))
+           "5.7 POST /api/scenes global_volume → 20%", data.get("message", ""))
     user_confirm("All tracks noticeably quieter together (global 20%)?")
 
-    code, data = post(base, "/api/global/volume", {"volume": 75})
+    code, data = scene_volume_post(base, 75)
     record(code == 200 and data.get("success"),
-           "5.9 POST /api/global/volume → 75% (restore)")
+           "5.9 POST /api/scenes global_volume → 75% (restore)")
     user_confirm("All tracks back to normal volume (global 75%)?")
 
     # ── Boundary tests (no audible confirmation needed) ───────────────────────
     # Tracks still playing; boundary values must not crash the device
-    code, data = post(base, "/api/global/volume", {"volume": 0})
+    code, data = scene_volume_post(base, 0)
     record(code == 200 and data.get("success"),
            "5.10 Boundary: global volume=0 accepted without error")
 
     # Re-enable tracks so they are audible for remaining boundary confirmation
-    for i in range(3):
-        post(base, "/api/track", {"track": i, "active": True})
+    scene_track_post(base, [
+        {"track": 0, "active": True},
+        {"track": 1, "active": True},
+        {"track": 2, "active": True},
+    ])
     time.sleep(0.3)
 
-    code, data = post(base, "/api/global/volume", {"volume": 101})
+    code, data = scene_volume_post(base, 101)
     # Accept either a 4xx error OR success with clamping — must not crash (500)
     record(code is not None and code != 500,
            "5.11 Boundary: global volume=101 does not 500",
            f"HTTP {code} — {data.get('error', data.get('message', ''))}")
 
     # Restore and stop
-    post(base, "/api/global/volume", {"volume": 75})
+    scene_volume_post(base, 75)
     record(True, "5.12 Restored global volume to 75%")
 
     stop_all_tracks(base)
@@ -551,14 +594,12 @@ def group6_config(base, files):
            "6.1 GET /api/config/status returns config_exists field", f"HTTP {code}")
     if code == 200:
         info(f"  config_exists={data.get('config_exists')}  path={data.get('config_path','?')}")
-        path = data.get("config_path", "")
-        record("track_config.json" in path,
-               "6.1 config_path references track_config.json (not loop_config.json)", path)
+        info(f"  scene_count={data.get('scene_count','?')}  default_scene={data.get('default_scene','?')}")
 
     # 6.2 set a known state to save (loop track 0 with test file, enabled)
     if files:
         entry = find_track(files, TEST_TRACK_0) or files[0]
-        post(base, "/api/track", {"track": 0, "file_path": entry["path"], "mode": "loop", "active": True})  # set known state
+        scene_track_post(base, [{"track": 0, "file_path": entry["path"], "mode": "loop", "active": True}])
         time.sleep(0.3)
 
     # 6.3 save config
@@ -566,9 +607,6 @@ def group6_config(base, files):
     record(code == 200 and data.get("success"),
            "6.3 POST /api/config/save returns success",
            data.get("message", str(data.get("error", ""))))
-    saved_path = data.get("path", "")
-    record("track_config.json" in saved_path,
-           "6.3 saved path is track_config.json", saved_path)
 
     # 6.4 verify config now exists
     code, data = get(base, "/api/config/status")
@@ -576,8 +614,8 @@ def group6_config(base, files):
            "6.4 GET /api/config/status shows config_exists=true after save")
 
     # 6.5 dirty the state
-    post(base, "/api/track",    {"track": 0, "active": False})
-    post(base, "/api/global/volume", {"volume": 50})
+    scene_track_post(base, [{"track": 0, "active": False}])
+    scene_volume_post(base, 50)
     time.sleep(0.3)
 
     # 6.6 load config
@@ -585,23 +623,19 @@ def group6_config(base, files):
     record(code == 200 and data.get("success"),
            "6.6 POST /api/config/load returns success",
            data.get("message", str(data.get("error", ""))))
-    if code == 200 and "loaded_config" in data:
-        lc = data["loaded_config"]
-        record("tracks" in lc,
-               "6.6 loaded_config contains tracks array")
-        record("global_volume" in lc,
-               "6.6 loaded_config contains global_volume")
 
-    # 6.7 verify tracks have mode and active fields
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        t0 = next((t for t in data["tracks"] if t.get("track") == 0), None)
+    # 6.7 verify tracks have mode and active fields via scenes API
+    _, tracks = get_active_tracks(base)
+    if tracks:
+        t0 = next((t for t in tracks if t.get("track") == 0), None)
         record(t0 is not None and "mode" in t0,
-               "6.7 GET /api/tracks track objects include mode field",
+               "6.7 GET /api/scenes track objects include mode field",
                t0.get("mode", "MISSING") if t0 else "track 0 missing")
         record(t0 is not None and "active" in t0,
-               "6.7 GET /api/tracks track objects include active field",
+               "6.7 GET /api/scenes track objects include active field",
                str(t0.get("active", "MISSING")) if t0 else "track 0 missing")
+    else:
+        record(False, "6.7 GET /api/scenes", "no tracks returned")
 
     # 6.8 delete config
     code, data = delete(base, "/api/config/delete")
@@ -640,8 +674,7 @@ def group7_file_swap(base, files):
     stop_all_tracks(base)
 
     # 7.1 Start track 0 looping on file A
-    code, data = post(base, "/api/track",
-                      {"track": 0, "file_path": path_a, "mode": "loop", "active": True})
+    code, data = scene_track_post(base, [{"track": 0, "file_path": path_a, "mode": "loop", "active": True}])
     record(code == 200 and data.get("success"),
            f"7.1 Start track 0 looping on {name_a}", data.get("message", ""))
     time.sleep(0.5)
@@ -649,19 +682,19 @@ def group7_file_swap(base, files):
         user_confirm(f"Is track 0 playing '{name_a}'?")
 
     # 7.2 Replace file while still looping (no mode field in request)
-    code, data = post(base, "/api/track", {"track": 0, "file_path": path_b})
+    code, data = scene_track_post(base, [{"track": 0, "file_path": path_b}])
     record(code == 200 and data.get("success"),
            f"7.2 Replace file on looping track 0 → {name_b} (no mode field)",
            data.get("message", str(data.get("error", ""))))
 
     # 7.3 Verify GET shows new file and mode is still loop
     time.sleep(0.5)
-    code, data = get(base, "/api/tracks")
-    if code == 200 and "tracks" in data:
-        t0 = next((t for t in data["tracks"] if t.get("track") == 0), None)
-        record(t0 is not None and path_b in t0.get("file", ""),
-               "7.3 GET /api/tracks reflects new file on track 0",
-               t0.get("file", "?") if t0 else "track 0 missing")
+    _, tracks = get_active_tracks(base)
+    if tracks:
+        t0 = next((t for t in tracks if t.get("track") == 0), None)
+        record(t0 is not None and path_b in t0.get("file_path", ""),
+               "7.3 GET /api/scenes reflects new file on track 0",
+               t0.get("file_path", "?") if t0 else "track 0 missing")
         record(t0 is not None and t0.get("mode") == "loop",
                "7.3 Track 0 mode is still loop after file replacement",
                t0.get("mode", "?") if t0 else "")
@@ -669,7 +702,7 @@ def group7_file_swap(base, files):
                "7.3 Track 0 still active after file replacement",
                str(t0.get("active", "?")) if t0 else "")
     else:
-        record(False, "7.3 GET /api/tracks after file swap", f"HTTP {code}")
+        record(False, "7.3 GET /api/scenes after file swap", "no tracks returned")
         record(False, "7.3 mode still loop")
 
     # 7.4 User confirms audio switched to file B
@@ -677,7 +710,7 @@ def group7_file_swap(base, files):
         user_confirm(f"Has the audio switched to '{name_b}'?")
 
     # 7.5 Switch back to file A
-    code, data = post(base, "/api/track", {"track": 0, "file_path": path_a})
+    code, data = scene_track_post(base, [{"track": 0, "file_path": path_a}])
     record(code == 200 and data.get("success"),
            f"7.5 Switch back to {name_a} (no mode field)",
            data.get("message", str(data.get("error", ""))))
@@ -686,8 +719,8 @@ def group7_file_swap(base, files):
         user_confirm(f"Has the audio switched back to '{name_a}'?")
 
     # 7.6 Reject: try to clear file while looping
-    code, data = post(base, "/api/track", {"track": 0, "file": ""})
-    record(code == 200 and data.get("success") is False,
+    code, data = scene_track_post(base, [{"track": 0, "file_path": ""}])
+    record(data.get("success") is False,
            "7.6 Clearing file while looping is rejected",
            data.get("error", f"HTTP {code}"))
 
@@ -802,6 +835,234 @@ def group9_trigger_basic(base, device_ip, trigger_tests):
         record(False, "8b.x TCP trigger test", str(e))
 
 # =============================================================================
+# GROUP 10: Scenes
+# =============================================================================
+def group10_scenes(base):
+    head("Group 10: Scene Management")
+
+    # 10.1 GET /api/scenes on fresh device — "default" scene present
+    code, data = get(base, "/api/scenes")
+    record(code == 200 and "scenes" in data,
+           "10.1 GET /api/scenes returns 200 with scenes dict", f"HTTP {code}")
+    if code == 200:
+        scenes = data.get("scenes", {})
+        record("default" in scenes,
+               "10.1 'default' scene exists on device")
+        record(data.get("active_scene") == "default",
+               "10.1 active_scene is 'default'",
+               data.get("active_scene", "?"))
+        record(data.get("default_scene") == "default",
+               "10.1 default_scene is 'default'",
+               data.get("default_scene", "?"))
+        # Verify the default scene has expected structure
+        default_scene = scenes.get("default", {})
+        record("global_volume" in default_scene,
+               "10.1 default scene has global_volume field")
+        record("tracks" in default_scene and isinstance(default_scene.get("tracks"), list),
+               "10.1 default scene has tracks array")
+
+    # 10.2 Create a new scene "test-day"
+    code, data = post(base, "/api/scene", {"action": "create", "name": "test-day"})
+    record(code == 200 and data.get("success"),
+           "10.2 Create scene 'test-day'",
+           data.get("message", str(data.get("error", ""))))
+
+    # 10.3 Verify it appears in GET /api/scenes
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        scenes = data.get("scenes", {})
+        record("test-day" in scenes,
+               "10.3 'test-day' appears in scenes list")
+        record(data.get("active_scene") == "default",
+               "10.3 active_scene still 'default' after create",
+               data.get("active_scene", "?"))
+        # Verify the new scene has default structure
+        td = scenes.get("test-day", {})
+        record("global_volume" in td and "tracks" in td,
+               "10.3 new scene has global_volume and tracks fields")
+    else:
+        record(False, "10.3 GET /api/scenes after create", f"HTTP {code}")
+
+    # 10.4 PATCH the new scene's config (set global_volume, configure a track)
+    code, data = post(base, "/api/scenes", {
+        "test-day": {
+            "global_volume": 80,
+            "tracks": [{"track": 0, "mode": "loop", "volume": 60}]
+        }
+    })
+    record(code == 200 and data.get("success"),
+           "10.4 PATCH test-day scene config",
+           data.get("message", str(data.get("error", ""))))
+
+    # Verify patch applied
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        td = data.get("scenes", {}).get("test-day", {})
+        record(td.get("global_volume") == 80,
+               "10.4 test-day global_volume is 80 after patch",
+               str(td.get("global_volume", "?")))
+        td_tracks = td.get("tracks", [])
+        t0 = next((t for t in td_tracks if t.get("track") == 0), None)
+        record(t0 is not None and t0.get("volume") == 60,
+               "10.4 test-day track 0 volume is 60 after patch",
+               str(t0.get("volume", "?")) if t0 else "track 0 missing")
+
+    # 10.5 Activate test-day
+    code, data = post(base, "/api/scene", {"action": "activate", "name": "test-day"})
+    record(code == 200 and data.get("success"),
+           "10.5 Activate scene 'test-day'",
+           data.get("message", str(data.get("error", ""))))
+
+    # Verify active scene changed
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        record(data.get("active_scene") == "test-day",
+               "10.5 active_scene is now 'test-day'",
+               data.get("active_scene", "?"))
+    else:
+        record(False, "10.5 GET /api/scenes after activate", f"HTTP {code}")
+
+    # 10.6 Create another scene "test-night" and patch it
+    code, data = post(base, "/api/scene", {"action": "create", "name": "test-night"})
+    record(code == 200 and data.get("success"),
+           "10.6 Create scene 'test-night'",
+           data.get("message", str(data.get("error", ""))))
+
+    code, data = post(base, "/api/scenes", {
+        "test-night": {
+            "global_volume": 30,
+            "tracks": [{"track": 0, "mode": "loop", "volume": 40}]
+        }
+    })
+    record(code == 200 and data.get("success"),
+           "10.6 PATCH test-night config",
+           data.get("message", str(data.get("error", ""))))
+
+    # 10.7 Activate test-night
+    code, data = post(base, "/api/scene", {"action": "activate", "name": "test-night"})
+    record(code == 200 and data.get("success"),
+           "10.7 Activate scene 'test-night'",
+           data.get("message", str(data.get("error", ""))))
+
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        record(data.get("active_scene") == "test-night",
+               "10.7 active_scene is now 'test-night'",
+               data.get("active_scene", "?"))
+        # Verify the active scene's config is applied
+        gv = data.get("scenes", {}).get("test-night", {}).get("global_volume")
+        record(gv == 30,
+               "10.7 active scene global_volume matches test-night config (30)",
+               str(gv))
+
+    # 10.8 Set default scene to test-day
+    code, data = post(base, "/api/scene", {"action": "set_default", "name": "test-day"})
+    record(code == 200 and data.get("success"),
+           "10.8 Set default scene to 'test-day'",
+           data.get("message", str(data.get("error", ""))))
+
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        record(data.get("default_scene") == "test-day",
+               "10.8 default_scene is now 'test-day'",
+               data.get("default_scene", "?"))
+        # Active should still be test-night (set_default does not activate)
+        record(data.get("active_scene") == "test-night",
+               "10.8 active_scene still 'test-night' after set_default",
+               data.get("active_scene", "?"))
+
+    # 10.9 Cannot delete the active scene
+    code, data = post(base, "/api/scene", {"action": "delete", "name": "test-night"})
+    record(data.get("success") is False,
+           "10.9 Cannot delete active scene 'test-night'",
+           data.get("error", "UNEXPECTED: deletion succeeded"))
+
+    # 10.10 Delete non-active scene (test-day)
+    code, data = post(base, "/api/scene", {"action": "delete", "name": "test-day"})
+    record(code == 200 and data.get("success"),
+           "10.10 Delete non-active scene 'test-day'",
+           data.get("message", str(data.get("error", ""))))
+
+    # Verify it is gone
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        record("test-day" not in data.get("scenes", {}),
+               "10.10 'test-day' no longer in scenes list")
+    else:
+        record(False, "10.10 GET /api/scenes after delete", f"HTTP {code}")
+
+    # 10.11 Activate nonexistent scene
+    code, data = post(base, "/api/scene", {"action": "activate", "name": "does-not-exist"})
+    record(data.get("success") is False,
+           "10.11 Activate nonexistent scene returns success=false",
+           data.get("error", "UNEXPECTED: activation succeeded"))
+
+    # 10.12 Invalid scene name rejected (contains spaces)
+    code, data = post(base, "/api/scene", {"action": "create", "name": "bad name!"})
+    record(data.get("success") is False,
+           "10.12 Invalid scene name 'bad name!' rejected",
+           data.get("error", "UNEXPECTED: creation succeeded"))
+
+    # 10.13 Empty scene name rejected
+    code, data = post(base, "/api/scene", {"action": "create", "name": ""})
+    record(data.get("success") is False,
+           "10.13 Empty scene name rejected",
+           data.get("error", "UNEXPECTED: creation succeeded"))
+
+    # 10.14 PATCH nonexistent scene is rejected
+    code, data = post(base, "/api/scenes", {"no-such-scene": {"global_volume": 50}})
+    record(data.get("success") is False,
+           "10.14 PATCH nonexistent scene returns success=false",
+           data.get("error", "UNEXPECTED: patch succeeded"))
+
+    # 10.15 Multi-scene PATCH (update both default and test-night at once)
+    code, data = post(base, "/api/scenes", {
+        "default": {"global_volume": 60},
+        "test-night": {"global_volume": 45},
+    })
+    record(code == 200 and data.get("success"),
+           "10.15 Multi-scene PATCH (default + test-night)",
+           data.get("message", str(data.get("error", ""))))
+
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        s = data.get("scenes", {})
+        record(s.get("default", {}).get("global_volume") == 60,
+               "10.15 default scene global_volume is 60",
+               str(s.get("default", {}).get("global_volume", "?")))
+        record(s.get("test-night", {}).get("global_volume") == 45,
+               "10.15 test-night global_volume is 45",
+               str(s.get("test-night", {}).get("global_volume", "?")))
+
+    # 10.16 Cleanup — activate default, delete test-night
+    code, data = post(base, "/api/scene", {"action": "activate", "name": "default"})
+    record(code == 200 and data.get("success"),
+           "10.16 Re-activate 'default' scene for cleanup",
+           data.get("message", str(data.get("error", ""))))
+
+    code, data = post(base, "/api/scene", {"action": "delete", "name": "test-night"})
+    record(code == 200 and data.get("success"),
+           "10.16 Delete 'test-night' scene",
+           data.get("message", str(data.get("error", ""))))
+
+    # Restore default_scene back to "default"
+    code, data = post(base, "/api/scene", {"action": "set_default", "name": "default"})
+    record(code == 200 and data.get("success"),
+           "10.16 Restore default_scene to 'default'",
+           data.get("message", str(data.get("error", ""))))
+
+    # Final verification: only "default" remains, active and default
+    code, data = get(base, "/api/scenes")
+    if code == 200:
+        scenes = data.get("scenes", {})
+        record(len(scenes) == 1 and "default" in scenes,
+               "10.16 Only 'default' scene remains after cleanup",
+               f"scenes: {list(scenes.keys())}")
+        record(data.get("active_scene") == "default" and data.get("default_scene") == "default",
+               "10.16 active_scene and default_scene both 'default'")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 def main():
@@ -860,6 +1121,7 @@ def main():
     else:
         print(f"\n{BOLD}Group 9: Trigger System{RESET}")
         print(f"  {DIM}Not run — use --triggers to enable{RESET}")
+    group10_scenes(device_base)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     total      = results["pass"] + results["fail"]

@@ -64,6 +64,7 @@ esp_err_t http_server_stop(void);
  */
 esp_err_t http_server_set_track_manager(track_manager_t *manager);
 
+
 /**
  * @brief Check if a track's audio pipeline is currently playing.
  *

@@ -264,10 +264,14 @@ class DeviceScannerWrapper:
             
             if result and 'devices' in result:
                 devices = result['devices']
-                logger.info(f"Found {len(devices)} device(s) in {network}")
-                all_devices = devices  # Latest scan result contains all devices
-        
-        logger.info(f"=== Scan complete: {len(all_devices)} total devices found ===")
+                online = [d for d in devices if d.get('online')]
+                offline = [d for d in devices if not d.get('online')]
+                logger.info(f"Network {network}: {len(online)} found online, {len(offline)} from registry (offline)")
+                all_devices = devices  # Merged result: scan-found + registry
+
+        online_count = sum(1 for d in all_devices if d.get('online'))
+        registry_count = len(all_devices) - online_count
+        logger.info(f"=== Scan complete: {online_count} found on network, {registry_count} from registry only, {len(all_devices)} total ===")
         return all_devices
     
     def clear_all_devices(self) -> bool:

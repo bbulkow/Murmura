@@ -1,17 +1,27 @@
 {
-  "scan_time": "2026-03-11T20:47:17.677104",
+  "scan_time": "2026-03-25T16:27:52.446655",
   "scan_mode": "create",
-  "network_range": "192.168.5.0/24",
-  "device_count": 1,
+  "network_range": "192.168.13.0/24",
+  "device_count": 2,
   "devices": [
     {
-      "ip_address": "192.168.5.135",
-      "mac_address": "34:5F:45:26:76:2C",
-      "id": "FREEKER",
+      "ip_address": "192.168.13.102",
+      "mac_address": "CC:7B:5C:FB:28:04",
+      "id": "20",
       "wifi_connected": false,
-      "firmware_version": "2.0",
-      "uptime_seconds": 43,
-      "last_seen": "2026-03-11T20:47:10.175206",
+      "firmware_version": "2.1",
+      "uptime_seconds": 551,
+      "last_seen": "2026-03-25T16:27:44.494561",
+      "online": true
+    },
+    {
+      "ip_address": "192.168.13.206",
+      "mac_address": "34:5F:45:26:6C:CC",
+      "id": "39",
+      "wifi_connected": false,
+      "firmware_version": "2.1",
+      "uptime_seconds": 1593,
+      "last_seen": "2026-03-25T16:27:48.618726",
       "online": true
     }
   ]

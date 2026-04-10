@@ -37,7 +37,7 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 # ESP-IDF coding notes
 
 - **FreeRTOS include order**: `#include "freertos/FreeRTOS.h"` MUST appear before any other FreeRTOS headers (`semphr.h`, `task.h`, `queue.h`). Violating this causes hundreds of cascading errors from kernel headers.
-- **Config vs runtime state**: `track_config_t` (persisted to SD) has `mode` (off/loop/trigger). `track_status_t` (runtime) has both `mode` and `is_playing` (bool). Never put `is_playing` in config structs.
+- **Config vs runtime state**: `scene_config_t` (persisted in scenes.json) has per-track `mode`, `active`, `file_path`, `volume`, triggers. `track_status_t` (runtime) reflects the active scene's config. Never put `is_playing` in config structs — use `is_track_playing()` to check pipeline state.
 - **SPIRAM**: Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` for large allocations. If allocation fails, raise a fatal error (`ESP_ERROR_CHECK(ESP_ERR_NO_MEM)`) — do NOT fall back to regular `malloc`.
 - **SPIRAM and synchronization primitives**: The ESP32's S32C1I atomic compare-and-swap instruction does not work correctly through the SPI cache to external PSRAM. Never embed spinlocks, raw atomic variables, or any synchronization primitive inside a struct allocated wholesale in PSRAM. FreeRTOS `SemaphoreHandle_t` is safe because `xSemaphoreCreate*` allocates from internal RAM by default — but the handle itself (a pointer) must not be confused with the underlying memory. Pattern: keep the struct with the lock in internal RAM and point to bulk data in SPIRAM, or use FreeRTOS semaphore handles (which are internally allocated correctly).
 
@@ -49,7 +49,8 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 
 - **main/murmura.c** - App entry point, audio pipeline setup, audio_control_task
 - **main/http_server.h/c** - HTTP API, type definitions (track_mode_t, track_status_t, track_manager_t)
-- **main/config_manager.h/c** - SD card config persistence (track_config_t, JSON serialization)
+- **main/scene_manager.h/c** - Scene system: named playback configs, CRUD, activate, atomic patch, JSON persistence to /sdcard/scenes.json
+- **main/config_manager.h/c** - SD card config persistence (track_config_t for gateway config), shared JSON helpers
 - **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing
 - **main/unit_status_manager.h/c** - Device identity and network status
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.

@@ -243,33 +243,40 @@ def get_devices():
         # Update the actual status based on probe
         formatted['status'] = 'online' if is_actually_online else 'offline'
         
-        # If device is actually online, get detailed loop information
+        # If device is actually online, get detailed scene/track information
         if is_actually_online:
             online_count += 1
-            
+
             try:
-                # Get track status
-                response = requests.get(f"http://{ip_address}/api/tracks", timeout=1)
+                # Get scenes status (replaces old /api/tracks)
+                response = requests.get(f"http://{ip_address}/api/scenes", timeout=1)
 
                 if response.status_code == 200:
-                    loop_data = response.json()
+                    scenes_data = response.json()
 
-                    # Update with actual track information
-                    formatted['global_volume'] = loop_data.get('global_volume', 0)
+                    # Extract active scene info
+                    active_scene = scenes_data.get('active_scene', '')
+                    scene_data = scenes_data.get('scenes', {}).get(active_scene, {})
+
+                    # Update with actual scene information
+                    formatted['global_volume'] = scene_data.get('global_volume', 0)
                     formatted['volume'] = formatted['global_volume']  # For compatibility
+                    formatted['active_scene'] = active_scene
+                    formatted['scenes'] = scenes_data.get('scenes', {})
 
-                    # Process each track
+                    # Process tracks from active scene for backward compatibility
                     loops = []
                     active_count = 0
-                    for track in loop_data.get('tracks', []):
+                    for track in scene_data.get('tracks', []):
+                        fp = track.get('file_path', '') or track.get('file', '')
                         loop_info = {
                             'track': track.get('track', 0),
                             'active': track.get('active', False),
                             'mode': track.get('mode', 'loop'),
                             'playing': track.get('playing', False),
                             'volume': track.get('volume', 0),
-                            'file': track.get('file', ''),
-                            'filename': track.get('file', '').split('/')[-1] if track.get('file') else 'No file',
+                            'file': fp,
+                            'filename': fp.split('/')[-1] if fp else 'No file',
                             'trigger_name': track.get('trigger_name', ''),
                             'trigger_mode': track.get('trigger_mode', 'momentary'),
                         }
@@ -281,24 +288,27 @@ def get_devices():
                     formatted['active_loops'] = active_count
                     formatted['playing'] = active_count > 0
 
-                    logger.debug(f"Device {formatted['id']}: {active_count} active tracks, global vol: {formatted['global_volume']}")
-                    
+                    logger.debug(f"Device {formatted['id']}: active_scene={active_scene}, {active_count} active tracks, global vol: {formatted['global_volume']}")
+
             except requests.RequestException as e:
-                logger.debug(f"Could not get loop status for {formatted['id']}: {e}")
-                # Keep default values if we can't get loop status
+                logger.debug(f"Could not get scene status for {formatted['id']}: {e}")
+                # Keep default values if we can't get scene status
         else:
             # Device is offline, update registry to reflect this
             device['online'] = False
             registry.update_device(device)
         
+        formatted['source'] = 'scanned' if is_actually_online else 'registry'
         formatted_devices.append(formatted)
-    
-    logger.info(f"Returning {len(formatted_devices)} devices ({online_count} online)")
-    
+
+    registry_only = len(formatted_devices) - online_count
+    logger.info(f"Returning {len(formatted_devices)} devices ({online_count} online, {registry_only} from registry only)")
+
     return jsonify({
         'devices': formatted_devices,
         'count': len(formatted_devices),
-        'online': online_count
+        'online': online_count,
+        'registry_only': registry_only
     })
 
 @app.route('/api/scan', methods=['POST'])
@@ -329,18 +339,24 @@ def start_scan():
                 })
             
             scanner = DeviceScannerWrapper(network_config, progress_callback)
-            devices = scanner.scan_all_networks(progress_callback, network_callback)
-            
+            merged_devices = scanner.scan_all_networks(progress_callback, network_callback)
+
+            # Count by online field: True = actually found on network, False = stale registry
+            scanned_count = sum(1 for d in merged_devices if d.get('online'))
+            registry_count = sum(1 for d in merged_devices if not d.get('online'))
+
             # Reload registry
             registry.load_registry()
-            
+
             socketio.emit('scan_complete', {
-                'devices': devices,
-                'count': len(devices),
+                'devices': merged_devices,
+                'count': len(merged_devices),
+                'scanned': scanned_count,
+                'registry_only': registry_count,
                 'status': 'success'
             })
-            
-            logger.info(f"Manual scan complete: {len(devices)} devices found")
+
+            logger.info(f"Manual scan complete: {scanned_count} found on network, {registry_count} from registry only")
             
         except Exception as e:
             logger.error(f"Scan failed: {e}")
@@ -448,19 +464,26 @@ def get_device(device_id):
 
 @app.route('/api/device/<device_id>/volume', methods=['POST'])
 def set_device_volume(device_id):
-    """Set volume for a specific device."""
+    """Set volume for a specific device (via POST /api/scenes with global_volume)."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
-    
+
     data = request.json
     volume = data.get('volume', 50)
-    
+
     try:
-        logger.info(f"Setting volume to {volume} for device {device_id}")
+        logger.info(f"Setting volume to {volume} for device {device_id} via /api/scenes")
+        # First get the active scene name
+        scenes_resp = requests.get(f"http://{device.get('ip_address')}/api/scenes", timeout=2)
+        if scenes_resp.status_code != 200:
+            return jsonify({'error': 'Failed to get scenes'}), 500
+        active_scene = scenes_resp.json().get('active_scene', 'default')
+
+        # Patch the active scene with new global_volume
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/global/volume",
-            json={'volume': volume},
+            f"http://{device.get('ip_address')}/api/scenes",
+            json={active_scene: {'global_volume': volume}},
             timeout=2
         )
         if response.status_code == 200:
@@ -475,33 +498,44 @@ def set_device_volume(device_id):
 
 @app.route('/api/device/<device_id>/play', methods=['POST'])
 def control_playback(device_id):
-    """Control playback on a device."""
+    """Control playback on a device via scenes API."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
-    
+
     data = request.json
     action = data.get('action', 'toggle')
-    
+
     try:
         ip_address = device.get('ip_address')
         active = (action == 'play')
         logger.info(f"Sending {action} (active={active}) to all tracks on device {device_id} at {ip_address}")
 
-        errors = []
-        for track in range(3):
-            resp = requests.post(
-                f"http://{ip_address}/api/track",
-                json={'track': track, 'active': active},
-                timeout=2
-            )
-            if resp.status_code != 200:
-                errors.append(track)
+        # Get the active scene name
+        scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
+        if scenes_resp.status_code != 200:
+            return jsonify({'error': 'Failed to get scenes'}), 500
+        scenes_data = scenes_resp.json()
+        active_scene = scenes_data.get('active_scene', 'default')
+        scene = scenes_data.get('scenes', {}).get(active_scene, {})
+        tracks = scene.get('tracks', [])
 
-        if not errors:
+        # Build a patch for the active scene setting all tracks active/inactive
+        track_list = []
+        for track in tracks:
+            track_list.append({'track': track.get('track', 0), 'active': active})
+
+        # Patch scene via POST /api/scenes
+        response = requests.post(
+            f"http://{ip_address}/api/scenes",
+            json={active_scene: {'tracks': track_list}},
+            timeout=2
+        )
+
+        if response.status_code == 200:
             return jsonify({'status': 'success', 'action': action})
         else:
-            return jsonify({'error': f'Failed to {action} tracks {errors}'}), 500
+            return jsonify({'error': f'Failed to {action} tracks'}), 500
     except requests.RequestException as e:
         logger.error(f"Failed to control playback for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
@@ -523,90 +557,115 @@ def get_device_files(device_id):
         logger.error(f"Failed to get files for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/device/<device_id>/tracks')
-def get_device_tracks(device_id):
-    """Get track configuration for a device."""
+@app.route('/api/device/<device_id>/scenes')
+def get_device_scenes(device_id):
+    """Get scenes configuration for a device."""
     device = registry.get_device(device_id)
     if not device:
         logger.error(f"Device not found in registry: {device_id}")
-        # Return empty loops if device not found to avoid errors
         return jsonify({
-            'loops': [],
-            'global_volume': 0,
-            'active_count': 0
+            'active_scene': '',
+            'scenes': {}
         })
-    
+
     ip_address = device.get('ip_address')
     if not ip_address:
         logger.error(f"Device {device_id} has no IP address")
         return jsonify({
-            'loops': [],
-            'global_volume': 0,
-            'active_count': 0
+            'active_scene': '',
+            'scenes': {}
         })
-    
+
     try:
-        logger.debug(f"Getting tracks for {device_id} at {ip_address}")
-        response = requests.get(f"http://{ip_address}/api/tracks", timeout=2)
+        logger.debug(f"Getting scenes for {device_id} at {ip_address}")
+        response = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
         if response.status_code == 200:
             return jsonify(response.json())
         else:
-            logger.warning(f"Failed to get tracks from {device_id}: HTTP {response.status_code}")
+            logger.warning(f"Failed to get scenes from {device_id}: HTTP {response.status_code}")
             return jsonify({
-                'loops': [],
-                'global_volume': 0,
-                'active_count': 0
+                'active_scene': '',
+                'scenes': {}
             })
     except requests.RequestException as e:
-        logger.error(f"Failed to get tracks for {device_id}: {e}")
-        # Return empty loops structure instead of error
+        logger.error(f"Failed to get scenes for {device_id}: {e}")
         return jsonify({
-            'loops': [],
-            'global_volume': 0,
-            'active_count': 0
+            'active_scene': '',
+            'scenes': {}
         })
 
-@app.route('/api/device/<device_id>/tracks', methods=['POST'])
-def set_device_tracks(device_id):
-    """Set track configuration for a device."""
+@app.route('/api/device/<device_id>/scenes', methods=['POST'])
+def set_device_scenes(device_id):
+    """Patch scene configuration for a device (body keys = scene names)."""
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
-    
+
     data = request.json
-    
+
     try:
         response = requests.post(
-            f"http://{device.get('ip_address')}/api/track",
+            f"http://{device.get('ip_address')}/api/scenes",
             json=data,
             timeout=2
         )
         if response.status_code == 200:
-            return jsonify({'status': 'success'})
+            return jsonify(response.json())
         else:
-            return jsonify({'error': 'Failed to set tracks'}), 500
+            return jsonify({'error': 'Failed to update scenes'}), response.status_code
     except requests.RequestException as e:
-        logger.error(f"Failed to set tracks for {device_id}: {e}")
+        logger.error(f"Failed to update scenes for {device_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/<device_id>/scene', methods=['POST'])
+def device_scene_action(device_id):
+    """Scene management actions: create, delete, activate, set_default."""
+    device = registry.get_device(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+
+    data = request.json
+
+    try:
+        response = requests.post(
+            f"http://{device.get('ip_address')}/api/scene",
+            json=data,
+            timeout=2
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({'error': 'Scene action failed'}), response.status_code
+    except requests.RequestException as e:
+        logger.error(f"Failed scene action for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/batch/volume', methods=['POST'])
 def batch_set_volume():
-    """Set global volume for multiple devices."""
+    """Set global volume for multiple devices via scenes API."""
     data = request.json
     device_ids = data.get('device_ids', [])
     volume = data.get('volume', 50)
-    
+
     logger.info(f"Batch setting global volume to {volume} for {len(device_ids)} devices")
     results = []
-    
+
     for device_id in device_ids:
         device = registry.get_device(device_id)
         if device:
             try:
-                # Use the correct global volume endpoint
+                ip_address = device.get('ip_address')
+                # Get active scene name
+                scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
+                if scenes_resp.status_code != 200:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    continue
+                active_scene = scenes_resp.json().get('active_scene', 'default')
+
+                # Patch active scene with new global_volume
                 response = requests.post(
-                    f"http://{device.get('ip_address')}/api/global/volume",
-                    json={'volume': volume},
+                    f"http://{ip_address}/api/scenes",
+                    json={active_scene: {'global_volume': volume}},
                     timeout=2
                 )
                 if response.status_code == 200:
@@ -623,7 +682,43 @@ def batch_set_volume():
                 logger.error(f"Error setting volume on {device_id}: {e}")
         else:
             results.append({'device_id': device_id, 'status': 'not_found'})
-    
+
+    return jsonify({'results': results})
+
+@app.route('/api/batch/scene/activate', methods=['POST'])
+def batch_activate_scene():
+    """Activate a scene across multiple devices."""
+    data = request.json
+    device_ids = data.get('device_ids', [])
+    scene_name = data.get('scene')
+
+    if not scene_name:
+        return jsonify({'error': 'Missing required field: scene'}), 400
+
+    logger.info(f"Batch activating scene '{scene_name}' on {len(device_ids)} devices")
+    results = []
+
+    for device_id in device_ids:
+        device = registry.get_device(device_id)
+        if device:
+            try:
+                response = requests.post(
+                    f"http://{device.get('ip_address')}/api/scene",
+                    json={'action': 'activate', 'scene': scene_name},
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    results.append({'device_id': device_id, 'status': 'success'})
+                    logger.debug(f"Activated scene '{scene_name}' on {device_id}")
+                else:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    logger.warning(f"Failed to activate scene on {device_id}: HTTP {response.status_code}")
+            except requests.RequestException as e:
+                results.append({'device_id': device_id, 'status': 'error'})
+                logger.error(f"Error activating scene on {device_id}: {e}")
+        else:
+            results.append({'device_id': device_id, 'status': 'not_found'})
+
     return jsonify({'results': results})
 
 @app.route('/api/batch/save-config', methods=['POST'])
@@ -692,65 +787,9 @@ def batch_reboot():
     
     return jsonify({'results': results})
 
-@app.route('/api/device/<device_id>/track/control', methods=['POST'])
-def control_track(device_id):
-    """Control individual track on a device."""
-    device = registry.get_device(device_id)
-    if not device:
-        return jsonify({'error': 'Device not found'}), 404
-    
-    data = request.json
-    track = data.get('track', 0)
-
-    try:
-        ip_address = device.get('ip_address')
-        request_body = {'track': track}
-
-        if 'action' in data:
-            action = data['action']
-            request_body['active'] = (action == 'start')
-        if 'mode' in data:
-            request_body['mode'] = data['mode']
-
-        response = requests.post(
-            f"http://{ip_address}/api/track",
-            json=request_body,
-            timeout=2
-        )
-
-        if response.status_code == 200:
-            return jsonify({'status': 'success', 'track': track})
-        else:
-            return jsonify({'error': f'Failed to update track {track}'}), 500
-    except requests.RequestException as e:
-        logger.error(f"Error controlling track {track} on {device_id}: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/device/<device_id>/track/volume', methods=['POST'])
-def set_track_volume(device_id):
-    """Set volume for a specific track on a device."""
-    device = registry.get_device(device_id)
-    if not device:
-        return jsonify({'error': 'Device not found'}), 404
-    
-    data = request.json
-    track = data.get('track', 0)
-    volume = data.get('volume', 50)
-    
-    try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/track",
-            json={'track': track, 'volume': volume},
-            timeout=2
-        )
-
-        if response.status_code == 200:
-            return jsonify({'status': 'success', 'track': track, 'volume': volume})
-        else:
-            return jsonify({'error': f'Failed to set volume for track {track}'}), 500
-    except requests.RequestException as e:
-        logger.error(f"Error setting volume for track {track} on {device_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+# NOTE: /api/device/<id>/track/control and /api/device/<id>/track/volume
+# have been removed. Use POST /api/device/<id>/scenes to patch track
+# properties within a scene instead.
 
 @app.route('/api/device/<device_id>/mur-gateway', methods=['GET'])
 def get_device_mur_gateway(device_id):
@@ -822,111 +861,58 @@ def batch_set_mur_gateway():
 
     return jsonify({'results': results})
 
-@app.route('/api/device/<device_id>/track/trigger', methods=['POST'])
-def set_track_trigger_config(device_id):
-    """Set trigger_name and/or trigger_mode for a track."""
-    device = registry.get_device(device_id)
-    if not device:
-        return jsonify({'error': 'Device not found'}), 404
-    data = request.json
-    track = data.get('track', 0)
-    payload = {'track': track}
-    if 'trigger_name' in data:
-        payload['trigger_name'] = data['trigger_name']
-    if 'trigger_mode' in data:
-        payload['trigger_mode'] = data['trigger_mode']
-    try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/track",
-            json=payload, timeout=2
-        )
-        if response.status_code == 200:
-            return jsonify({'status': 'success'})
-        return jsonify({'error': f'HTTP {response.status_code}'}), 500
-    except requests.RequestException as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/device/<device_id>/track/file', methods=['POST'])
-def set_track_file(device_id):
-    """Set file for a specific track on a device."""
-    device = registry.get_device(device_id)
-    if not device:
-        return jsonify({'error': 'Device not found'}), 404
-    
-    data = request.json
-    track = data.get('track', 0)
-    file_index = data.get('file_index')
-    filename = data.get('filename')
-
-    ip_address = device.get('ip_address')
-
-    try:
-        # Resolve file_index to a filename if needed
-        if file_index is not None and filename is None:
-            files_resp = requests.get(f"http://{ip_address}/api/files", timeout=3)
-            if files_resp.status_code != 200:
-                return jsonify({'error': 'Failed to fetch file list from device'}), 500
-            files = files_resp.json().get('files', [])
-            if file_index < 0 or file_index >= len(files):
-                return jsonify({'error': f'File index {file_index} out of range'}), 400
-            filename = files[file_index]['name']
-
-        if not filename:
-            return jsonify({'error': 'No file specified'}), 400
-
-        response = requests.post(
-            f"http://{ip_address}/api/track",
-            json={'track': track, 'file': filename},
-            timeout=5
-        )
-
-        if response.status_code == 200:
-            return jsonify({'status': 'success', 'track': track, 'file': filename})
-        else:
-            return jsonify({'error': f'Failed to set file for track {track}'}), 500
-    except requests.RequestException as e:
-        logger.error(f"Error setting file for track {track} on {device_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+# NOTE: /api/device/<id>/track/trigger and /api/device/<id>/track/file
+# have been removed. Use POST /api/device/<id>/scenes to patch track
+# properties within a scene instead.
 
 @app.route('/api/batch/play', methods=['POST'])
 def batch_control_playback():
-    """Control playback for multiple devices."""
+    """Control playback for multiple devices via scenes API."""
     data = request.json
     device_ids = data.get('device_ids', [])
     action = data.get('action', 'play')
-    
+
     logger.info(f"Batch {action} for {len(device_ids)} devices")
     results = []
-    
+
     active = (action in ('play', 'start'))
 
     for device_id in device_ids:
         device = registry.get_device(device_id)
         if device:
             ip_address = device.get('ip_address')
-            device_success = True
+            try:
+                # Get active scene to know which tracks to update
+                scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
+                if scenes_resp.status_code != 200:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    continue
+                scenes_data = scenes_resp.json()
+                active_scene = scenes_data.get('active_scene', 'default')
+                scene = scenes_data.get('scenes', {}).get(active_scene, {})
+                tracks = scene.get('tracks', [])
 
-            for track in range(3):
-                try:
-                    response = requests.post(
-                        f"http://{ip_address}/api/track",
-                        json={'track': track, 'active': active},
-                        timeout=2
-                    )
-                    if response.status_code != 200:
-                        device_success = False
-                        logger.warning(f"Failed to set track {track} active={active} on {device_id}")
-                except requests.RequestException as e:
-                    logger.error(f"Error setting track {track} on {device_id}: {e}")
-                    device_success = False
+                # Build a patch for all tracks
+                track_list = []
+                for track in tracks:
+                    track_list.append({'track': track.get('track', 0), 'active': active})
 
-            if device_success:
-                results.append({'device_id': device_id, 'status': 'success'})
-            else:
-                results.append({'device_id': device_id, 'status': 'partial'})
+                response = requests.post(
+                    f"http://{ip_address}/api/scenes",
+                    json={active_scene: {'tracks': track_list}},
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    results.append({'device_id': device_id, 'status': 'success'})
+                else:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    logger.warning(f"Failed to set playback on {device_id}: HTTP {response.status_code}")
+            except requests.RequestException as e:
+                logger.error(f"Error setting playback on {device_id}: {e}")
+                results.append({'device_id': device_id, 'status': 'error'})
         else:
             results.append({'device_id': device_id, 'status': 'not_found'})
-    
+
     return jsonify({'results': results})
 
 @socketio.on('connect')

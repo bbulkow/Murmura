@@ -108,11 +108,6 @@
                     </div>
                 </div>
             </div>
-            <div class="info-row" style="margin-top: 15px;">
-                <span class="info-label">Global Volume:</span>
-                <input type="range" id="globalVolume" min="0" max="100" value="0">
-                <span id="globalVolumeValue">0</span>%
-            </div>
             <div class="info-row" style="margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
                 <span class="info-label" style="display: inline-block; width: 120px;">Mur Gateway:</span>
                 <span id="murGatewayDisplay" style="color: #555;">—</span>
@@ -126,27 +121,36 @@
             </div>
         </div>
         
-        <div class="device-detail-content">
+        <div class="device-detail-content" style="margin-bottom: 20px;">
+            <h3 style="margin-top: 0;">Actions</h3>
             <div class="device-controls-grid">
-                <button id="startBtn" class="btn btn-success">Start</button>
-                <button id="stopBtn" class="btn btn-danger">Stop</button>
                 <button id="saveConfigBtn" class="btn btn-warning">Save Config</button>
                 <button id="rebootBtn" class="btn btn-danger">Reboot</button>
                 <button id="viewFilesBtn" class="btn btn-info">View Files</button>
+                <button onclick="downloadScenes()" class="btn btn-secondary">Download Config</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('uploadConfigInput').click()">Upload Config</button>
+                <input type="file" id="uploadConfigInput" accept=".json" onchange="uploadScenes(this)" style="display:none;">
             </div>
-            
-            <div id="loopsSection" class="loops-section">
-                <h3>Track Configuration</h3>
-                <div id="loopsConfig" class="loops-config">
-                    <p>Loading track configuration...</p>
-                </div>
-            </div>
-            
             <div id="filesSection" class="files-section" style="display: none;">
                 <h3>Files on Device</h3>
                 <div id="filesList" class="files-list"></div>
             </div>
-            
+        </div>
+
+        <div class="device-detail-content">
+            <h3 style="margin-top: 0; display:flex; align-items:center; gap:12px;">
+                Scenes
+                <span style="display:inline-flex; align-items:center; gap:6px; font-size:14px; font-weight:normal;">
+                    <input type="text" id="newSceneName" placeholder="New scene name"
+                           style="width:140px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"
+                           pattern="[a-zA-Z0-9_-]+" title="Alphanumeric, hyphens, underscores">
+                    <button onclick="createScene()" class="btn btn-primary" style="padding:3px 10px;font-size:12px;">Create</button>
+                </span>
+            </h3>
+                <div id="loopsConfig" class="loops-config">
+                    <p>Loading scenes...</p>
+                </div>
+
             <div id="messageArea" style="display: none; margin-top: 20px;" class="error-message">
                 <span class="message-text"></span>
             </div>

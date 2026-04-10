@@ -21,24 +21,22 @@ static const char *DEFAULT_CONFIG_JSON =
 "  ]\n"
 "}";
 
-// Helper: convert mode enum to string
-static const char *mode_to_str(track_mode_t mode) {
+// --- Exported string conversion helpers ---
+
+const char* config_mode_to_str(track_mode_t mode) {
     return (mode == TRACK_MODE_TRIGGER) ? "trigger" : "loop";
 }
 
-// Helper: parse mode string to enum
-static track_mode_t str_to_mode(const char *s) {
+track_mode_t config_str_to_mode(const char *s) {
     if (s && strcmp(s, "trigger") == 0) return TRACK_MODE_TRIGGER;
     return TRACK_MODE_LOOP;
 }
 
-// Helper: convert trigger_mode enum to string
-static const char *trigger_mode_to_str(trigger_mode_t tm) {
+const char* config_trigger_mode_to_str(trigger_mode_t tm) {
     return (tm == TRIGGER_MODE_ONESHOT) ? "oneshot" : "momentary";
 }
 
-// Helper: parse trigger_mode string to enum
-static trigger_mode_t str_to_trigger_mode(const char *s) {
+trigger_mode_t config_str_to_trigger_mode(const char *s) {
     if (s && strcmp(s, "oneshot") == 0) return TRIGGER_MODE_ONESHOT;
     return TRIGGER_MODE_MOMENTARY;
 }
@@ -60,12 +58,12 @@ esp_err_t config_save(const track_manager_t *manager) {
     for (int i = 0; i < MAX_TRACKS; i++) {
         cJSON *t = cJSON_CreateObject();
         cJSON_AddNumberToObject(t, "track", i);
-        cJSON_AddStringToObject(t, "mode", mode_to_str(manager->tracks[i].mode));
+        cJSON_AddStringToObject(t, "mode", config_mode_to_str(manager->tracks[i].mode));
         cJSON_AddBoolToObject(t, "active", manager->tracks[i].active);
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
         cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
-        cJSON_AddStringToObject(t, "trigger_mode", trigger_mode_to_str(manager->tracks[i].trigger_mode));
+        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(manager->tracks[i].trigger_mode));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -280,12 +278,12 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     for (int i = 0; i < MAX_TRACKS; i++) {
         cJSON *t = cJSON_CreateObject();
         cJSON_AddNumberToObject(t, "track", i);
-        cJSON_AddStringToObject(t, "mode", mode_to_str(manager->tracks[i].mode));
+        cJSON_AddStringToObject(t, "mode", config_mode_to_str(manager->tracks[i].mode));
         cJSON_AddBoolToObject(t, "active", manager->tracks[i].active);
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
         cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
-        cJSON_AddStringToObject(t, "trigger_mode", trigger_mode_to_str(manager->tracks[i].trigger_mode));
+        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(manager->tracks[i].trigger_mode));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -351,7 +349,7 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
 
             cJSON *mode = cJSON_GetObjectItem(t, "mode");
             if (cJSON_IsString(mode)) {
-                config->tracks[idx].mode = str_to_mode(mode->valuestring);
+                config->tracks[idx].mode = config_str_to_mode(mode->valuestring);
             }
 
             cJSON *active = cJSON_GetObjectItem(t, "active");
@@ -378,7 +376,7 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
 
             cJSON *trig_mode = cJSON_GetObjectItem(t, "trigger_mode");
             if (cJSON_IsString(trig_mode)) {
-                config->tracks[idx].trigger_mode = str_to_trigger_mode(trig_mode->valuestring);
+                config->tracks[idx].trigger_mode = config_str_to_trigger_mode(trig_mode->valuestring);
             }
         }
     }
@@ -425,4 +423,93 @@ esp_err_t config_load_or_default(track_config_t *config) {
 
     ESP_LOGI(TAG, "No saved config found, using defaults");
     return config_get_default(config);
+}
+
+// --- Shared helpers for scene_manager ---
+
+esp_err_t config_parse_scene_from_json(cJSON *root, int *global_volume,
+                                       track_config_entry_t tracks[MAX_TRACKS]) {
+    if (!root) return ESP_ERR_INVALID_ARG;
+
+    // Defaults
+    if (global_volume) *global_volume = 75;
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        tracks[i].mode = TRACK_MODE_LOOP;
+        tracks[i].active = false;
+        tracks[i].volume_percent = 100;
+        tracks[i].file_path[0] = '\0';
+        tracks[i].trigger_name[0] = '\0';
+        tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+    }
+
+    cJSON *gv = cJSON_GetObjectItem(root, "global_volume");
+    if (cJSON_IsNumber(gv) && global_volume) {
+        *global_volume = gv->valueint;
+    }
+
+    cJSON *tracks_arr = cJSON_GetObjectItem(root, "tracks");
+    if (cJSON_IsArray(tracks_arr)) {
+        int n = cJSON_GetArraySize(tracks_arr);
+        for (int i = 0; i < n && i < MAX_TRACKS; i++) {
+            cJSON *t = cJSON_GetArrayItem(tracks_arr, i);
+            if (!cJSON_IsObject(t)) continue;
+
+            cJSON *track_idx = cJSON_GetObjectItem(t, "track");
+            int idx = cJSON_IsNumber(track_idx) ? track_idx->valueint : i;
+            if (idx < 0 || idx >= MAX_TRACKS) continue;
+
+            cJSON *mode = cJSON_GetObjectItem(t, "mode");
+            if (cJSON_IsString(mode)) {
+                tracks[idx].mode = config_str_to_mode(mode->valuestring);
+            }
+
+            cJSON *active = cJSON_GetObjectItem(t, "active");
+            if (cJSON_IsBool(active)) {
+                tracks[idx].active = cJSON_IsTrue(active);
+            }
+
+            cJSON *file_path = cJSON_GetObjectItem(t, "file_path");
+            if (cJSON_IsString(file_path) && file_path->valuestring) {
+                strncpy(tracks[idx].file_path, file_path->valuestring,
+                        sizeof(tracks[idx].file_path) - 1);
+            }
+
+            cJSON *volume = cJSON_GetObjectItem(t, "volume");
+            if (cJSON_IsNumber(volume)) {
+                tracks[idx].volume_percent = volume->valueint;
+            }
+
+            cJSON *trig_name = cJSON_GetObjectItem(t, "trigger_name");
+            if (cJSON_IsString(trig_name) && trig_name->valuestring) {
+                strncpy(tracks[idx].trigger_name, trig_name->valuestring,
+                        sizeof(tracks[idx].trigger_name) - 1);
+            }
+
+            cJSON *trig_mode = cJSON_GetObjectItem(t, "trigger_mode");
+            if (cJSON_IsString(trig_mode)) {
+                tracks[idx].trigger_mode = config_str_to_trigger_mode(trig_mode->valuestring);
+            }
+        }
+    }
+
+    return ESP_OK;
+}
+
+cJSON* config_tracks_to_json(const track_config_entry_t tracks[MAX_TRACKS]) {
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) return NULL;
+
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "track", i);
+        cJSON_AddStringToObject(t, "mode", config_mode_to_str(tracks[i].mode));
+        cJSON_AddBoolToObject(t, "active", tracks[i].active);
+        cJSON_AddStringToObject(t, "file_path", tracks[i].file_path);
+        cJSON_AddNumberToObject(t, "volume", tracks[i].volume_percent);
+        cJSON_AddStringToObject(t, "trigger_name", tracks[i].trigger_name);
+        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(tracks[i].trigger_mode));
+        cJSON_AddItemToArray(arr, t);
+    }
+
+    return arr;
 }

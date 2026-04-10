@@ -477,10 +477,10 @@ header h1 {
 }
 
 .loop-file {
-    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
     color: #666;
     font-style: italic;
 }
@@ -597,23 +597,58 @@ header h1 {
     .container {
         padding: 10px;
     }
-    
+
     header h1 {
         font-size: 1.8em;
     }
-    
+
     .device-list {
         grid-template-columns: 1fr;
     }
-    
+
     .volume-control {
         display: block;
         margin-left: 0;
         margin-top: 10px;
     }
-    
+
     .batch-controls {
         text-align: center;
+    }
+
+    /* Device detail: stack track controls vertically on mobile */
+    .track-controls {
+        grid-template-columns: auto auto 1fr;
+    }
+
+    .track-volume-slider {
+        min-width: 40px;
+    }
+
+    .loop-file {
+        font-size: 13px;
+    }
+
+    .loop-track {
+        font-size: 12px;
+    }
+
+    /* Device detail: controls grid on narrow screens */
+    .device-controls-grid {
+        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)) !important;
+        gap: 6px !important;
+    }
+
+    .device-controls-grid .btn {
+        font-size: 12px;
+        padding: 6px 4px;
+    }
+
+    /* Scene block header: stack on narrow */
+    .scene-block > div:first-child {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 6px !important;
     }
 }
 
@@ -739,10 +774,22 @@ header h1 {
 }
 
 .track-controls {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    grid-template-rows: auto auto;
+    gap: 6px 8px;
     align-items: center;
-    gap: 10px;
 }
+
+/* Row 1: ON/OFF, Loop/Trig, filename */
+.track-controls .track-enable-btn { grid-column: 1; grid-row: 1; }
+.track-controls .track-mode-selector { grid-column: 2; grid-row: 1; }
+.track-controls .loop-file { grid-column: 3; grid-row: 1; }
+
+/* Row 2: Track label, volume slider, volume value */
+.track-controls .loop-track { grid-column: 1; grid-row: 2; }
+.track-controls .track-volume-slider { grid-column: 2; grid-row: 2; width: 100%; }
+.track-controls .track-volume-value { grid-column: 3; grid-row: 2; }
 
 .track-enable-btn {
     min-width: 38px;
@@ -811,7 +858,8 @@ header h1 {
 }
 
 .track-volume-slider {
-    width: 100px;
+    width: 100%;
+    min-width: 60px;
     height: 6px;
     border-radius: 3px;
     background: #ddd;

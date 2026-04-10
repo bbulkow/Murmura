@@ -4,15 +4,17 @@
 
 The ESP32 Murmura device provides a JSON-based HTTP API for remote control of audio tracks. Once connected to WiFi, the device exposes a web server on port 80.
 
-Each device has three tracks (0, 1, 2). Each track has:
+All playback configuration is organized into **scenes**. A scene is a named configuration containing a global volume and settings for all 3 tracks. Example scenes: "day", "night", "show". One scene is active (playing) at a time, and one can be set as the default for boot.
+
+Each track within a scene has:
 - **mode**: `"loop"` (continuously repeats) or `"trigger"` (plays when a trigger event arrives)
 - **active**: whether the track is enabled — this is user intent, not playback state (see [Active vs Playing](#active-vs-playing))
-- **file**: the audio file assigned to the track
-- **volume**: per-track volume (0–100%)
+- **file_path**: the audio file assigned to the track
+- **volume**: per-track volume (0-100%)
 - **trigger_name**: name of the trigger event to listen for (empty string = no trigger)
 - **trigger_mode**: `"momentary"` (start on keyDown "On", stop on keyUp "Off") or `"oneshot"` (start on keyDown, plays to completion, ignore keyUp)
 
-There is also a global/master volume that scales all tracks.
+Each scene also has a **global_volume** (master volume, 0-100%) that scales all tracks via the hardware codec.
 
 The device connects outbound to a Mur Gateway to receive trigger events:
 - **mur_gateway_ip**: IP address of the Mur Gateway (empty = disabled)
@@ -27,7 +29,7 @@ The `active` field represents **user intent** — whether the track is enabled. 
 - **Trigger mode**: setting `active: true` enables (arms) the track to respond to trigger events, but audio does **not** start until a trigger event arrives. The track is active but *not yet playing*.
 - In both modes, `active: false` means the track is disabled and will not play.
 
-To determine whether a track is actually producing audio, check the pipeline state via `is_track_playing()` (firmware only). The API does not currently expose a separate "playing" field.
+To determine whether a track is actually producing audio, check the `playing` field in the GET /api/scenes response (only present on the active scene's tracks).
 
 ---
 
@@ -35,42 +37,19 @@ To determine whether a track is actually producing audio, check the pipeline sta
 
 ### Configuration Persistence
 
+Scenes are stored in-memory during runtime. Use these endpoints to persist to/from SD card.
+
 #### Get Configuration Status
 
 **GET** `/api/config/status`
 
-Returns whether a saved config exists on SD card, the current running config, and (when a save file exists) the saved config and whether they match.
-
-**Response (config exists):**
 ```json
 {
   "config_exists": true,
-  "config_path": "/sdcard/track_config.json",
-  "current_config": {
-    "global_volume": 75,
-    "tracks": [
-      { "track": 0, "mode": "loop", "active": true, "file": "/sdcard/ambient.wav", "volume": 80 },
-      { "track": 1, "mode": "trigger", "active": false, "file": "", "volume": 100 },
-      { "track": 2, "mode": "loop", "active": false, "file": "", "volume": 100 }
-    ]
-  },
-  "saved_config": {
-    "global_volume": 75,
-    "tracks": [
-      { "track": 0, "mode": "loop", "active": true, "file": "/sdcard/ambient.wav", "volume": 80 },
-      { "track": 1, "mode": "trigger", "active": false, "file": "", "volume": 100 },
-      { "track": 2, "mode": "loop", "active": false, "file": "", "volume": 100 }
-    ]
-  },
-  "configs_match": true
-}
-```
-
-**Response (no saved config):**
-```json
-{
-  "config_exists": false,
-  "config_path": "/sdcard/track_config.json"
+  "config_path": "/sdcard/scenes.json",
+  "scene_count": 3,
+  "default_scene": "day",
+  "active_scene": "day"
 }
 ```
 
@@ -78,52 +57,25 @@ Returns whether a saved config exists on SD card, the current running config, an
 
 **POST** `/api/config/save`
 
-Saves current track configuration to `/sdcard/track_config.json`. Loaded automatically on next boot.
+Saves all scenes to `/sdcard/scenes.json` and gateway config to `/sdcard/track_config.json`.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Configuration saved successfully",
-  "path": "/sdcard/track_config.json"
-}
-```
+**Response:** `{"success": true, "message": "Configuration saved successfully", "path": "/sdcard/scenes.json"}`
 
 #### Load Configuration
 
 **POST** `/api/config/load`
 
-Loads and applies saved configuration from SD card.
+Loads scenes from SD card and activates the default scene.
 
-**Response (success):**
-```json
-{
-  "success": true,
-  "message": "Configuration loaded and applied successfully",
-  "loaded_config": {
-    "global_volume": 75,
-    "tracks": [
-      { "track": 0, "file": "/sdcard/ambient.wav", "volume": 80 },
-      { "track": 1, "file": "", "volume": 100 },
-      { "track": 2, "file": "", "volume": 100 }
-    ]
-  }
-}
-```
+**Response:** `{"success": true, "message": "Configuration loaded and applied", "active_scene": "day"}`
 
 #### Delete Configuration
 
 **DELETE** `/api/config/delete`
 
-Deletes saved configuration. Device uses defaults on next boot.
+Deletes saved configuration files. Device creates a default scene on next boot.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Configuration deleted successfully"
-}
-```
+**Response:** `{"success": true, "message": "Configuration deleted successfully"}`
 
 ---
 
@@ -141,7 +93,7 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
   "id": "MURMURA-001",
   "mac_address": "AA:BB:CC:DD:EE:FF",
   "ip_address": "192.168.1.100",
-  "firmware_version": "2.1",
+  "firmware_version": "3.0",
   "uptime_seconds": 3600,
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
@@ -201,135 +153,123 @@ Patch-style update of settable device fields. All fields are optional — only t
 
 ---
 
-### Track Control
+### Scenes
 
-#### Get Track Status
+All playback configuration lives inside **named scenes**. A scene contains a global volume and configuration for all 3 tracks. Device settings (wifi, gateway, device ID) are **not** part of scenes.
 
-**GET** `/api/tracks`
+#### Get All Scenes
 
-Returns the current state of all three tracks.
+**GET** `/api/scenes`
+
+Returns all scene configurations plus metadata.
 
 **Response:**
 ```json
 {
-  "tracks": [
-    {
-      "track": 0,
-      "mode": "loop",
-      "active": true,
-      "file": "/sdcard/ambient.wav",
-      "volume": 80,
-      "trigger_name": "",
-      "trigger_mode": "momentary"
+  "default_scene": "day",
+  "active_scene": "day",
+  "scenes": {
+    "day": {
+      "global_volume": 75,
+      "tracks": [
+        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/birds.wav", "volume": 80, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
+        {"track": 1, "mode": "loop", "active": true, "file_path": "/sdcard/wind.wav", "volume": 60, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
+        {"track": 2, "mode": "trigger", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"}
+      ]
     },
-    {
-      "track": 1,
-      "mode": "trigger",
-      "active": true,
-      "file": "/sdcard/sting.wav",
-      "volume": 100,
-      "trigger_name": "RedButton.Button_1",
-      "trigger_mode": "oneshot"
-    },
-    {
-      "track": 2,
-      "mode": "loop",
-      "active": false,
-      "file": "",
-      "volume": 100,
-      "trigger_name": "",
-      "trigger_mode": "momentary"
+    "night": {
+      "global_volume": 40,
+      "tracks": [
+        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/crickets.wav", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"},
+        {"track": 1, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"},
+        {"track": 2, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"}
+      ]
     }
-  ],
-  "global_volume": 75
+  }
 }
 ```
 
-**Fields:**
-- `mode`: `"loop"` or `"trigger"`
-- `active`: whether the track is enabled (see [Active vs Playing](#active-vs-playing))
-- `file`: full SD card path, or empty string if none assigned
-- `volume`: per-track volume 0–100%
-- `trigger_name`: trigger event name to match; empty string = no trigger assigned
-- `trigger_mode`: `"momentary"` or `"oneshot"`
+- `default_scene`: the scene activated on boot (empty string = none)
+- `active_scene`: the scene currently applied to the hardware
+- `playing`: only present on the active scene's tracks (runtime state)
+- Per-track fields: same as before (`mode`, `active`, `file_path`, `volume`, `trigger_name`, `trigger_mode`)
 
-#### Set Track Configuration
+#### Update Scene Configuration
 
-**POST** `/api/track`
+**POST** `/api/scenes`
 
-Updates configuration for a single track. All fields except `track` are optional. Only the fields present in the request are applied.
+Patch-style update. Body keys are scene names, values are partial scene configs. Only stated fields change. Unstated fields, tracks, and scenes are untouched.
 
-**Request Body:**
+**Atomic**: validates all changes before applying any. If any scene name doesn't exist or any value is invalid, the entire request is rejected.
+
+**If the updated scene is the active scene**, changes are applied to the hardware immediately.
+
+**Examples:**
+
+Update global volume of one scene:
 ```json
-{
-  "track": 0,
-  "mode": "trigger",
-  "active": false,
-  "file": "sting.wav",
-  "volume": 100,
-  "trigger_name": "RedButton.Button_1",
-  "trigger_mode": "oneshot"
-}
+{"day": {"global_volume": 50}}
 ```
 
-**Fields:**
-- `track` *(required)*: 0, 1, or 2
-- `mode` *(optional)*: `"loop"` or `"trigger"`
-- `active` *(optional)*: `true` to enable, `false` to disable (see [Active vs Playing](#active-vs-playing))
-- `file` *(optional)*: filename (e.g. `"ambient.wav"`) or full path (e.g. `"/sdcard/ambient.wav"`). The device also accepts `file_path` (full path) and `filename` (bare name) as aliases.
-- `volume` *(optional)*: 0–100 (clamped)
-- `trigger_name` *(optional)*: name of trigger event to bind (e.g. `"RedButton.Button_1"`); empty string clears
-- `trigger_mode` *(optional)*: `"momentary"` or `"oneshot"`
-
-**Behavior:**
-- **Loop mode, `active: true`**: enables the track and starts playback immediately. Requires a file to be configured.
-- **Trigger mode, `active: true`**: enables (arms) the track to respond to trigger events. Audio does not start until a matching trigger arrives.
-- **`active: false`** (either mode): disables the track and stops any audio.
-- Changing `file` while the track is playing restarts playback with the new file.
-- Changing `volume`, `mode`, `trigger_name`, or `trigger_mode` alone does not start/stop the track.
-
-**Response (success):**
+Update a track within a scene:
 ```json
-{
-  "success": true,
-  "track": 1,
-  "mode": "trigger",
-  "active": false,
-  "file": "/sdcard/sting.wav",
-  "volume": 100,
-  "trigger_name": "RedButton.Button_1",
-  "trigger_mode": "oneshot"
-}
+{"night": {"tracks": [{"track": 0, "volume": 80, "file_path": "/sdcard/newfile.wav"}]}}
 ```
 
-**Response (error):**
+Update multiple scenes at once:
 ```json
-{
-  "success": false,
-  "error": "No file configured for this track"
-}
-```
-
-#### Set Global Volume
-
-**POST** `/api/global/volume`
-
-Adjusts the master volume (affects all tracks via hardware codec).
-
-**Request Body:**
-```json
-{
-  "volume": 75
-}
+{"day": {"global_volume": 75}, "night": {"global_volume": 40}}
 ```
 
 **Response:**
 ```json
-{
-  "success": true,
-  "volume": 75
-}
+{"success": true, "message": "Scenes updated"}
 ```
+
+**Error response (nothing changed):**
+```json
+{"success": false, "error": "Scene 'foo' not found"}
+```
+
+#### Scene Management Actions
+
+**POST** `/api/scene`
+
+A single endpoint for scene lifecycle operations, dispatched by the `action` field.
+
+**Create a scene:**
+```json
+{"action": "create", "name": "show"}
+```
+Creates by cloning the active scene's config. Optionally include initial values to override:
+```json
+{"action": "create", "name": "show", "global_volume": 100, "tracks": [...]}
+```
+
+**Delete a scene:**
+```json
+{"action": "delete", "name": "show"}
+```
+Cannot delete the active scene.
+
+**Activate a scene:**
+```json
+{"action": "activate", "name": "night"}
+```
+Applies the scene's config to the hardware immediately.
+
+**Set default boot scene:**
+```json
+{"action": "set_default", "name": "day"}
+```
+Empty name clears default.
+
+**Response:**
+```json
+{"success": true, "message": "Scene 'night' activated"}
+```
+
+**Scene name rules:** 1-31 characters, alphanumeric plus hyphen and underscore.
 
 ---
 
@@ -464,41 +404,43 @@ Defaults to 1000ms delay. Clamped to 100–10000ms.
 ### curl
 
 ```bash
-# Get config status (check if saved config exists)
-curl http://192.168.1.100/api/config/status
+# Get all scenes
+curl http://192.168.1.100/api/scenes
 
 # Get device info (identity, gateway, wifi)
 curl http://192.168.1.100/api/device
 
-# Get all track state
-curl http://192.168.1.100/api/tracks
-
-# Enable track 0 as a loop with a file at 80% volume
-curl -X POST http://192.168.1.100/api/track \
+# Create a new scene
+curl -X POST http://192.168.1.100/api/scene \
   -H "Content-Type: application/json" \
-  -d '{"track": 0, "mode": "loop", "active": true, "file": "ambient.wav", "volume": 80}'
+  -d '{"action": "create", "name": "night"}'
 
-# Disable track 0
-curl -X POST http://192.168.1.100/api/track \
+# Update a track in a scene
+curl -X POST http://192.168.1.100/api/scenes \
   -H "Content-Type: application/json" \
-  -d '{"track": 0, "active": false}'
+  -d '{"day": {"tracks": [{"track": 0, "mode": "loop", "active": true, "file_path": "ambient.wav", "volume": 80}]}}'
 
-# Change volume on track 1 without affecting active state
-curl -X POST http://192.168.1.100/api/track \
+# Set global volume for a scene
+curl -X POST http://192.168.1.100/api/scenes \
   -H "Content-Type: application/json" \
-  -d '{"track": 1, "volume": 50}'
+  -d '{"night": {"global_volume": 40}}'
 
-# Arm track 2 for trigger events
-curl -X POST http://192.168.1.100/api/track \
+# Activate a scene
+curl -X POST http://192.168.1.100/api/scene \
   -H "Content-Type: application/json" \
-  -d '{"track": 2, "mode": "trigger", "file": "sting.wav", "active": true}'
+  -d '{"action": "activate", "name": "night"}'
 
-# Set global volume
-curl -X POST http://192.168.1.100/api/global/volume \
+# Set default boot scene
+curl -X POST http://192.168.1.100/api/scene \
   -H "Content-Type: application/json" \
-  -d '{"volume": 75}'
+  -d '{"action": "set_default", "name": "day"}'
 
-# Save current configuration
+# Delete a scene
+curl -X POST http://192.168.1.100/api/scene \
+  -H "Content-Type: application/json" \
+  -d '{"action": "delete", "name": "night"}'
+
+# Save to SD card
 curl -X POST http://192.168.1.100/api/config/save
 
 # Set device ID and mur gateway
@@ -514,46 +456,24 @@ import requests
 
 base_url = "http://192.168.1.100"
 
-# Get config status
-resp = requests.get(f"{base_url}/api/config/status")
+# Get all scenes
+resp = requests.get(f"{base_url}/api/scenes")
 print(resp.json())
 
-# Get device info (identity, gateway, wifi)
-resp = requests.get(f"{base_url}/api/device")
-print(resp.json())
+# Create a new scene
+resp = requests.post(f"{base_url}/api/scene", json={"action": "create", "name": "night"})
 
-# Get all track state
-resp = requests.get(f"{base_url}/api/tracks")
-print(resp.json())
-
-# Enable track 0 as a looping ambient sound
-resp = requests.post(f"{base_url}/api/track", json={
-    "track": 0,
-    "mode": "loop",
-    "active": True,
-    "file": "ambient.wav",
-    "volume": 80
-})
-print(resp.json())
-
-# Disable track 0
-resp = requests.post(f"{base_url}/api/track", json={"track": 0, "active": False})
-
-# Arm track 1 for trigger events
-resp = requests.post(f"{base_url}/api/track", json={
-    "track": 1,
-    "mode": "trigger",
-    "file": "sting.wav",
-    "active": True
+# Configure track 0 in the "day" scene
+resp = requests.post(f"{base_url}/api/scenes", json={
+    "day": {
+        "tracks": [{"track": 0, "mode": "loop", "active": True, "file_path": "ambient.wav", "volume": 80}]
+    }
 })
 
-# Update device ID and mur gateway config
-resp = requests.post(f"{base_url}/api/device", json={
-    "id": "MURMURA-STAGE-01",
-    "mur_gateway_ip": "192.168.1.10"
-})
+# Activate "night" scene
+resp = requests.post(f"{base_url}/api/scene", json={"action": "activate", "name": "night"})
 
-# Save configuration to survive reboot
+# Save to SD card
 resp = requests.post(f"{base_url}/api/config/save")
 ```
 
@@ -579,6 +499,7 @@ HTTP status codes:
 
 - CORS headers included for browser access
 - Server runs on port 80
-- Audio files must be WAV format on the SD card at `/sdcard/`
-- Configuration is persisted to `/sdcard/track_config.json`
+- Audio files must be WAV or MP3 format on the SD card at `/sdcard/`
+- Scene configuration is persisted to `/sdcard/scenes.json`
+- Gateway configuration (mur_gateway_ip/port) is persisted to `/sdcard/track_config.json`
 - Device ID is persisted to `/sdcard/unit_id.txt`

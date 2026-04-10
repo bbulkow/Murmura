@@ -5,6 +5,22 @@ let currentDevice = null;
 let refreshInterval = null;
 let volumeDebounceTimers = {};  // For debouncing volume changes
 let lastVolumeValues = {};      // Track last sent values to avoid duplicates
+let activeSceneName = 'default'; // Active scene name from last fetch
+let lastScenesData = null;       // Full scenes response from last fetch
+
+// Helper: build a scenes patch body for a track update in a specific scene
+function buildSceneTrackPatch(trackIndex, fields, sceneName) {
+    const body = {};
+    body[sceneName || activeSceneName] = { tracks: [{ track: trackIndex, ...fields }] };
+    return body;
+}
+
+// Helper: build a scenes patch body for scene-level fields (e.g. global_volume)
+function buildScenePatch(fields, sceneName) {
+    const body = {};
+    body[sceneName || activeSceneName] = fields;
+    return body;
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -25,38 +41,10 @@ document.addEventListener('DOMContentLoaded', function() {
 // Attach event listeners
 function attachEventListeners() {
     // Control buttons
-    document.getElementById('startBtn').addEventListener('click', () => controlPlayback('start'));
-    document.getElementById('stopBtn').addEventListener('click', () => controlPlayback('stop'));
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
     document.getElementById('rebootBtn').addEventListener('click', rebootDevice);
     document.getElementById('viewFilesBtn').addEventListener('click', toggleFiles);
-    
-    // Volume slider with throttling and release detection
-    const volumeSlider = document.getElementById('globalVolume');
-    const volumeValue = document.getElementById('globalVolumeValue');
-    
-    // Update display during drag
-    volumeSlider.addEventListener('input', function() {
-        volumeValue.textContent = this.value;
-        setGlobalVolume(this.value, false);  // false = still dragging
-    });
-    
-    // Send final value when user releases (mouse or touch)
-    const sendFinalVolume = function(event) {
-        const finalValue = volumeSlider.value;  // Get value from slider, not 'this'
-        setGlobalVolume(finalValue, true);  // true = final value
-    };
-    
-    // Bind all release events with debugging
-    volumeSlider.addEventListener('mouseup', sendFinalVolume);
-    volumeSlider.addEventListener('touchend', sendFinalVolume);
-    volumeSlider.addEventListener('keyup', sendFinalVolume);
-    
-    // Also capture when slider loses focus
-    volumeSlider.addEventListener('blur', function(event) {
-        const finalValue = volumeSlider.value;
-        setGlobalVolume(finalValue, true);
-    });
+    // Global volume is now per-scene, handled in attachAllSceneHandlers
 }
 
 // Load device data and loops
@@ -71,11 +59,13 @@ async function loadDeviceData() {
             updateDeviceInfo(deviceData);
         }
         
-        // Get loops
-        const loopsResponse = await fetch(`/api/device/${currentDevice}/tracks`);
-        if (loopsResponse.ok) {
-            const loopData = await loopsResponse.json();
-            updateLoops(loopData);
+        // Get scenes
+        const scenesResponse = await fetch(`/api/device/${currentDevice}/scenes`);
+        if (scenesResponse.ok) {
+            const scenesData = await scenesResponse.json();
+            lastScenesData = scenesData;
+            activeSceneName = scenesData.active_scene || 'default';
+            renderAllScenes(scenesData);
         }
 
         // Get mur gateway config
@@ -137,7 +127,7 @@ function updateLoops(loopData) {
     loopData.tracks.forEach(track => {
         const isTrigger = track.mode === 'trigger';
         const activeClass = track.active ? 'playing' : 'stopped';
-        const filename = track.file ? track.file.split('/').pop() : (track.filename || 'No file');
+        const filename = track.file_path ? track.file_path.split('/').pop() : (track.file || 'No file');
         const triggerName = track.trigger_name || '';
         const triggerMode = track.trigger_mode || 'momentary';
 
@@ -217,17 +207,6 @@ function updateLoops(loopData) {
     loopsHTML += '</div>';
     loopsConfig.innerHTML = loopsHTML;
     
-    // Update global volume
-    const volumeSlider = document.getElementById('globalVolume');
-    const volumeValue = document.getElementById('globalVolumeValue');
-    const globalVolume = loopData.global_volume || 0;
-    
-    // Only update if value changed significantly to avoid disrupting user
-    if (Math.abs(volumeSlider.value - globalVolume) > 1) {
-        volumeSlider.value = globalVolume;
-        volumeValue.textContent = globalVolume;
-    }
-    
     // Attach track control handlers
     attachTrackHandlers();
 }
@@ -271,14 +250,6 @@ function updateLoopsInPlace(loopData) {
         }
     });
 
-    // Update global volume
-    const volumeSlider = document.getElementById('globalVolume');
-    const volumeValue = document.getElementById('globalVolumeValue');
-    const globalVolume = loopData.global_volume || 0;
-    if (Math.abs(volumeSlider.value - globalVolume) > 1) {
-        volumeSlider.value = globalVolume;
-        volumeValue.textContent = globalVolume;
-    }
 }
 
 // Attach handlers to track controls
@@ -408,33 +379,6 @@ function attachTrackHandlers() {
 }
 
 // Control playback (start/stop all tracks)
-async function controlPlayback(action) {
-    try {
-        const response = await fetch('/api/batch/play', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                device_ids: [currentDevice],
-                action: action  // 'start' or 'stop', batch endpoint accepts both
-            })
-        });
-        
-        if (response.ok) {
-            showMessage(`Device ${action === 'start' ? 'started' : 'stopped'}`, 'success');
-            setTimeout(loadDeviceData, 500);
-        } else {
-            showMessage(`Failed to ${action} device`, 'error');
-        }
-    } catch (error) {
-        console.error('Error controlling device:', error);
-        if (error.message.includes('Failed to fetch')) {
-            showMessage('Flask server connection error - Cannot reach server', 'error');
-        } else {
-            showMessage('Error controlling device', 'error');
-        }
-    }
-}
-
 // Set global volume with throttling and immediate final value
 async function setGlobalVolume(volume, isFinal = false) {
     const volumeKey = 'global';
@@ -568,12 +512,14 @@ async function rebootDevice() {
 }
 
 // Control individual track (enable/disable)
-async function controlTrack(track, action) {
+async function controlTrack(track, action, sceneName) {
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
+        const active = (action === 'start');
+        const body = buildSceneTrackPatch(track, { active: active }, sceneName);
+        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({track: track, action: action})
+            body: JSON.stringify(body)
         });
 
         if (response.ok) {
@@ -588,12 +534,13 @@ async function controlTrack(track, action) {
 }
 
 // Set track mode (loop/trigger)
-async function setTrackMode(track, mode) {
+async function setTrackMode(track, mode, sceneName) {
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
+        const body = buildSceneTrackPatch(track, { mode: mode }, sceneName);
+        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({track: track, mode: mode})
+            body: JSON.stringify(body)
         });
 
         if (response.ok) {
@@ -608,8 +555,9 @@ async function setTrackMode(track, mode) {
 }
 
 // Set track volume with throttling and immediate final value
-async function setTrackVolume(track, volume, isFinal = false) {
-    const volumeKey = `track-${track}`;
+async function setTrackVolume(track, volume, isFinal = false, sceneName = null) {
+    const sn = sceneName || activeSceneName;
+    const volumeKey = `${sn}-track-${track}`;
     const volumeInt = parseInt(volume);
     
     // Reset auto-refresh timer to give server time to process the change
@@ -626,10 +574,11 @@ async function setTrackVolume(track, volume, isFinal = false) {
         lastVolumeValues[volumeKey] = volumeInt;
         
         try {
-            const response = await fetch(`/api/device/${currentDevice}/track/volume`, {
+            const body = buildSceneTrackPatch(track, { volume: volumeInt }, sn);
+            const response = await fetch(`/api/device/${currentDevice}/scenes`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({track: track, volume: volumeInt})
+                body: JSON.stringify(body)
             });
             
             if (!response.ok) {
@@ -654,10 +603,11 @@ async function setTrackVolume(track, volume, isFinal = false) {
         lastVolumeValues[volumeKey] = volumeInt;
         
         try {
-            const response = await fetch(`/api/device/${currentDevice}/track/volume`, {
+            const body = buildSceneTrackPatch(track, { volume: volumeInt }, sn);
+            const response = await fetch(`/api/device/${currentDevice}/scenes`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({track: track, volume: volumeInt})
+                body: JSON.stringify(body)
             });
             
             if (!response.ok) {
@@ -674,10 +624,12 @@ async function setTrackVolume(track, volume, isFinal = false) {
 
 // Global variable for track selection
 let currentTrackForFileSelection = null;
+let currentSceneForFileSelection = null;
 
 // Select file for track - opens the file selection panel
-async function selectTrackFile(track) {
+async function selectTrackFile(track, sceneName) {
     currentTrackForFileSelection = track;
+    currentSceneForFileSelection = sceneName || activeSceneName;
     
     try {
         // Get available files
@@ -740,7 +692,7 @@ function showFileSelectionPanel(track, files) {
         
         // Add click handler
         fileItem.onclick = function() {
-            selectFileForTrack(index, file.name);
+            selectFileForTrack(file.path, file.name);
         };
         
         fileListContainer.appendChild(fileItem);
@@ -752,17 +704,15 @@ function showFileSelectionPanel(track, files) {
 }
 
 // Handle file selection
-async function selectFileForTrack(fileIndex, fileName) {
+async function selectFileForTrack(filePath, fileName) {
     if (currentTrackForFileSelection === null) return;
-    
+
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/file`, {
+        const body = buildSceneTrackPatch(currentTrackForFileSelection, { file_path: filePath }, currentSceneForFileSelection);
+        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                track: currentTrackForFileSelection, 
-                file_index: fileIndex
-            })
+            body: JSON.stringify(body)
         });
         
         if (response.ok) {
@@ -867,11 +817,8 @@ function showMessage(message, type = 'info') {
 
 // Disable/enable controls
 function disableControls(disabled) {
-    document.getElementById('startBtn').disabled = disabled;
-    document.getElementById('stopBtn').disabled = disabled;
     document.getElementById('saveConfigBtn').disabled = disabled;
     document.getElementById('rebootBtn').disabled = disabled;
-    document.getElementById('globalVolume').disabled = disabled;
 }
 
 // Start auto-refresh
@@ -993,12 +940,13 @@ window.saveMurGateway = async function() {
 };
 
 // Set trigger_name / trigger_mode for a track
-async function setTrackTriggerConfig(track, fields) {
+async function setTrackTriggerConfig(track, fields, sceneName) {
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/trigger`, {
+        const body = buildSceneTrackPatch(track, fields, sceneName);
+        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ track, ...fields })
+            body: JSON.stringify(body)
         });
         if (!response.ok) {
             showMessage(`Failed to update trigger config for track ${track}`, 'error');
@@ -1006,6 +954,392 @@ async function setTrackTriggerConfig(track, fields) {
     } catch (e) {
         showMessage('Error updating trigger config', 'error');
     }
+}
+
+// ============================================================================
+// Scene Management
+// ============================================================================
+
+// Render ALL scenes with their full track configuration
+function renderAllScenes(scenesData) {
+    const container = document.getElementById('loopsConfig');
+    if (!container) return;
+
+    const scenes = scenesData.scenes || {};
+    const sceneNames = Object.keys(scenes);
+    const activeScene = scenesData.active_scene || '';
+    const defaultScene = scenesData.default_scene || '';
+
+    if (sceneNames.length === 0) {
+        container.innerHTML = '<p>No scenes configured</p>';
+        return;
+    }
+
+    let html = '';
+
+    sceneNames.forEach(sceneName => {
+        const scene = scenes[sceneName];
+        const isActive = (sceneName === activeScene);
+        const isDefault = (sceneName === defaultScene);
+        const borderColor = isActive ? '#28a745' : '#ccc';
+        const headerBg = isActive ? '#e8f5e9' : '#f5f5f5';
+
+        // Badges
+        let badges = '';
+        if (isActive) badges += '<span style="background:#28a745;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:6px;">ACTIVE</span>';
+        if (isDefault) badges += '<span style="background:#007bff;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:4px;">DEFAULT</span>';
+
+        // Action buttons
+        let actions = '';
+        if (!isActive) actions += `<button onclick="activateScene('${sceneName}')" class="btn btn-success" style="padding:2px 8px;font-size:11px;">Activate</button>`;
+        if (!isDefault) actions += `<button onclick="setDefaultScene('${sceneName}')" class="btn btn-primary" style="padding:2px 8px;font-size:11px;">Set Default</button>`;
+        if (!isActive) actions += `<button onclick="deleteScene('${sceneName}')" class="btn btn-danger" style="padding:2px 8px;font-size:11px;">Delete</button>`;
+
+        html += `<div class="scene-block" data-scene="${sceneName}" style="border:2px solid ${borderColor};border-radius:8px;margin-bottom:16px;overflow:hidden;">`;
+        html += `<div style="background:${headerBg};padding:8px 14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">`;
+        html += `<div><strong style="font-size:15px;">${sceneName}</strong>${badges}</div>`;
+        html += `<div style="display:flex;align-items:center;gap:6px;">`;
+        html += `<label style="font-size:13px;color:#555;">Volume:</label>`;
+        html += `<input type="range" class="scene-volume-slider" data-scene="${sceneName}" min="0" max="100" value="${scene.global_volume || 0}" style="width:120px;">`;
+        html += `<span class="scene-volume-value" data-scene="${sceneName}">${scene.global_volume || 0}%</span>`;
+        if (actions) html += `<span style="margin-left:10px;display:inline-flex;gap:4px;">${actions}</span>`;
+        html += `</div></div>`;
+
+        // Tracks
+        html += `<div style="padding:8px 14px;">`;
+        const tracks = scene.tracks || [];
+        tracks.forEach(track => {
+            const isTrigger = track.mode === 'trigger';
+            const activeClass = track.active ? 'playing' : 'stopped';
+            const filename = track.file_path ? track.file_path.split('/').pop() : 'No file';
+            const triggerName = track.trigger_name || '';
+            const triggerMode = track.trigger_mode || 'momentary';
+            const enableBtnLabel = track.active ? 'ON' : 'OFF';
+
+            const triggerDisplayName = triggerName || '(none)';
+            const triggerSection = isTrigger ? `
+                <div class="track-trigger-config" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;">
+                    <span class="trigger-name-display" data-scene="${sceneName}" data-track="${track.track}"
+                          style="font-size:13px;color:#555;min-width:100px;">${triggerDisplayName}</span>
+                    <button class="trigger-name-edit-btn" data-scene="${sceneName}" data-track="${track.track}"
+                            style="padding:2px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#eee;color:#333;">Edit</button>
+                    <div class="trigger-name-edit-row" data-scene="${sceneName}" data-track="${track.track}" style="display:none;align-items:center;gap:4px;">
+                        <input type="text" class="trigger-name-input" data-scene="${sceneName}" data-track="${track.track}"
+                               placeholder="trigger name" value="${triggerName}"
+                               style="width:160px;padding:3px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+                        <button class="trigger-name-ok-btn" data-scene="${sceneName}" data-track="${track.track}"
+                                style="padding:2px 8px;font-size:12px;border:1px solid #2a5298;border-radius:4px;cursor:pointer;background:#2a5298;color:#fff;">OK</button>
+                        <button class="trigger-name-cancel-btn" data-scene="${sceneName}" data-track="${track.track}"
+                                style="padding:2px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#eee;color:#333;">Cancel</button>
+                    </div>
+                    <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
+                            data-scene="${sceneName}" data-track="${track.track}" data-tmode="momentary"
+                            style="padding:3px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;
+                                   background:${triggerMode === 'momentary' ? '#2a5298' : '#eee'};color:${triggerMode === 'momentary' ? '#fff' : '#333'};">Momentary</button>
+                    <button class="trigger-mode-opt ${triggerMode === 'oneshot' ? 'active' : ''}"
+                            data-scene="${sceneName}" data-track="${track.track}" data-tmode="oneshot"
+                            style="padding:3px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;
+                                   background:${triggerMode === 'oneshot' ? '#2a5298' : '#eee'};color:${triggerMode === 'oneshot' ? '#fff' : '#333'};">Oneshot</button>
+                </div>` : '';
+
+            html += `
+                <div class="modal-loop-item ${activeClass}" data-scene="${sceneName}" data-track="${track.track}">
+                    <div class="track-controls">
+                        <button class="track-enable-btn ${activeClass}" data-scene="${sceneName}" data-track="${track.track}" data-active="${track.active}"
+                                title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
+                            ${enableBtnLabel}
+                        </button>
+                        <div class="track-mode-selector">
+                            <button class="track-mode-option ${track.mode === 'loop' ? 'active' : ''}"
+                                    data-scene="${sceneName}" data-track="${track.track}" data-mode="loop" title="Loop">↻ Loop</button>
+                            <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
+                                    data-scene="${sceneName}" data-track="${track.track}" data-mode="trigger" title="Trigger">▶ Trig</button>
+                        </div>
+                        <span class="loop-track">Track ${track.track}:</span>
+                        <input type="range" class="track-volume-slider" data-scene="${sceneName}" data-track="${track.track}"
+                               min="0" max="100" value="${track.volume}">
+                        <span class="track-volume-value">${track.volume}%</span>
+                        <span class="loop-file clickable" data-scene="${sceneName}" data-track="${track.track}"
+                              title="Click to change file">${filename}</span>
+                    </div>
+                    ${triggerSection}
+                </div>`;
+        });
+        html += `</div></div>`;
+    });
+
+    container.innerHTML = html;
+    attachAllSceneHandlers();
+}
+
+// Attach handlers for all scene controls (scene-aware version)
+function attachAllSceneHandlers() {
+    // Scene volume sliders
+    document.querySelectorAll('.scene-volume-slider').forEach(slider => {
+        const sceneName = slider.dataset.scene;
+        const valueSpan = document.querySelector(`.scene-volume-value[data-scene="${sceneName}"]`);
+
+        slider.addEventListener('input', function() {
+            if (valueSpan) valueSpan.textContent = `${this.value}%`;
+        });
+
+        const sendFinal = async () => {
+            const vol = parseInt(slider.value);
+            try {
+                const body = buildScenePatch({ global_volume: vol }, sceneName);
+                await fetch(`/api/device/${currentDevice}/scenes`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+            } catch (e) { console.error('Scene volume error:', e); }
+        };
+        slider.addEventListener('mouseup', sendFinal);
+        slider.addEventListener('touchend', sendFinal);
+        slider.addEventListener('change', sendFinal);
+    });
+
+    // Track enable/disable
+    document.querySelectorAll('.track-enable-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const track = parseInt(this.dataset.track);
+            const sceneName = this.dataset.scene;
+            const isActive = this.dataset.active === 'true';
+            await controlTrack(track, isActive ? 'stop' : 'start', sceneName);
+        });
+    });
+
+    // Track mode
+    document.querySelectorAll('.track-mode-option').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            if (this.classList.contains('active')) return;
+            await setTrackMode(parseInt(this.dataset.track), this.dataset.mode, this.dataset.scene);
+        });
+    });
+
+    // Track volume sliders
+    document.querySelectorAll('.track-volume-slider').forEach(slider => {
+        const sceneName = slider.dataset.scene;
+
+        slider.addEventListener('input', function() {
+            const valueDisplay = this.nextElementSibling;
+            if (valueDisplay) valueDisplay.textContent = `${this.value}%`;
+            setTrackVolume(parseInt(this.dataset.track), parseInt(this.value), false, sceneName);
+        });
+
+        const sendFinal = async () => {
+            await setTrackVolume(parseInt(slider.dataset.track), parseInt(slider.value), true, sceneName);
+        };
+        slider.addEventListener('mouseup', sendFinal);
+        slider.addEventListener('touchend', sendFinal);
+        slider.addEventListener('keyup', sendFinal);
+        slider.addEventListener('blur', sendFinal);
+    });
+
+    // Track file selection
+    document.querySelectorAll('.loop-file.clickable').forEach(el => {
+        el.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            await selectTrackFile(parseInt(this.dataset.track), this.dataset.scene);
+        });
+    });
+
+    // Trigger name edit/OK/cancel
+    document.querySelectorAll('.trigger-name-edit-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const {track, scene} = this.dataset;
+            const editRow = document.querySelector(`.trigger-name-edit-row[data-scene="${scene}"][data-track="${track}"]`);
+            const display = document.querySelector(`.trigger-name-display[data-scene="${scene}"][data-track="${track}"]`);
+            this.style.display = 'none';
+            if (display) display.style.display = 'none';
+            if (editRow) { editRow.style.display = 'flex'; editRow.querySelector('.trigger-name-input').focus(); }
+        });
+    });
+
+    document.querySelectorAll('.trigger-name-ok-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const {track, scene} = this.dataset;
+            const input = document.querySelector(`.trigger-name-input[data-scene="${scene}"][data-track="${track}"]`);
+            await setTrackTriggerConfig(parseInt(track), { trigger_name: input.value.trim() }, scene);
+            setTimeout(loadDeviceData, 400);
+        });
+    });
+
+    document.querySelectorAll('.trigger-name-cancel-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const {track, scene} = this.dataset;
+            const editRow = document.querySelector(`.trigger-name-edit-row[data-scene="${scene}"][data-track="${track}"]`);
+            const display = document.querySelector(`.trigger-name-display[data-scene="${scene}"][data-track="${track}"]`);
+            const editBtn = document.querySelector(`.trigger-name-edit-btn[data-scene="${scene}"][data-track="${track}"]`);
+            if (editRow) editRow.style.display = 'none';
+            if (display) display.style.display = '';
+            if (editBtn) editBtn.style.display = '';
+        });
+    });
+
+    document.querySelectorAll('.trigger-name-input').forEach(input => {
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const okBtn = document.querySelector(`.trigger-name-ok-btn[data-scene="${this.dataset.scene}"][data-track="${this.dataset.track}"]`);
+                if (okBtn) okBtn.click();
+            } else if (e.key === 'Escape') {
+                const cancelBtn = document.querySelector(`.trigger-name-cancel-btn[data-scene="${this.dataset.scene}"][data-track="${this.dataset.track}"]`);
+                if (cancelBtn) cancelBtn.click();
+            }
+        });
+    });
+
+    // Trigger mode buttons
+    document.querySelectorAll('.trigger-mode-opt').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            if (this.classList.contains('active')) return;
+            await setTrackTriggerConfig(parseInt(this.dataset.track), { trigger_mode: this.dataset.tmode }, this.dataset.scene);
+            setTimeout(loadDeviceData, 400);
+        });
+    });
+}
+
+// Download scenes config as JSON file
+async function downloadScenes() {
+    if (!lastScenesData) {
+        showMessage('No scene data loaded yet', 'error');
+        return;
+    }
+    // Build a clean download object with just scenes + default
+    const download = {
+        default_scene: lastScenesData.default_scene || '',
+        scenes: lastScenesData.scenes || {}
+    };
+    const json = JSON.stringify(download, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${currentDevice || 'murmura'}-scenes.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+// Upload scenes config from JSON file
+async function uploadScenes(input) {
+    if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        if (!data.scenes || typeof data.scenes !== 'object') {
+            showMessage('Invalid scenes file: missing "scenes" object', 'error');
+            return;
+        }
+
+        if (!confirm(`Upload ${Object.keys(data.scenes).length} scene(s) to ${currentDevice}? This will replace all scenes.`)) {
+            input.value = '';
+            return;
+        }
+
+        // Delete existing scenes (except active), create new ones, patch configs
+        // Simplest approach: use the patch endpoint to set all scene data,
+        // then use scene actions for create/delete/default.
+        // For now, we'll create missing scenes, patch all, set default.
+
+        const sceneNames = Object.keys(data.scenes);
+
+        // Create any scenes that don't exist yet
+        for (const name of sceneNames) {
+            const existing = lastScenesData && lastScenesData.scenes && lastScenesData.scenes[name];
+            if (!existing) {
+                await fetch(`/api/device/${currentDevice}/scene`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'create', name: name })
+                });
+            }
+        }
+
+        // Patch all scenes with the uploaded config
+        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data.scenes)
+        });
+
+        if (response.ok) {
+            // Set default if specified
+            if (data.default_scene) {
+                await fetch(`/api/device/${currentDevice}/scene`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'set_default', name: data.default_scene })
+                });
+            }
+            showMessage('Scenes uploaded successfully', 'success');
+            await loadDeviceData();
+        } else {
+            const err = await response.json();
+            showMessage(err.error || 'Upload failed', 'error');
+        }
+    } catch (e) {
+        console.error('Upload error:', e);
+        showMessage(`Upload error: ${e.message}`, 'error');
+    }
+    input.value = '';  // Reset file input
+}
+
+async function sceneAction(action, name) {
+    if (!currentDevice) return;
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/scene`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ action, name })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showMessage(data.message || `Scene ${action} succeeded`, 'success');
+            await loadDeviceData();
+        } else {
+            showMessage(data.error || `Scene ${action} failed`, 'error');
+        }
+    } catch (error) {
+        console.error(`Scene action '${action}' error:`, error);
+        showMessage(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function activateScene(name) {
+    await sceneAction('activate', name);
+}
+
+async function setDefaultScene(name) {
+    await sceneAction('set_default', name);
+}
+
+async function deleteScene(name) {
+    if (!confirm(`Delete scene "${name}"?`)) return;
+    await sceneAction('delete', name);
+}
+
+async function createScene() {
+    const input = document.getElementById('newSceneName');
+    const name = (input.value || '').trim();
+    if (!name) {
+        showMessage('Enter a scene name', 'error');
+        return;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        showMessage('Scene name must be alphanumeric, hyphens, underscores only', 'error');
+        return;
+    }
+    await sceneAction('create', name);
+    input.value = '';
 }
 
 // Clean up on page unload

@@ -35,29 +35,11 @@
                 </div>
                 
                 <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                    <button id="batchPlayBtn" class="btn btn-batch btn-success" style="padding: 8px 15px; font-size: 14px;">
-                        <span class="btn-icon">▶</span>
-                        Start
-                    </button>
-                    <button id="batchStopBtn" class="btn btn-batch btn-danger" style="padding: 8px 15px; font-size: 14px;">
-                        <span class="btn-icon">■</span>
-                        Stop
-                    </button>
-                    
-                    <div class="batch-volume-control" style="display: inline-flex; align-items: center; gap: 8px; background: #e8f4f8; padding: 8px 12px; border-radius: 6px;">
-                        <button id="batchVolumeBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
-                            <span class="btn-icon">🔊</span>
-                            Set Volume
-                        </button>
-                        <input type="range" id="batchVolume" min="0" max="100" value="50" style="width: 100px;">
-                        <span id="batchVolumeValue" class="volume-display" style="min-width: 35px;">50%</span>
-                    </div>
-                    
                     <button id="batchSaveConfigBtn" class="btn btn-batch btn-warning" style="padding: 8px 15px; font-size: 14px;">
                         <span class="btn-icon">💾</span>
                         Save Config
                     </button>
-                    
+
                     <button id="batchRebootBtn" class="btn btn-batch btn-danger" style="padding: 8px 15px; font-size: 14px;">
                         <span class="btn-icon">🔄</span>
                         Reboot
@@ -89,6 +71,7 @@
         <div class="status-bar">
             <span id="deviceCount">Devices: 0</span>
             <span id="onlineCount">Online: 0</span>
+            <span id="scanResult" style="color: #dc3545;"></span>
             <span id="connectionStatus" class="connection-status">
                 <span class="status-indicator"></span>
                 <span class="status-text">Disconnected</span>

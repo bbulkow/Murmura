@@ -50,9 +50,26 @@ function initializeSocket() {
     
     socket.on('scan_complete', function(data) {
         console.log('[WEBSOCKET] scan_complete event received:', data);
-        console.log(`Scan complete: found ${data.count} devices`);
         hideScanProgress();
         hideError();
+
+        // Show scan results persistently in status bar
+        const scanned = data.scanned || 0;
+        const registryOnly = data.registry_only || 0;
+        const scanResultEl = document.getElementById('scanResult');
+        if (scanResultEl) {
+            if (scanned === 0 && registryOnly > 0) {
+                scanResultEl.textContent = `Scan: 0 found on network, ${registryOnly} stale from registry`;
+                scanResultEl.style.color = '#dc3545';
+            } else if (registryOnly > 0) {
+                scanResultEl.textContent = `Scan: ${scanned} found, ${registryOnly} stale`;
+                scanResultEl.style.color = '#856404';
+            } else {
+                scanResultEl.textContent = `Scan: ${scanned} found`;
+                scanResultEl.style.color = '#28a745';
+            }
+        }
+
         loadDevices();
     });
     
@@ -90,19 +107,9 @@ function attachEventListeners() {
     // Batch controls
     document.getElementById('selectAllBtn').addEventListener('click', selectAllDevices);
     document.getElementById('deselectAllBtn').addEventListener('click', deselectAllDevices);
-    document.getElementById('batchPlayBtn').addEventListener('click', () => batchControlPlayback('play'));
-    document.getElementById('batchStopBtn').addEventListener('click', () => batchControlPlayback('stop'));
-    document.getElementById('batchVolumeBtn').addEventListener('click', batchSetVolume);
     document.getElementById('batchSaveConfigBtn').addEventListener('click', batchSaveConfig);
     document.getElementById('batchRebootBtn').addEventListener('click', batchReboot);
     document.getElementById('batchTriggerServerBtn').addEventListener('click', batchSetTriggerServer);
-
-    // Volume slider
-    const batchVolume = document.getElementById('batchVolume');
-    const batchVolumeValue = document.getElementById('batchVolumeValue');
-    batchVolume.addEventListener('input', function() {
-        batchVolumeValue.textContent = this.value + '%';
-    });
     
     // Modal controls
     document.querySelector('.close').addEventListener('click', closeModal);
@@ -159,7 +166,7 @@ async function loadDevices() {
         
         devices = data.devices;
         updateDeviceList(devices);
-        updateStatusBar(data.count, data.online);
+        updateStatusBar(data.count, data.online, data.registry_only || 0);
         
         // Update refresh indicator
         updateRefreshIndicator();
@@ -275,7 +282,7 @@ function createDeviceCard(device) {
         </div>
         <div class="device-header">
             <div class="device-id">${deviceId}</div>
-            <div class="device-status ${device.status}">${device.status.toUpperCase()}</div>
+            <div class="device-status ${device.status}">${device.status.toUpperCase()}${device.source === 'registry' ? ' <span style="font-size:10px;color:#999;">(stale)</span>' : ''}</div>
         </div>
         <div class="device-info-grid">
             <div class="device-info-item">
@@ -283,12 +290,12 @@ function createDeviceCard(device) {
                 <span class="device-info-value">${device.ip}</span>
             </div>
             <div class="device-info-item">
-                <span class="device-info-label">Global Volume:</span>
-                <span class="device-info-value">${device.global_volume || device.volume || 0}%</span>
+                <span class="device-info-label">Scene:</span>
+                <span class="device-info-value">${device.active_scene || '—'} <span style="font-size:11px;color:#888;">vol ${device.global_volume || 0}%</span></span>
             </div>
             <div class="device-info-item">
                 <span class="device-info-label">Active Tracks:</span>
-                <span class="device-info-value">${device.active_loops || 0}/3 ${device.playing ? '(Active)' : '(Stopped)'}</span>
+                <span class="device-info-value">${device.active_loops || 0}/3</span>
             </div>
         </div>
         ${loopInfo}
@@ -323,8 +330,9 @@ function createDeviceCard(device) {
 }
 
 // Update status bar
-function updateStatusBar(total, online) {
-    document.getElementById('deviceCount').textContent = `Devices: ${total}`;
+function updateStatusBar(total, online, registryOnly) {
+    const regSuffix = registryOnly > 0 ? ` (${registryOnly} stale)` : '';
+    document.getElementById('deviceCount').textContent = `Devices: ${total}${regSuffix}`;
     document.getElementById('onlineCount').textContent = `Online: ${online}`;
 }
 
@@ -527,6 +535,32 @@ async function batchSetVolume() {
 
 // Store current device IP for direct API calls
 let currentDeviceIP = null;
+let activeSceneName = null;
+
+// Helper: fetch scenes data for the current device, returns {tracks, globalVolume}
+async function fetchScenesData() {
+    const response = await fetch(`/api/device/${currentDevice}/scenes`);
+    if (!response.ok) throw new Error('Failed to fetch scenes');
+    const data = await response.json();
+    activeSceneName = data.active_scene || 'default';
+    const scene = (data.scenes || {})[activeSceneName] || {};
+    return {
+        tracks: scene.tracks || [],
+        globalVolume: scene.global_volume || 0,
+        scenesData: data
+    };
+}
+
+// Helper: post a scene patch for the active scene
+async function postScenePatch(sceneUpdate) {
+    const body = {};
+    body[activeSceneName || 'default'] = sceneUpdate;
+    return fetch(`/api/device/${currentDevice}/scenes`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    });
+}
 
 // Open device modal
 async function openDeviceModal(device) {
@@ -580,10 +614,10 @@ async function openDeviceModal(device) {
     
     // Load fresh device data including loops
     try {
-        const response = await fetch(`/api/device/${currentDevice}/tracks`);
-        if (response.ok) {
-            const loopData = await response.json();
-            
+        const scenesResult = await fetchScenesData();
+        if (scenesResult.tracks) {
+            const loopData = { tracks: scenesResult.tracks, global_volume: scenesResult.globalVolume };
+
             // Update with fresh track data
             if (loopData.tracks) {
                 loopsConfig.innerHTML = buildTracksHTML(loopData.tracks);
@@ -676,9 +710,9 @@ async function refreshModalData() {
         }
         
         // Get fresh loop data - same as refreshLoopData but without recursion
-        const loopsResponse = await fetch(`/api/device/${currentDevice}/tracks`);
-        if (loopsResponse.ok) {
-            const loopData = await loopsResponse.json();
+        const loopsScenesResult = await fetchScenesData();
+        if (loopsScenesResult.tracks) {
+            const loopData = { tracks: loopsScenesResult.tracks, global_volume: loopsScenesResult.globalVolume };
             
             // Update loop display
             const loopsConfig = document.getElementById('loopsConfig');
@@ -893,12 +927,12 @@ async function loadDeviceLoops() {
     loopsSection.style.display = 'block';
     
     try {
-        const response = await fetch(`/api/device/${currentDevice}/tracks`);
-        const data = await response.json();
-        
+        const scenesResult = await fetchScenesData();
+        const data = { tracks: scenesResult.tracks, global_volume: scenesResult.globalVolume };
+
         // Display loop configuration (customize based on your actual loop data structure)
         loopsConfig.innerHTML = `
-            <p>Loop configuration loaded</p>
+            <p>Scene '${activeSceneName}' configuration loaded</p>
             <pre>${JSON.stringify(data, null, 2)}</pre>
         `;
     } catch (error) {
@@ -1161,7 +1195,7 @@ function buildTracksHTML(tracks) {
 
     tracks.forEach(track => {
         const activeClass = track.active ? 'playing' : 'stopped';
-        const filename = track.file ? track.file.split('/').pop() : (track.filename || 'No file');
+        const filename = track.file_path ? track.file_path.split('/').pop() : (track.file ? track.file.split('/').pop() : (track.filename || 'No file'));
         html += `
             <div class="modal-loop-item ${activeClass}" data-track="${track.track}">
                 <div class="track-controls">
@@ -1247,11 +1281,8 @@ async function controlTrack(track, action) {
     if (!currentDevice) return;
 
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({track: track, action: action})
-        });
+        const active = (action === 'start');
+        const response = await postScenePatch({ tracks: [{ track: track, active: active }] });
 
         if (response.ok) {
             await refreshLoopData();
@@ -1268,11 +1299,7 @@ async function setTrackMode(track, mode) {
     if (!currentDevice) return;
 
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/control`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({track: track, mode: mode})
-        });
+        const response = await postScenePatch({ tracks: [{ track: track, mode: mode }] });
 
         if (response.ok) {
             await refreshLoopData();
@@ -1289,16 +1316,7 @@ async function setTrackVolume(track, volume) {
     if (!currentDevice) return;
     
     try {
-        const response = await fetch(`/api/device/${currentDevice}/track/volume`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                track: track,
-                volume: volume
-            })
-        });
+        const response = await postScenePatch({ tracks: [{ track: track, volume: volume }] });
         
         if (response.ok) {
             console.log(`Track ${track} volume set to ${volume}%`);
@@ -1347,16 +1365,8 @@ async function selectTrackFile(track) {
         }
         
         // Set the selected file for the track
-        const response = await fetch(`/api/device/${currentDevice}/track/file`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                track: track,
-                file_index: fileIndex
-            })
-        });
+        const selectedFile = filesData.files[fileIndex];
+        const response = await postScenePatch({ tracks: [{ track: track, file_path: selectedFile.path }] });
         
         if (response.ok) {
             showSuccess(`File set for track ${track}`);
@@ -1376,9 +1386,9 @@ async function refreshLoopData() {
     if (!currentDevice) return;
     
     try {
-        const response = await fetch(`/api/device/${currentDevice}/tracks`);
-        if (response.ok) {
-            const loopData = await response.json();
+        const scenesResult = await fetchScenesData();
+        if (scenesResult.tracks) {
+            const loopData = { tracks: scenesResult.tracks, global_volume: scenesResult.globalVolume };
 
             const loopsConfig = document.getElementById('loopsConfig');
             if (loopData.tracks && loopsConfig) {

@@ -7,22 +7,28 @@ Usage:
     python device_controller.py --id <device_id> --command <command> [options]
 
 Commands:
-    status       - Show device status
-    get-tracks   - Get current track status
-    set-track    - Configure a track (mode, active, file, volume)
-    set-volume   - Set global volume
-    set-id       - Change the device ID
-    save-config  - Save current configuration to SD card
-    load-config  - Load saved configuration from SD card
-    reboot       - Reboot the device
-    list-files   - List all audio files on the device's SD card
+    status            - Show device status
+    get-scenes        - Get all scenes with DEFAULT/ACTIVE markers
+    set-scene         - Patch a scene (track settings, global_volume)
+    create-scene      - Create a new scene
+    delete-scene      - Delete a scene
+    activate-scene    - Activate a scene
+    set-default-scene - Set a scene as the default
+    set-id            - Change the device ID
+    save-config       - Save current configuration to SD card
+    load-config       - Load saved configuration from SD card
+    reboot            - Reboot the device
+    list-files        - List all audio files on the device's SD card
 
 Examples:
     python device_controller.py --id MURMURA-001 --command status
-    python device_controller.py --id MURMURA-001 --command get-tracks
-    python device_controller.py --id MURMURA-001 --command set-track --track 0 --mode loop --active true --file ambient.wav --volume 80
-    python device_controller.py --id MURMURA-001 --command set-track --track 0 --active false
-    python device_controller.py --id MURMURA-001 --command set-volume --volume 75
+    python device_controller.py --id MURMURA-001 --command get-scenes
+    python device_controller.py --id MURMURA-001 --command set-scene --scene night --track 0 --volume 80
+    python device_controller.py --id MURMURA-001 --command set-scene --scene day --global-volume 60
+    python device_controller.py --id MURMURA-001 --command activate-scene --scene night
+    python device_controller.py --id MURMURA-001 --command create-scene --scene show
+    python device_controller.py --id MURMURA-001 --command delete-scene --scene show
+    python device_controller.py --id MURMURA-001 --command set-default-scene --scene day
     python device_controller.py --id MURMURA-001 --command set-id --new-id STAGE-01
     python device_controller.py --id MURMURA-001 --command reboot
     python device_controller.py --id MURMURA-001 --command list-files
@@ -180,63 +186,105 @@ class DeviceController:
         else:
             logger.error(f"Failed to get status: {result.get('error', 'Unknown error')}")
 
-    async def get_tracks(self) -> None:
-        """Get current track status."""
-        logger.info(f"Getting track status for {self.device_id}")
+    async def get_scenes(self) -> None:
+        """Get all scenes with DEFAULT/ACTIVE markers."""
+        logger.info(f"Getting scenes for {self.device_id}")
 
-        result = await self.send_request('GET', '/api/tracks')
+        result = await self.send_request('GET', '/api/scenes')
 
         if result['success'] and result['response']:
             data = result['response']
-            print(f"\nTrack Status for {self.device_id}")
-            print("-" * 90)
-            print(f"Global Volume: {data.get('global_volume', 'N/A')}%")
+            active_scene = data.get('active_scene', '')
+            default_scene = data.get('default_scene', '')
+            scenes = data.get('scenes', {})
+
+            print(f"\nScenes for {self.device_id}")
+            print("=" * 90)
+
+            if not scenes:
+                print("  (no scenes)")
+                return
+
+            for scene_name, scene_data in scenes.items():
+                markers = []
+                if scene_name == active_scene:
+                    markers.append("ACTIVE")
+                if scene_name == default_scene:
+                    markers.append("DEFAULT")
+                marker_str = f" [{', '.join(markers)}]" if markers else ""
+                print(f"\n  Scene: {scene_name}{marker_str}")
+                print(f"  Global Volume: {scene_data.get('global_volume', 'N/A')}%")
+                print(f"  {'Trk':<5} {'Mode':<8} {'Active':<8} {'Vol':<5} {'TrigMode':<10} {'TrigName':<24} File")
+                print("  " + "-" * 86)
+
+                for track in scene_data.get('tracks', []):
+                    active = "YES" if track.get('active') else "no"
+                    file_name = track.get('file', '')
+                    file_name = file_name.split('/')[-1] if file_name else '(none)'
+                    trig_name = track.get('trigger_name', '') or '-'
+                    trig_mode = track.get('trigger_mode', '-') if track.get('trigger_name') else '-'
+                    print(f"    {track.get('track', '?'):<3} {track.get('mode','loop'):<8} {active:<8} "
+                          f"{track.get('volume',0):<5} {trig_mode:<10} {trig_name:<24} {file_name}")
+
             print()
-            print(f"{'Trk':<5} {'Mode':<8} {'Active':<8} {'Vol':<5} {'TrigMode':<10} {'TrigName':<24} File")
-            print("-" * 90)
-
-            for track in data.get('tracks', []):
-                active = "YES" if track.get('active') else "no"
-                file_name = track.get('file', '')
-                file_name = file_name.split('/')[-1] if file_name else '(none)'
-                trig_name = track.get('trigger_name', '') or '-'
-                trig_mode = track.get('trigger_mode', '-') if track.get('trigger_name') else '-'
-                print(f"  {track['track']:<3} {track.get('mode','loop'):<8} {active:<8} "
-                      f"{track.get('volume',0):<5} {trig_mode:<10} {trig_name:<24} {file_name}")
         else:
-            logger.error(f"Failed to get track status: {result.get('error', 'Unknown error')}")
+            logger.error(f"Failed to get scenes: {result.get('error', 'Unknown error')}")
 
-    async def set_track(self, track: int, mode: Optional[str], active: Optional[bool],
-                        filename: Optional[str], volume: Optional[int],
+    async def set_scene(self, scene: str, track: Optional[int], mode: Optional[str],
+                        active: Optional[bool], filename: Optional[str],
+                        volume: Optional[int], global_volume: Optional[int],
                         trigger_name: Optional[str] = None,
                         trigger_mode: Optional[str] = None) -> None:
-        """Configure a track."""
-        payload: Dict[str, Any] = {'track': track}
+        """Patch a scene via POST /api/scenes."""
+        scene_body: Dict[str, Any] = {}
 
-        if mode is not None:
-            payload['mode'] = mode
-        if active is not None:
-            payload['active'] = active
-        if filename is not None:
-            payload['file'] = filename
-        if volume is not None:
-            payload['volume'] = volume
-        if trigger_name is not None:
-            payload['trigger_name'] = trigger_name
-        if trigger_mode is not None:
-            payload['trigger_mode'] = trigger_mode
+        # Build track entry if any track-level args provided
+        if track is not None:
+            track_entry: Dict[str, Any] = {'track': track}
+            if mode is not None:
+                track_entry['mode'] = mode
+            if active is not None:
+                track_entry['active'] = active
+            if filename is not None:
+                track_entry['file'] = filename
+            if volume is not None:
+                track_entry['volume'] = volume
+            if trigger_name is not None:
+                track_entry['trigger_name'] = trigger_name
+            if trigger_mode is not None:
+                track_entry['trigger_mode'] = trigger_mode
+            scene_body['tracks'] = [track_entry]
 
-        logger.info(f"Configuring track {track} on {self.device_id}: {payload}")
-        result = await self.send_request('POST', '/api/track', payload)
+        if global_volume is not None:
+            scene_body['global_volume'] = global_volume
+
+        if not scene_body:
+            logger.error("No changes specified for set-scene")
+            return
+
+        payload = {scene: scene_body}
+
+        logger.info(f"Patching scene '{scene}' on {self.device_id}: {json.dumps(payload)}")
+        result = await self.send_request('POST', '/api/scenes', payload)
 
         if result['success']:
-            resp = result['response']
-            logger.info(f"✓ Track {track} updated: mode={resp.get('mode')}, active={resp.get('active')}, "
-                        f"file={resp.get('file')}, volume={resp.get('volume')}, "
-                        f"trigger_name={resp.get('trigger_name')}, trigger_mode={resp.get('trigger_mode')}")
+            logger.info(f"Scene '{scene}' updated successfully")
         else:
             resp = result.get('response', {}) or {}
-            logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
+            logger.error(f"Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
+
+    async def scene_action(self, action: str, name: str) -> None:
+        """Perform a scene management action via POST /api/scene."""
+        payload = {'action': action, 'name': name}
+
+        logger.info(f"Scene {action} '{name}' on {self.device_id}")
+        result = await self.send_request('POST', '/api/scene', payload)
+
+        if result['success']:
+            logger.info(f"Scene '{name}' {action} succeeded")
+        else:
+            resp = result.get('response', {}) or {}
+            logger.error(f"Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
 
     async def get_mur_gateway(self) -> None:
         """Get Mur Gateway configuration (via consolidated /api/device)."""
@@ -263,16 +311,6 @@ class DeviceController:
         else:
             resp = result.get('response', {}) or {}
             logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
-
-    async def set_global_volume(self, volume: int) -> None:
-        """Set global volume."""
-        logger.info(f"Setting global volume to {volume}% on {self.device_id}")
-        result = await self.send_request('POST', '/api/global/volume', {'volume': volume})
-
-        if result['success']:
-            logger.info("✓ Global volume set successfully")
-        else:
-            logger.error(f"✗ Failed to set volume: {result.get('error', 'Unknown error')}")
 
     async def set_device_id(self, new_id: str) -> None:
         """Change the device ID."""
@@ -362,23 +400,24 @@ Examples:
     # Show device status
     %(prog)s --id MURMURA-001 --command status
 
-    # Get all track status
-    %(prog)s --id MURMURA-001 --command get-tracks
+    # Get all scenes
+    %(prog)s --id MURMURA-001 --command get-scenes
 
-    # Start track 0 as a loop
-    %(prog)s --id MURMURA-001 --command set-track --track 0 --mode loop --active true --file ambient.wav --volume 80
+    # Set track 0 volume in the 'night' scene
+    %(prog)s --id MURMURA-001 --command set-scene --scene night --track 0 --volume 80
 
-    # Stop track 0
-    %(prog)s --id MURMURA-001 --command set-track --track 0 --active false
+    # Set global volume in the 'day' scene
+    %(prog)s --id MURMURA-001 --command set-scene --scene day --global-volume 60
 
-    # Change volume on track 1 only
-    %(prog)s --id MURMURA-001 --command set-track --track 1 --volume 50
+    # Activate a scene
+    %(prog)s --id MURMURA-001 --command activate-scene --scene night
 
-    # Set track 2 as trigger mode
-    %(prog)s --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --active true
+    # Create / delete a scene
+    %(prog)s --id MURMURA-001 --command create-scene --scene show
+    %(prog)s --id MURMURA-001 --command delete-scene --scene show
 
-    # Set global volume
-    %(prog)s --id MURMURA-001 --command set-volume --volume 75
+    # Set a scene as default
+    %(prog)s --id MURMURA-001 --command set-default-scene --scene day
 
     # Change device ID
     %(prog)s --id MURMURA-001 --command set-id --new-id STAGE-01
@@ -405,7 +444,9 @@ Examples:
 
     required.add_argument('--command', '-c',
                           required=True,
-                          choices=['status', 'get-tracks', 'set-track', 'set-volume',
+                          choices=['status', 'get-scenes', 'set-scene',
+                                   'create-scene', 'delete-scene', 'activate-scene',
+                                   'set-default-scene',
                                    'set-id', 'save-config', 'load-config', 'reboot', 'list-files',
                                    'get-mur-gateway', 'set-mur-gateway'],
                           help='Command to execute on the device')
@@ -427,8 +468,19 @@ Examples:
                           action='store_true',
                           help='Skip device ID verification (not recommended)')
 
-    # Track control
-    track_group = parser.add_argument_group('track control (for set-track)')
+    # Scene control
+    scene_group = parser.add_argument_group('scene control')
+    scene_group.add_argument('--scene', '-s',
+                              metavar='NAME',
+                              help='Scene name (required for scene commands)')
+
+    scene_group.add_argument('--global-volume',
+                              type=int,
+                              metavar='LEVEL',
+                              help='Global volume level (0-100) for set-scene')
+
+    # Track control (within a scene, for set-scene)
+    track_group = parser.add_argument_group('track control (for set-scene)')
     track_group.add_argument('--track', '-k',
                               type=int,
                               choices=[0, 1, 2],
@@ -464,12 +516,12 @@ Examples:
                              metavar='PORT',
                              help='Port of the Mur Gateway (default 4000)')
 
-    # Volume control
+    # Volume control (per-track, used with set-scene --track)
     volume_group = parser.add_argument_group('volume control')
     volume_group.add_argument('--volume', '-v',
                                type=int,
                                metavar='LEVEL',
-                               help='Volume level (0-100)')
+                               help='Track volume level (0-100), used with --track in set-scene')
 
     # Device ID change
     id_group = parser.add_argument_group('device ID control')
@@ -508,32 +560,43 @@ Examples:
         if args.command == 'status':
             asyncio.run(controller.show_status())
 
-        elif args.command == 'get-tracks':
-            asyncio.run(controller.get_tracks())
+        elif args.command == 'get-scenes':
+            asyncio.run(controller.get_scenes())
 
-        elif args.command == 'set-track':
-            if args.track is None:
-                logger.error("Track number required (use --track)")
+        elif args.command == 'set-scene':
+            if not args.scene:
+                logger.error("Scene name required (use --scene)")
+                sys.exit(1)
+            if args.track is None and args.global_volume is None:
+                logger.error("Provide --track and/or --global-volume for set-scene")
                 sys.exit(1)
             # Convert active string to bool
             active = None
             if args.active is not None:
                 active = (args.active == 'true')
-            asyncio.run(controller.set_track(
+            asyncio.run(controller.set_scene(
+                scene=args.scene,
                 track=args.track,
                 mode=args.mode,
                 active=active,
                 filename=args.file,
                 volume=args.volume,
+                global_volume=args.global_volume,
                 trigger_name=args.trigger_name,
                 trigger_mode=args.trigger_mode
             ))
 
-        elif args.command == 'set-volume':
-            if args.volume is None:
-                logger.error("Volume level required (use --volume)")
+        elif args.command in ('create-scene', 'delete-scene', 'activate-scene', 'set-default-scene'):
+            if not args.scene:
+                logger.error("Scene name required (use --scene)")
                 sys.exit(1)
-            asyncio.run(controller.set_global_volume(args.volume))
+            action_map = {
+                'create-scene': 'create',
+                'delete-scene': 'delete',
+                'activate-scene': 'activate',
+                'set-default-scene': 'set_default',
+            }
+            asyncio.run(controller.scene_action(action_map[args.command], args.scene))
 
         elif args.command == 'set-id':
             if not args.new_id:

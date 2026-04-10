@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "http_server.h"
 #include "murmura.h"
+#include "cJSON.h"
 
 // Configuration file path on SD card
 #define CONFIG_FILE_PATH        "/sdcard/track_config.json"
@@ -81,5 +82,26 @@ esp_err_t config_get_default(track_config_t *config);
  * @brief Load configuration from file, or fall back to default
  */
 esp_err_t config_load_or_default(track_config_t *config);
+
+// --- Shared helpers (used by scene_manager.c) ---
+
+/**
+ * @brief Parse global_volume and tracks array from a cJSON object.
+ *        Does NOT parse mur_gateway fields.
+ */
+esp_err_t config_parse_scene_from_json(cJSON *root, int *global_volume,
+                                       track_config_entry_t tracks[MAX_TRACKS]);
+
+/**
+ * @brief Build a cJSON tracks array from track config entries.
+ *        Caller must NOT cJSON_Delete — attach to parent.
+ */
+cJSON* config_tracks_to_json(const track_config_entry_t tracks[MAX_TRACKS]);
+
+// String conversion helpers
+const char* config_mode_to_str(track_mode_t mode);
+track_mode_t config_str_to_mode(const char *s);
+const char* config_trigger_mode_to_str(trigger_mode_t tm);
+trigger_mode_t config_str_to_trigger_mode(const char *s);
 
 #endif // CONFIG_MANAGER_H
