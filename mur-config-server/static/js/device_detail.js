@@ -1025,9 +1025,16 @@ function renderAllScenes(scenesData) {
     if (!container) return;
 
     const scenes = scenesData.scenes || {};
-    const sceneNames = Object.keys(scenes);
     const activeScene = scenesData.active_scene || '';
     const defaultScene = scenesData.default_scene || '';
+    const sceneNames = Object.keys(scenes).sort((a, b) => {
+        // Active scene first, then default scene, then alphabetical
+        if (a === activeScene) return -1;
+        if (b === activeScene) return 1;
+        if (a === defaultScene) return -1;
+        if (b === defaultScene) return 1;
+        return a.localeCompare(b);
+    });
 
     if (sceneNames.length === 0) {
         container.innerHTML = '<p>No scenes configured</p>';
@@ -1294,93 +1301,6 @@ function attachAllSceneHandlers() {
             setTimeout(loadDeviceData, 400);
         });
     });
-}
-
-// Download scenes config as JSON file
-async function downloadScenes() {
-    if (!lastScenesData) {
-        showMessage('No scene data loaded yet', 'error');
-        return;
-    }
-    // Build a clean download object with just scenes + default
-    const download = {
-        default_scene: lastScenesData.default_scene || '',
-        scenes: lastScenesData.scenes || {}
-    };
-    const json = JSON.stringify(download, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${currentDevice || 'murmura'}-scenes.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
-// Upload scenes config from JSON file
-async function uploadScenes(input) {
-    if (!input.files || !input.files[0]) return;
-    const file = input.files[0];
-    try {
-        const text = await file.text();
-        const data = JSON.parse(text);
-
-        if (!data.scenes || typeof data.scenes !== 'object') {
-            showMessage('Invalid scenes file: missing "scenes" object', 'error');
-            return;
-        }
-
-        if (!confirm(`Upload ${Object.keys(data.scenes).length} scene(s) to ${currentDevice}? This will replace all scenes.`)) {
-            input.value = '';
-            return;
-        }
-
-        // Delete existing scenes (except active), create new ones, patch configs
-        // Simplest approach: use the patch endpoint to set all scene data,
-        // then use scene actions for create/delete/default.
-        // For now, we'll create missing scenes, patch all, set default.
-
-        const sceneNames = Object.keys(data.scenes);
-
-        // Create any scenes that don't exist yet
-        for (const name of sceneNames) {
-            const existing = lastScenesData && lastScenesData.scenes && lastScenesData.scenes[name];
-            if (!existing) {
-                await fetch(`/api/device/${currentDevice}/scene`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'create', name: name })
-                });
-            }
-        }
-
-        // Patch all scenes with the uploaded config
-        const response = await fetch(`/api/device/${currentDevice}/scenes`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(data.scenes)
-        });
-
-        if (response.ok) {
-            // Set default if specified
-            if (data.default_scene) {
-                await fetch(`/api/device/${currentDevice}/scene`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'set_default', name: data.default_scene })
-                });
-            }
-            showMessage('Scenes uploaded successfully', 'success');
-            await loadDeviceData();
-        } else {
-            const err = await response.json();
-            showMessage(err.error || 'Upload failed', 'error');
-        }
-    } catch (e) {
-        console.error('Upload error:', e);
-        showMessage(`Upload error: ${e.message}`, 'error');
-    }
-    input.value = '';  // Reset file input
 }
 
 async function sceneAction(action, name) {
