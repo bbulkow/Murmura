@@ -150,305 +150,6 @@ function updateDeviceInfo(data) {
     }
 }
 
-// Update tracks display
-function updateLoops(loopData) {
-    const loopsConfig = document.getElementById('loopsConfig');
-
-    // Skip full rebuild if user is editing a trigger name
-    const editRowOpen = document.querySelector('.trigger-name-edit-row[style*="display: flex"]') ||
-                        document.querySelector('.trigger-name-edit-row[style*="display:flex"]');
-    if (editRowOpen) {
-        updateLoopsInPlace(loopData);
-        return;
-    }
-
-    if (!loopData.tracks || loopData.tracks.length === 0) {
-        loopsConfig.innerHTML = '<p>No tracks configured</p>';
-        return;
-    }
-
-    let loopsHTML = '<div class="modal-loops-list">';
-
-    loopData.tracks.forEach(track => {
-        const isTrigger = track.mode === 'trigger';
-        const activeClass = track.active ? 'playing' : 'stopped';
-        const filename = track.file_path ? track.file_path.split('/').pop() : (track.file || 'No file');
-        const triggerName = track.trigger_name || '';
-        const triggerMode = track.trigger_mode || 'momentary';
-
-        const enableBtnLabel = track.active ? 'ON' : 'OFF';
-        const enableBtnClass = activeClass;
-
-        const triggerDisplayName = triggerName || '(none)';
-        const triggerSection = isTrigger ? `
-            <div class="track-trigger-config" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px;">
-                <span class="trigger-name-display" data-track="${track.track}"
-                      style="font-size:13px; color:#555; min-width:100px;">${triggerDisplayName}</span>
-                <button class="trigger-name-edit-btn" data-track="${track.track}"
-                        style="padding:2px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer; background:#eee; color:#333;">
-                    Edit
-                </button>
-                <div class="trigger-name-edit-row" data-track="${track.track}" style="display:none; align-items:center; gap:4px;">
-                    <input type="text" class="trigger-name-input" data-track="${track.track}"
-                           placeholder="trigger name" value="${triggerName}"
-                           list="triggerList-legacy-${track.track}" autocomplete="off"
-                           style="width:200px; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px;"
-                           title="Trigger name from Haven Gateway">
-                    <datalist id="triggerList-legacy-${track.track}"></datalist>
-                    <button class="trigger-name-ok-btn" data-track="${track.track}"
-                            style="padding:2px 8px; font-size:12px; border:1px solid #2a5298; border-radius:4px; cursor:pointer; background:#2a5298; color:#fff;">
-                        OK
-                    </button>
-                    <button class="trigger-name-cancel-btn" data-track="${track.track}"
-                            style="padding:2px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer; background:#eee; color:#333;">
-                        Cancel
-                    </button>
-                    <button class="trigger-list-refresh-btn" data-track="${track.track}"
-                            style="padding:2px 6px;font-size:11px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#555;"
-                            title="Refresh trigger list">&#x21bb;</button>
-                </div>
-                <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
-                        data-track="${track.track}" data-tmode="momentary"
-                        style="padding:3px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer;
-                               background:${triggerMode === 'momentary' ? '#2a5298' : '#eee'};
-                               color:${triggerMode === 'momentary' ? '#fff' : '#333'};">
-                    Momentary
-                </button>
-                <button class="trigger-mode-opt ${triggerMode === 'oneshot' ? 'active' : ''}"
-                        data-track="${track.track}" data-tmode="oneshot"
-                        style="padding:3px 8px; font-size:12px; border:1px solid #aaa; border-radius:4px; cursor:pointer;
-                               background:${triggerMode === 'oneshot' ? '#2a5298' : '#eee'};
-                               color:${triggerMode === 'oneshot' ? '#fff' : '#333'};">
-                    Oneshot
-                </button>
-            </div>` : '';
-
-        loopsHTML += `
-            <div class="modal-loop-item ${activeClass}" data-track="${track.track}">
-                <div class="track-controls">
-                    <button class="track-enable-btn ${enableBtnClass}" data-track="${track.track}" data-active="${track.active}"
-                            title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
-                        ${enableBtnLabel}
-                    </button>
-                    <div class="track-mode-selector">
-                        <button class="track-mode-option ${track.mode === 'loop' ? 'active' : ''}"
-                                data-track="${track.track}" data-mode="loop" title="Loop: repeat continuously">
-                            ↻ Loop
-                        </button>
-                        <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
-                                data-track="${track.track}" data-mode="trigger" title="Trigger: play on event">
-                            ▶ Trig
-                        </button>
-                    </div>
-                    <span class="loop-track">Track ${track.track}:</span>
-                    <input type="range" class="track-volume-slider" data-track="${track.track}"
-                           min="0" max="100" value="${track.volume}">
-                    <span class="track-volume-value">${track.volume}%</span>
-                    <span class="loop-file clickable" data-track="${track.track}"
-                          title="Click to change file">
-                        ${filename}
-                    </span>
-                </div>
-                ${triggerSection}
-            </div>
-        `;
-    });
-
-    loopsHTML += '</div>';
-    loopsConfig.innerHTML = loopsHTML;
-    
-    // Attach track control handlers
-    attachTrackHandlers();
-}
-
-// Close trigger name edit row and restore display mode
-function closeTriggerNameEdit(track) {
-    const editRow = document.querySelector(`.trigger-name-edit-row[data-track="${track}"]`);
-    const display = document.querySelector(`.trigger-name-display[data-track="${track}"]`);
-    const editBtn = document.querySelector(`.trigger-name-edit-btn[data-track="${track}"]`);
-    if (editRow) editRow.style.display = 'none';
-    if (display) display.style.display = '';
-    if (editBtn) editBtn.style.display = '';
-}
-
-// Update track state in-place without rebuilding DOM (preserves focused inputs)
-function updateLoopsInPlace(loopData) {
-    if (!loopData.tracks) return;
-
-    loopData.tracks.forEach(track => {
-        const item = document.querySelector(`.modal-loop-item[data-track="${track.track}"]`);
-        if (!item) return;
-
-        // Update active/stopped class
-        item.classList.remove('playing', 'stopped');
-        item.classList.add(track.active ? 'playing' : 'stopped');
-
-        // Update enable button
-        const enableBtn = item.querySelector('.track-enable-btn');
-        if (enableBtn) {
-            enableBtn.textContent = track.active ? 'ON' : 'OFF';
-            enableBtn.className = `track-enable-btn ${track.active ? 'playing' : 'stopped'}`;
-            enableBtn.dataset.active = track.active;
-        }
-
-        // Update volume slider (only if not focused)
-        const slider = item.querySelector('.track-volume-slider');
-        if (slider && slider !== document.activeElement) {
-            slider.value = track.volume;
-            const volLabel = item.querySelector('.track-volume-value');
-            if (volLabel) volLabel.textContent = track.volume + '%';
-        }
-    });
-
-}
-
-// Attach handlers to track controls
-function attachTrackHandlers() {
-    // Track enable/disable buttons
-    document.querySelectorAll('.track-enable-btn').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const track = parseInt(this.dataset.track);
-            const isActive = this.dataset.active === 'true';
-            await controlTrack(track, isActive ? 'stop' : 'start');
-        });
-    });
-
-    // Track mode selector options
-    document.querySelectorAll('.track-mode-option').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            if (this.classList.contains('active')) return;  // already selected
-            const track = parseInt(this.dataset.track);
-            const mode = this.dataset.mode;
-            await setTrackMode(track, mode);
-        });
-    });
-    
-    // Track volume sliders with throttling and release detection
-    document.querySelectorAll('.track-volume-slider').forEach(slider => {
-        // Update during drag
-        slider.addEventListener('input', async function() {
-            const track = parseInt(this.dataset.track);
-            const volume = parseInt(this.value);
-            const valueDisplay = this.nextElementSibling;
-            if (valueDisplay) {
-                valueDisplay.textContent = `${volume}%`;
-            }
-            await setTrackVolume(track, volume, false);  // false = still dragging
-        });
-        
-        // Send final value when released (mouse, touch, or keyboard)
-        const sendFinalTrackVolume = async function(event) {
-            const track = parseInt(slider.dataset.track);
-            const volume = parseInt(slider.value);  // Get value from slider, not 'this'
-            await setTrackVolume(track, volume, true);  // true = final value
-        };
-        
-        // Bind all release events with debugging
-        slider.addEventListener('mouseup', sendFinalTrackVolume);
-        slider.addEventListener('touchend', sendFinalTrackVolume);
-        slider.addEventListener('keyup', sendFinalTrackVolume);
-        
-        // Also capture when slider loses focus
-        slider.addEventListener('blur', async function(event) {
-            const track = parseInt(slider.dataset.track);
-            const volume = parseInt(slider.value);
-            await setTrackVolume(track, volume, true);
-        });
-    });
-    
-    // Track file selection
-    document.querySelectorAll('.loop-file.clickable').forEach(fileElement => {
-        fileElement.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const track = parseInt(this.dataset.track);
-            await selectTrackFile(track);
-        });
-    });
-
-    // Trigger name input: save on Enter or blur
-    // Trigger name edit buttons
-    document.querySelectorAll('.trigger-name-edit-btn').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const track = this.dataset.track;
-            const editRow = document.querySelector(`.trigger-name-edit-row[data-track="${track}"]`);
-            const display = document.querySelector(`.trigger-name-display[data-track="${track}"]`);
-            this.style.display = 'none';
-            display.style.display = 'none';
-            editRow.style.display = 'flex';
-            const input = editRow.querySelector('.trigger-name-input');
-            input.focus();
-            // Populate datalist from gateway in background (On/Off triggers only)
-            fetchTriggerNamesByType('On/Off').then(names => {
-                const datalist = document.getElementById(`triggerList-legacy-${track}`);
-                if (datalist && names.length > 0) {
-                    datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
-                }
-            });
-        });
-    });
-
-    // Trigger name OK buttons
-    document.querySelectorAll('.trigger-name-ok-btn').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const track = parseInt(this.dataset.track);
-            const input = document.querySelector(`.trigger-name-input[data-track="${track}"]`);
-            await setTrackTriggerConfig(track, { trigger_name: input.value.trim() });
-            closeTriggerNameEdit(track);
-            setTimeout(loadDeviceData, 400);
-        });
-    });
-
-    // Trigger name Cancel buttons
-    document.querySelectorAll('.trigger-name-cancel-btn').forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            closeTriggerNameEdit(parseInt(this.dataset.track));
-        });
-    });
-
-    // Enter key in trigger name input triggers OK
-    document.querySelectorAll('.trigger-name-input').forEach(input => {
-        input.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                const okBtn = document.querySelector(`.trigger-name-ok-btn[data-track="${this.dataset.track}"]`);
-                okBtn.click();
-            } else if (e.key === 'Escape') {
-                closeTriggerNameEdit(parseInt(this.dataset.track));
-            }
-        });
-    });
-
-    // Trigger list refresh button (legacy path — On/Off triggers only)
-    document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            const track = this.dataset.track;
-            const names = await fetchTriggerNamesByType('On/Off', true);
-            const datalist = document.getElementById(`triggerList-legacy-${track}`);
-            if (datalist) {
-                datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
-            }
-        });
-    });
-
-    // Trigger mode buttons (momentary/oneshot)
-    document.querySelectorAll('.trigger-mode-opt').forEach(btn => {
-        btn.addEventListener('click', async function(e) {
-            e.stopPropagation();
-            if (this.classList.contains('active')) return;
-            const track = parseInt(this.dataset.track);
-            const tmode = this.dataset.tmode;
-            await setTrackTriggerConfig(track, { trigger_mode: tmode });
-            setTimeout(loadDeviceData, 400);
-        });
-    });
-}
-
 // Control playback (start/stop all tracks)
 // Set global volume with throttling and immediate final value
 async function setGlobalVolume(volume, isFinal = false) {
@@ -1286,8 +987,9 @@ function renderAllScenes(scenesData) {
                 </div>` : '';
 
             html += `
-                <div class="modal-loop-item ${activeClass}" data-scene="${sceneName}" data-track="${track.track}">
-                    <div class="track-controls">
+                <div class="modal-loop-item ${activeClass}" data-scene="${sceneName}" data-track="${track.track}" style="padding:8px;margin-bottom:6px;">
+                    <div style="font-weight:600;font-size:14px;margin-bottom:6px;">Track ${track.track}</div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
                         <button class="track-enable-btn ${activeClass}" data-scene="${sceneName}" data-track="${track.track}" data-active="${track.active}"
                                 title="${track.active ? 'Disable' : 'Enable'} Track ${track.track}">
                             ${enableBtnLabel}
@@ -1298,14 +1000,16 @@ function renderAllScenes(scenesData) {
                             <button class="track-mode-option ${track.mode === 'trigger' ? 'active' : ''}"
                                     data-scene="${sceneName}" data-track="${track.track}" data-mode="trigger" title="Trigger">▶ Trig</button>
                         </div>
-                        <span class="loop-track">Track ${track.track}:</span>
-                        <input type="range" class="track-volume-slider" data-scene="${sceneName}" data-track="${track.track}"
-                               min="0" max="100" value="${track.volume}">
-                        <span class="track-volume-value">${track.volume}%</span>
                         <span class="loop-file clickable" data-scene="${sceneName}" data-track="${track.track}"
-                              title="Click to change file">${filename}</span>
+                              title="Click to change file" style="color:#2a5298;text-decoration:underline;cursor:pointer;">${filename}</span>
                     </div>
                     ${triggerSection}
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                        <label style="font-size:12px;color:#666;white-space:nowrap;">Volume:</label>
+                        <input type="range" class="track-volume-slider" data-scene="${sceneName}" data-track="${track.track}"
+                               min="0" max="100" value="${track.volume}" style="flex:1;max-width:200px;">
+                        <span class="track-volume-value" style="min-width:35px;font-size:13px;">${track.volume}%</span>
+                    </div>
                 </div>`;
         });
 
@@ -1417,7 +1121,8 @@ function attachAllSceneHandlers() {
             if (editRow) {
                 editRow.style.display = 'flex';
                 const input = editRow.querySelector('.trigger-name-input');
-                input.select();
+                input.value = '';  // clear so datalist shows all options (current value shown in display span)
+                input.focus();
                 // Populate datalist from gateway in background (On/Off triggers only)
                 fetchTriggerNamesByType('On/Off').then(names => {
                     const datalist = document.getElementById(`triggerList-${scene}-${track}`);
@@ -1502,7 +1207,8 @@ function attachAllSceneHandlers() {
             if (editRow) {
                 editRow.style.display = 'flex';
                 const input = editRow.querySelector('.btn-trigger-input');
-                input.select();
+                input.value = '';  // clear so datalist shows all options
+                input.focus();
                 // Populate datalist from gateway in background (On/Off triggers)
                 fetchTriggerNamesByType('On/Off').then(names => {
                     const dl = document.getElementById('buttonTriggerDatalist');

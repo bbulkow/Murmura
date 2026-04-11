@@ -118,6 +118,20 @@ function attachEventListeners() {
     document.getElementById('batchClearSceneTriggerBtn').addEventListener('click', batchClearSceneTrigger);
     document.getElementById('batchRefreshSceneTriggers').addEventListener('click', refreshBatchSceneTriggerList);
 
+    // Clear datalist inputs on focus so dropdown shows all options (browser filters by current value)
+    document.querySelectorAll('input[list]').forEach(input => {
+        input.addEventListener('focus', function() {
+            this._prevValue = this.value;
+            this.value = '';
+        });
+        input.addEventListener('blur', function() {
+            // Restore previous value if user didn't type anything new
+            if (this.value === '' && this._prevValue) {
+                this.value = this._prevValue;
+            }
+        });
+    });
+
     // Modal controls
     document.querySelector('.close').addEventListener('click', closeModal);
     document.getElementById('modalStartBtn').addEventListener('click', () => controlDevicePlayback('start'));
