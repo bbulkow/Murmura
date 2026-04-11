@@ -58,7 +58,8 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
 - **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices)
 - **mur-config-server/** - Flask web UI for managing multiple Murmura devices
-- **trigger-test/** - Trigger longevity test tool (replaces Mur Gateway for automated testing)
+- **mock-mur-gateway/** - Mock Mur Gateway for device-level testing (devices connect directly, bypasses real gateway)
+- **mock-trigger-server/** - Mock Haven Trigger Server for end-to-end testing (real mur-gateway connects to it)
 
 # running device manager and mur-config-server
 

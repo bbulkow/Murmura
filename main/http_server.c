@@ -28,6 +28,17 @@ static httpd_handle_t server = NULL;
 static track_manager_t *g_track_manager = NULL;
 static scene_manager_t *g_scene_manager = NULL;
 
+// Shared scratch buffers for HTTP handlers (SPIRAM, allocated once at init).
+// Safe to reuse: ESP-IDF HTTP server processes one handler at a time.
+#define SCRATCH_PATH_LEN   256
+#define SCRATCH_QUERY_LEN  256
+#define SCRATCH_NAME_LEN   128
+#define SCRATCH_PARAM_LEN  128
+static char *scratch_path  = NULL;   // 256 bytes — file paths
+static char *scratch_query = NULL;   // 256 bytes — URL query strings
+static char *scratch_name  = NULL;   // 128 bytes — filenames
+static char *scratch_param = NULL;   // 128 bytes — query params
+
 // Custom cJSON memory hooks for SPIRAM usage
 static void* cjson_malloc_spiram(size_t size) {
     void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
@@ -150,13 +161,12 @@ static esp_err_t files_get_handler(httpd_req_t *req) {
             cJSON_AddStringToObject(file_obj, "type", type_str);
             
             // Add full path
-            char full_path[256];
-            snprintf(full_path, sizeof(full_path), "/sdcard/%s", music_files[i]);
-            cJSON_AddStringToObject(file_obj, "path", full_path);
+            snprintf(scratch_path, SCRATCH_PATH_LEN, "/sdcard/%s", music_files[i]);
+            cJSON_AddStringToObject(file_obj, "path", scratch_path);
             
             // Get file size
             struct stat file_stat;
-            if (stat(full_path, &file_stat) == 0) {
+            if (stat(scratch_path, &file_stat) == 0) {
                 cJSON_AddNumberToObject(file_obj, "size", file_stat.st_size);
             } else {
                 cJSON_AddNumberToObject(file_obj, "size", 0);
@@ -874,61 +884,60 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    // Parse query string to get filename
-    char query_str[256] = {0};
-    char filename[128] = {0};
+    // Parse query string to get filename (using SPIRAM scratch buffers)
+    memset(scratch_query, 0, SCRATCH_QUERY_LEN);
+    memset(scratch_name, 0, SCRATCH_NAME_LEN);
     size_t query_len = httpd_req_get_url_query_len(req);
-    
-    if (query_len > 0 && query_len < sizeof(query_str)) {
-        httpd_req_get_url_query_str(req, query_str, sizeof(query_str));
-        
+
+    if (query_len > 0 && query_len < SCRATCH_QUERY_LEN) {
+        httpd_req_get_url_query_str(req, scratch_query, SCRATCH_QUERY_LEN);
+
         // Extract filename from query string (e.g., ?filename=track.wav)
-        char param_buf[128] = {0};
-        if (httpd_query_key_value(query_str, "filename", param_buf, sizeof(param_buf)) == ESP_OK) {
+        memset(scratch_param, 0, SCRATCH_PARAM_LEN);
+        if (httpd_query_key_value(scratch_query, "filename", scratch_param, SCRATCH_PARAM_LEN) == ESP_OK) {
             // URL decode the filename
             size_t decoded_len = 0;
-            for (size_t i = 0, j = 0; i < strlen(param_buf) && j < sizeof(filename) - 1; i++, j++) {
-                if (param_buf[i] == '%' && i + 2 < strlen(param_buf)) {
-                    char hex[3] = {param_buf[i+1], param_buf[i+2], '\0'};
-                    filename[j] = (char)strtol(hex, NULL, 16);
+            for (size_t i = 0, j = 0; i < strlen(scratch_param) && j < SCRATCH_NAME_LEN - 1; i++, j++) {
+                if (scratch_param[i] == '%' && i + 2 < strlen(scratch_param)) {
+                    char hex[3] = {scratch_param[i+1], scratch_param[i+2], '\0'};
+                    scratch_name[j] = (char)strtol(hex, NULL, 16);
                     i += 2;
-                } else if (param_buf[i] == '+') {
-                    filename[j] = ' ';
+                } else if (scratch_param[i] == '+') {
+                    scratch_name[j] = ' ';
                 } else {
-                    filename[j] = param_buf[i];
+                    scratch_name[j] = scratch_param[i];
                 }
                 decoded_len = j + 1;
             }
-            filename[decoded_len] = '\0';
+            scratch_name[decoded_len] = '\0';
         }
     }
-    
+
     // If no filename provided, generate one based on timestamp
-    if (strlen(filename) == 0) {
-        snprintf(filename, sizeof(filename), "upload_%ld.wav", (long)esp_timer_get_time() / 1000000);
+    if (strlen(scratch_name) == 0) {
+        snprintf(scratch_name, SCRATCH_NAME_LEN, "upload_%ld.wav", (long)esp_timer_get_time() / 1000000);
     }
-    
+
     // Ensure filename doesn't contain path separators (security)
     // Remove any path components, keeping only the filename
-    char *base_name = strrchr(filename, '/');
+    char *base_name = strrchr(scratch_name, '/');
     if (base_name) {
-        memmove(filename, base_name + 1, strlen(base_name));
+        memmove(scratch_name, base_name + 1, strlen(base_name));
     }
-    base_name = strrchr(filename, '\\');
+    base_name = strrchr(scratch_name, '\\');
     if (base_name) {
-        memmove(filename, base_name + 1, strlen(base_name));
+        memmove(scratch_name, base_name + 1, strlen(base_name));
     }
     
     // Build full path
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
-    
-    ESP_LOGI(TAG, "Uploading file: %s (size: %d bytes)", filepath, req->content_len);
-    
+    snprintf(scratch_path, SCRATCH_PATH_LEN, "/sdcard/%s", scratch_name);
+
+    ESP_LOGI(TAG, "Uploading file: %s (size: %d bytes)", scratch_path, req->content_len);
+
     // Open file for writing
-    FILE *file = fopen(filepath, "wb");
+    FILE *file = fopen(scratch_path, "wb");
     if (!file) {
-        ESP_LOGE(TAG, "Failed to open file for writing: %s", filepath);
+        ESP_LOGE(TAG, "Failed to open file for writing: %s", scratch_path);
         free(chunk_buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create file");
         return ESP_FAIL;
@@ -954,7 +963,7 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
             }
             ESP_LOGE(TAG, "Upload failed: error receiving data");
             fclose(file);
-            remove(filepath);  // Clean up partial file
+            remove(scratch_path);  // Clean up partial file
             free(chunk_buf);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
             return ESP_FAIL;
@@ -965,7 +974,7 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
         if (written != received) {
             ESP_LOGE(TAG, "Failed to write to file: wrote %d of %d bytes", written, received);
             fclose(file);
-            remove(filepath);  // Clean up partial file
+            remove(scratch_path);  // Clean up partial file
             free(chunk_buf);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to write file");
             return ESP_FAIL;
@@ -990,13 +999,13 @@ static esp_err_t file_upload_handler(httpd_req_t *req) {
     fclose(file);
     free(chunk_buf);
     
-    ESP_LOGI(TAG, "File uploaded successfully: %s (%d bytes)", filename, total_received);
-    
+    ESP_LOGI(TAG, "File uploaded successfully: %s (%d bytes)", scratch_name, total_received);
+
     // Send success response
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", true);
-    cJSON_AddStringToObject(response, "filename", filename);
-    cJSON_AddStringToObject(response, "path", filepath);
+    cJSON_AddStringToObject(response, "filename", scratch_name);
+    cJSON_AddStringToObject(response, "path", scratch_path);
     cJSON_AddNumberToObject(response, "size", total_received);
     cJSON_AddStringToObject(response, "message", "File uploaded successfully");
     
@@ -1050,12 +1059,11 @@ static esp_err_t file_delete_handler(httpd_req_t *req) {
     }
     
     // Build full path
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
-    
+    snprintf(scratch_path, SCRATCH_PATH_LEN, "/sdcard/%s", filename);
+
     // Check if file exists
     struct stat file_stat;
-    if (stat(filepath, &file_stat) != 0) {
+    if (stat(scratch_path, &file_stat) != 0) {
         cJSON_AddBoolToObject(response, "success", false);
         cJSON_AddStringToObject(response, "error", "File not found");
         send_json_response(req, response);
@@ -1075,7 +1083,7 @@ static esp_err_t file_delete_handler(httpd_req_t *req) {
     }
     
     // Delete the file
-    if (remove(filepath) == 0) {
+    if (remove(scratch_path) == 0) {
         ESP_LOGI(TAG, "File deleted successfully: %s", filename);
         cJSON_AddBoolToObject(response, "success", true);
         cJSON_AddStringToObject(response, "filename", filename);
@@ -1741,6 +1749,15 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     // Initialize cJSON to use SPIRAM for all allocations
     init_cjson_spiram();
     ESP_LOGI(TAG, "cJSON configured to use SPIRAM");
+
+    // Allocate shared scratch buffers in SPIRAM (reused across all handlers)
+    if (!scratch_path) {
+        scratch_path  = heap_caps_malloc(SCRATCH_PATH_LEN,  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        scratch_query = heap_caps_malloc(SCRATCH_QUERY_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        scratch_name  = heap_caps_malloc(SCRATCH_NAME_LEN,  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        scratch_param = heap_caps_malloc(SCRATCH_PARAM_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "HTTP scratch buffers allocated in SPIRAM (768 bytes)");
+    }
     
     // Note: loop manager will be set by audio_control_task via http_server_set_track_manager
     // We don't create one here - we'll use the shared one from audio control task

@@ -1,0 +1,23 @@
+{
+  "triggers": [
+    {
+      "name": "TestESP32.Button",
+      "type": "On/Off"
+    },
+    {
+      "name": "TestESP32.Discrete",
+      "type": "Discrete",
+      "range": {
+        "values": ["default", "day", "night"]
+      }
+    },
+    {
+      "name": "TestESP32.Continuous",
+      "type": "Continuous",
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  ]
+}

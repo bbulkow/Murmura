@@ -18,6 +18,12 @@ up at about 18 units. The speaker chosen was a remaindered unit from Sony, insta
 
 For instructions on operating deployed devices — WiFi setup, file management, playback and volume control — see [USE.md](USE.md).
 
+## Known Issues
+
+### Volume spike on scene change
+
+When switching scenes (via trigger or API), volume briefly jumps to 100% before the new scene's volume takes effect. The scene activation pipeline sends track enable/start messages before the global volume message is applied, causing a momentary full-volume burst.
+
 ## Future
 
 Three current problems exist.
@@ -97,7 +103,8 @@ aithinker-adf/          Board support overlay files and build instructions
 mur-config-server/      Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 mur-gateway/            Mur Gateway server (bridges trigger sources to devices)
-trigger-test/           Trigger test tool (replaces Mur Gateway for automated testing)
+mock-mur-gateway/       Mock Mur Gateway for device testing (replaces real gateway)
+mock-trigger-server/    Mock Haven Trigger Server for end-to-end testing
 ```
 
 ## Building and Running a Mur

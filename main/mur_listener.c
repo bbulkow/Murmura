@@ -37,7 +37,7 @@
 
 static const char *TAG = "MUR_LISTENER";
 
-#define TASK_STACK_SIZE     4096
+#define TASK_STACK_SIZE     4608
 #define TASK_PRIORITY       4
 #define RECV_BUF_SIZE       256
 #define LINE_BUF_SIZE       512
@@ -414,8 +414,8 @@ static void process_line(const char *line)
  */
 static void mur_task(void *arg)
 {
-    char recv_buf[RECV_BUF_SIZE];
-    char line_buf[LINE_BUF_SIZE];
+    static char recv_buf[RECV_BUF_SIZE];
+    static char line_buf[LINE_BUF_SIZE];
     int  line_pos = 0;
 
     while (1) {
