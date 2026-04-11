@@ -14,7 +14,9 @@ Each track within a scene has:
 - **trigger_name**: name of the trigger event to listen for (empty string = no trigger)
 - **trigger_mode**: `"momentary"` (start on keyDown "On", stop on keyUp "Off") or `"oneshot"` (start on keyDown, plays to completion, ignore keyUp)
 
-Each scene also has a **global_volume** (master volume, 0-100%) that scales all tracks via the hardware codec.
+Each scene also has:
+- **global_volume** (master volume, 0-100%) that scales all tracks via the hardware codec
+- **button_trigger** (optional): a trigger name (typically On/Off type) that activates this scene when an "On" event arrives. One button trigger per scene.
 
 The device connects outbound to a Mur Gateway to receive trigger events:
 - **mur_gateway_ip**: IP address of the Mur Gateway (empty = disabled)
@@ -93,10 +95,11 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
   "id": "MURMURA-001",
   "mac_address": "AA:BB:CC:DD:EE:FF",
   "ip_address": "192.168.1.100",
-  "firmware_version": "3.0",
+  "firmware_version": "3.1",
   "uptime_seconds": 3600,
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
+  "scene_trigger_name": "SceneSelector",
   "wifi": {
     "connected": true,
     "ssid": "MyNetwork",
@@ -114,6 +117,7 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
 - `mac_address`, `ip_address`, `firmware_version`, `uptime_seconds`: read-only device info
 - `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
 - `mur_gateway_port`: Mur Gateway TCP port (default 4000)
+- `scene_trigger_name`: trigger name for discrete scene changes — when an event with this name arrives, the `value` is used as the scene name to activate. If the value doesn't match any scene, the default scene is activated. Empty string disables.
 - `wifi.connected`: whether WiFi is connected
 - `wifi.ssid`, `wifi.rssi`, `wifi.signal_strength`: current connection info (only present when connected)
 - `wifi.networks`: list of configured WiFi networks
@@ -129,7 +133,8 @@ Patch-style update of settable device fields. All fields are optional — only t
 {
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
-  "mur_gateway_port": 4000
+  "mur_gateway_port": 4000,
+  "scene_trigger_name": "SceneSelector"
 }
 ```
 
@@ -139,7 +144,8 @@ Patch-style update of settable device fields. All fields are optional — only t
   "success": true,
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
-  "mur_gateway_port": 4000
+  "mur_gateway_port": 4000,
+  "scene_trigger_name": "SceneSelector"
 }
 ```
 
@@ -171,6 +177,7 @@ Returns all scene configurations plus metadata.
   "scenes": {
     "day": {
       "global_volume": 75,
+      "button_trigger": "ButtonA",
       "tracks": [
         {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/birds.wav", "volume": 80, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
         {"track": 1, "mode": "loop", "active": true, "file_path": "/sdcard/wind.wav", "volume": 60, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
@@ -501,5 +508,6 @@ HTTP status codes:
 - Server runs on port 80
 - Audio files must be WAV or MP3 format on the SD card at `/sdcard/`
 - Scene configuration is persisted to `/sdcard/scenes.json`
-- Gateway configuration (mur_gateway_ip/port) is persisted to `/sdcard/track_config.json`
+- Gateway configuration (mur_gateway_ip/port) and scene trigger name are persisted to `/sdcard/track_config.json`
+- Per-scene button triggers are persisted as part of each scene in `/sdcard/scenes.json`
 - Device ID is persisted to `/sdcard/unit_id.txt`

@@ -57,16 +57,33 @@
                     <span style="color: #aaa;">|</span>
                     <input type="text" id="batchNewSceneName" placeholder="New scene name" style="width: 160px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
                     <button id="batchCreateSceneBtn" class="btn btn-batch btn-secondary" style="padding: 8px 15px; font-size: 14px;">
-                        Create Scene
+                        Create
                     </button>
                 </div>
 
                 <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
-                    <label style="font-weight: 500; white-space: nowrap;">Trigger Server:</label>
-                    <input type="text" id="batchTriggerIp" placeholder="IP address" style="width: 130px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
-                    <input type="number" id="batchTriggerPort" placeholder="port (opt)" style="width: 100px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
-                    <button id="batchTriggerServerBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
-                        Set Trigger Server
+                    <label style="font-weight: 500; white-space: nowrap;">Mur Gateway:</label>
+                    <input type="text" id="batchGatewayInput" placeholder="IP address" list="batchGatewayList" style="width: 180px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <datalist id="batchGatewayList"></datalist>
+                    <input type="number" id="batchGatewayPort" placeholder="port" style="width: 80px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <button id="batchRememberGatewayBtn" class="btn btn-batch btn-secondary" style="padding: 8px 15px; font-size: 14px;">
+                        OK
+                    </button>
+                    <button id="batchSetGatewayBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                        Set Devices
+                    </button>
+                </div>
+
+                <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
+                    <label style="font-weight: 500; white-space: nowrap;">Scene Trigger:</label>
+                    <input type="text" id="batchSceneTriggerInput" placeholder="trigger name" list="batchSceneTriggerList" style="width: 180px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <datalist id="batchSceneTriggerList"></datalist>
+                    <button id="batchRefreshSceneTriggers" style="padding: 6px 10px; font-size: 14px; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #f8f9fa;" title="Refresh trigger list from gateway">&#x21bb;</button>
+                    <button id="batchSetSceneTriggerBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                        Set Devices
+                    </button>
+                    <button id="batchClearSceneTriggerBtn" class="btn btn-batch btn-secondary" style="padding: 8px 15px; font-size: 14px;">
+                        Clear Devices
                     </button>
                 </div>
             </div>

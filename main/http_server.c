@@ -14,6 +14,7 @@
 #include "config_manager.h"
 #include "scene_manager.h"
 #include "unit_status_manager.h"
+#include "mur_listener.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include "esp_system.h"
@@ -247,6 +248,10 @@ static esp_err_t scenes_post_handler(httpd_req_t *req) {
     esp_err_t apply_ret = scene_apply_patch(g_scene_manager, request,
                                              g_track_manager->audio_control_queue, g_track_manager);
 
+    if (apply_ret == ESP_OK) {
+        mur_listener_resubscribe();
+    }
+
     cJSON *response = cJSON_CreateObject();
     if (apply_ret == ESP_OK) {
         cJSON_AddBoolToObject(response, "success", true);
@@ -366,6 +371,7 @@ static esp_err_t scene_action_handler(httpd_req_t *req) {
             esp_err_t ret = scene_activate(g_scene_manager, name,
                                             g_track_manager->audio_control_queue, g_track_manager);
             if (ret == ESP_OK) {
+                mur_listener_resubscribe();
                 cJSON_AddBoolToObject(response, "success", true);
                 char msg[96];
                 snprintf(msg, sizeof(msg), "Scene '%s' activated", name);
@@ -423,9 +429,11 @@ static esp_err_t device_get_handler(httpd_req_t *req) {
     if (g_track_manager) {
         cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
+        cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
     } else {
         cJSON_AddStringToObject(response, "mur_gateway_ip", "");
         cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
+        cJSON_AddStringToObject(response, "scene_trigger_name", "");
     }
 
     // --- WiFi status and networks ---
@@ -531,6 +539,17 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
             g_track_manager->mur_gateway_port = port_json->valueint;
             any_update = true;
         }
+
+        // --- Scene trigger name ---
+        cJSON *stn_json = cJSON_GetObjectItem(request, "scene_trigger_name");
+        if (cJSON_IsString(stn_json)) {
+            strncpy(g_track_manager->scene_trigger_name, stn_json->valuestring,
+                    sizeof(g_track_manager->scene_trigger_name) - 1);
+            g_track_manager->scene_trigger_name[sizeof(g_track_manager->scene_trigger_name) - 1] = '\0';
+            any_update = true;
+            mur_listener_resubscribe();
+        }
+
     }
 
     if (!any_update) {
@@ -552,6 +571,7 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
     if (g_track_manager) {
         cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
+        cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
     }
 
     esp_err_t send_ret = send_json_response(req, response);
@@ -763,13 +783,18 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
     esp_err_t ret = scene_manager_load(g_scene_manager);
 
     if (ret == ESP_OK) {
-        // Also reload gateway config
-        track_config_t gw_config;
-        if (config_load(&gw_config) == ESP_OK) {
-            strncpy(g_track_manager->mur_gateway_ip, gw_config.mur_gateway_ip,
+        // Also reload gateway + scene trigger config
+        // Heap-allocated: track_config_t is too large for the task stack
+        track_config_t *gw_config = heap_caps_calloc(1, sizeof(track_config_t),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (gw_config && config_load(gw_config) == ESP_OK) {
+            strncpy(g_track_manager->mur_gateway_ip, gw_config->mur_gateway_ip,
                     sizeof(g_track_manager->mur_gateway_ip) - 1);
-            g_track_manager->mur_gateway_port = gw_config.mur_gateway_port;
+            g_track_manager->mur_gateway_port = gw_config->mur_gateway_port;
+            strncpy(g_track_manager->scene_trigger_name, gw_config->scene_trigger_name,
+                    sizeof(g_track_manager->scene_trigger_name) - 1);
         }
+        free(gw_config);
 
         // Activate default scene
         if (g_scene_manager->default_scene[0] != '\0') {
@@ -781,6 +806,7 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
         }
 
         if (ret == ESP_OK) {
+            mur_listener_resubscribe();
             cJSON_AddBoolToObject(response, "success", true);
             cJSON_AddStringToObject(response, "message", "Configuration loaded and applied");
             cJSON_AddStringToObject(response, "active_scene", g_scene_manager->active_scene);

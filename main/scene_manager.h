@@ -15,6 +15,7 @@ typedef struct {
     char name[MAX_SCENE_NAME_LEN];
     int global_volume_percent;
     track_config_entry_t tracks[MAX_TRACKS];
+    char button_trigger[MAX_TRIGGER_NAME_LEN];  // trigger name that activates this scene on "On"
 } scene_config_t;
 
 // Full scene manager state (lives in SPIRAM)

@@ -449,24 +449,23 @@ void audio_control_task(void *pvParameters)
         // Set scene manager on HTTP server
         http_server_set_scene_manager(scene_mgr);
 
-        // Load gateway config from track_config.json (non-scene settings)
-        track_config_t gw_config;
-        if (config_load(&gw_config) == ESP_OK) {
-            strncpy(track_manager->mur_gateway_ip, gw_config.mur_gateway_ip,
+        // Load gateway + scene trigger config from track_config.json
+        // Heap-allocated: track_config_t is too large for the 4096-byte task stack
+        track_config_t *gw_config = heap_caps_calloc(1, sizeof(track_config_t),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (gw_config && config_load(gw_config) == ESP_OK) {
+            strncpy(track_manager->mur_gateway_ip, gw_config->mur_gateway_ip,
                     sizeof(track_manager->mur_gateway_ip) - 1);
-            track_manager->mur_gateway_port = gw_config.mur_gateway_port;
-            ESP_LOGI(TAG, "Gateway config: %s:%d",
+            track_manager->mur_gateway_port = gw_config->mur_gateway_port;
+            strncpy(track_manager->scene_trigger_name, gw_config->scene_trigger_name,
+                    sizeof(track_manager->scene_trigger_name) - 1);
+            ESP_LOGI(TAG, "Gateway config: %s:%d, scene_trigger: '%s'",
                      track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
-                     track_manager->mur_gateway_port);
+                     track_manager->mur_gateway_port,
+                     track_manager->scene_trigger_name[0] ? track_manager->scene_trigger_name : "(none)");
         }
+        free(gw_config);
 
-        // Initialize Mur Gateway listener
-        esp_err_t mur_ret = mur_listener_init(track_manager);
-        if (mur_ret == ESP_OK) {
-            ESP_LOGI(TAG, "Mur listener initialized");
-        } else {
-            ESP_LOGW(TAG, "Mur listener init failed: %s", esp_err_to_name(mur_ret));
-        }
     }
 
     // Start the audio system infrastructure (output pipeline only)
@@ -478,7 +477,7 @@ void audio_control_task(void *pvParameters)
     xQueueSend(control_queue, &start_msg, portMAX_DELAY);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-    // Activate the default scene
+    // Activate the default scene (before mur_listener_init so initial subscribe has correct data)
     if (scene_mgr && scene_mgr->scene_count > 0) {
         const char *boot_scene = scene_mgr->default_scene[0] != '\0'
                                  ? scene_mgr->default_scene
@@ -491,6 +490,16 @@ void audio_control_task(void *pvParameters)
         }
     } else {
         ESP_LOGW(TAG, "No scenes available, starting with empty tracks");
+    }
+
+    // Initialize Mur Gateway listener AFTER scene activation so initial subscribe has correct trigger names
+    if (track_manager->mur_gateway_ip[0] != '\0') {
+        esp_err_t mur_ret = mur_listener_init(track_manager, scene_mgr);
+        if (mur_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Mur listener initialized");
+        } else {
+            ESP_LOGW(TAG, "Mur listener init failed: %s", esp_err_to_name(mur_ret));
+        }
     }
 
     ESP_LOGI(TAG, "audio_control: start listener");

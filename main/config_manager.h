@@ -26,6 +26,7 @@ typedef struct {
     int global_volume_percent;
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];
     int mur_gateway_port;
+    char scene_trigger_name[MAX_TRIGGER_NAME_LEN];
 } track_config_t;
 
 /**

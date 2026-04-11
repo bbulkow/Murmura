@@ -48,9 +48,10 @@ static const char *TAG = "MUR_LISTENER";
 #define RECONNECT_MS        5000
 
 /* Module state */
-static track_manager_t *s_manager     = NULL;
-static TaskHandle_t     s_task_handle = NULL;
-static volatile bool    s_resubscribe = false;
+static track_manager_t  *s_manager     = NULL;
+static scene_manager_t  *s_scene_mgr   = NULL;
+static TaskHandle_t      s_task_handle = NULL;
+static volatile bool     s_resubscribe = false;
 
 /* ---- forward declarations ----------------------------------------- */
 static void  mur_task(void *arg);
@@ -64,10 +65,11 @@ static bool  send_subscribe(int sock);
 /*  Public API                                                          */
 /* ================================================================== */
 
-esp_err_t mur_listener_init(track_manager_t *manager)
+esp_err_t mur_listener_init(track_manager_t *manager, scene_manager_t *scene_mgr)
 {
     if (!manager) return ESP_ERR_INVALID_ARG;
-    s_manager = manager;
+    s_manager   = manager;
+    s_scene_mgr = scene_mgr;
 
     ESP_LOGI(TAG, "Mur Gateway client starting (gateway at %s:%d)",
              s_manager->mur_gateway_ip[0] ? s_manager->mur_gateway_ip : "(not set)",
@@ -88,7 +90,8 @@ void mur_listener_stop(void)
         vTaskDelete(s_task_handle);
         s_task_handle = NULL;
     }
-    s_manager = NULL;
+    s_manager   = NULL;
+    s_scene_mgr = NULL;
 }
 
 esp_err_t mur_listener_resubscribe(void)
@@ -191,6 +194,37 @@ static bool send_subscribe(int sock)
             count++;
         }
     }
+
+    /* Add scene trigger name if configured */
+    if (s_manager->scene_trigger_name[0] != '\0') {
+        bool dup = false;
+        cJSON *item;
+        cJSON_ArrayForEach(item, triggers) {
+            if (strcmp(item->valuestring, s_manager->scene_trigger_name) == 0) { dup = true; break; }
+        }
+        if (!dup) {
+            cJSON_AddItemToArray(triggers, cJSON_CreateString(s_manager->scene_trigger_name));
+            count++;
+        }
+    }
+
+    /* Add per-scene button trigger names */
+    if (s_scene_mgr) {
+        for (int s = 0; s < s_scene_mgr->scene_count; s++) {
+            const char *btn = s_scene_mgr->scenes[s].button_trigger;
+            if (btn[0] == '\0') continue;
+            bool dup = false;
+            cJSON *item;
+            cJSON_ArrayForEach(item, triggers) {
+                if (strcmp(item->valuestring, btn) == 0) { dup = true; break; }
+            }
+            if (!dup) {
+                cJSON_AddItemToArray(triggers, cJSON_CreateString(btn));
+                count++;
+            }
+        }
+    }
+
     cJSON_AddItemToObject(msg, "triggers", triggers);
 
     char *json_str = cJSON_PrintUnformatted(msg);
@@ -230,6 +264,53 @@ static void dispatch_event(const char *trigger_name, const char *value)
     bool is_on  = (value && (strcasecmp(value, "on")  == 0 || strcmp(value, "1") == 0));
     bool is_off = (value && (strcasecmp(value, "off") == 0 || strcmp(value, "0") == 0));
 
+    /* --- Discrete scene trigger: value is the scene name --- */
+    if (s_scene_mgr && s_manager->scene_trigger_name[0] != '\0'
+        && strcmp(trigger_name, s_manager->scene_trigger_name) == 0) {
+        const char *target = value;
+        if (!target || target[0] == '\0' || !scene_find(s_scene_mgr, target)) {
+            ESP_LOGI(TAG, "Scene trigger value '%s' not found, falling back to default '%s'",
+                     value ? value : "(null)", s_scene_mgr->default_scene);
+            target = s_scene_mgr->default_scene;
+        }
+        if (target[0] != '\0') {
+            esp_err_t ret = scene_activate(s_scene_mgr, target,
+                                           s_manager->audio_control_queue, s_manager);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Scene trigger activated scene '%s'", target);
+                mur_listener_resubscribe();
+            } else {
+                ESP_LOGW(TAG, "Scene trigger failed to activate '%s': %s",
+                         target, esp_err_to_name(ret));
+            }
+        }
+        return;  /* consumed — don't also match tracks */
+    }
+
+    /* --- Button scene triggers: per-scene button_trigger field --- */
+    if (s_scene_mgr) {
+        for (int i = 0; i < s_scene_mgr->scene_count; i++) {
+            scene_config_t *sc = &s_scene_mgr->scenes[i];
+            if (sc->button_trigger[0] != '\0'
+                && strcmp(trigger_name, sc->button_trigger) == 0) {
+                if (is_on) {
+                    esp_err_t ret = scene_activate(s_scene_mgr, sc->name,
+                                                   s_manager->audio_control_queue, s_manager);
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG, "Button trigger '%s' activated scene '%s'",
+                                 trigger_name, sc->name);
+                        mur_listener_resubscribe();
+                    } else {
+                        ESP_LOGW(TAG, "Button trigger '%s' failed to activate '%s': %s",
+                                 trigger_name, sc->name, esp_err_to_name(ret));
+                    }
+                }
+                return;  /* consumed */
+            }
+        }
+    }
+
+    /* --- Per-track trigger matching (existing behavior) --- */
     for (int i = 0; i < MAX_TRACKS; i++) {
         track_status_t *t = &s_manager->tracks[i];
 

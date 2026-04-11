@@ -357,7 +357,14 @@ class MurGateway:
                         data = await resp.json()
                         triggers = data.get("triggers", [])
                         names = sorted(t.get("name", "") for t in triggers if t.get("name"))
-                        return web.json_response({"trigger_names": names})
+                        # Include type info for filtering (e.g. Discrete-only for scene triggers)
+                        typed = sorted(
+                            [{"name": t["name"], "type": t.get("type", ""),
+                              **({"range": t["range"]} if "range" in t else {})}
+                             for t in triggers if t.get("name")],
+                            key=lambda x: x["name"],
+                        )
+                        return web.json_response({"trigger_names": names, "triggers": typed})
                     else:
                         return web.json_response(
                             {"error": f"Trigger Server returned HTTP {resp.status}"},

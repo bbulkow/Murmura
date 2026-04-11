@@ -37,8 +37,10 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 # ESP-IDF coding notes
 
 - **FreeRTOS include order**: `#include "freertos/FreeRTOS.h"` MUST appear before any other FreeRTOS headers (`semphr.h`, `task.h`, `queue.h`). Violating this causes hundreds of cascading errors from kernel headers.
-- **Config vs runtime state**: `scene_config_t` (persisted in scenes.json) has per-track `mode`, `active`, `file_path`, `volume`, triggers. `track_status_t` (runtime) reflects the active scene's config. Never put `is_playing` in config structs — use `is_track_playing()` to check pipeline state.
+- **Config vs runtime state**: `scene_config_t` (persisted in scenes.json) has per-track `mode`, `active`, `file_path`, `volume`, triggers, and a per-scene `button_trigger` field. `track_status_t` (runtime) reflects the active scene's config. Never put `is_playing` in config structs — use `is_track_playing()` to check pipeline state. When patching the active scene via `scene_apply_patch()`, fields like `trigger_name`, `trigger_mode`, and `mode` must be synced to `track_manager->tracks[]` — the scene config and track_manager are separate copies.
 - **SPIRAM**: Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` for large allocations. If allocation fails, raise a fatal error (`ESP_ERROR_CHECK(ESP_ERR_NO_MEM)`) — do NOT fall back to regular `malloc`.
+- **Stack overflow risk with `track_config_t` and `track_manager_t`**: These structs contain trigger names and track configs — they are too large for the 4096-byte task stacks. NEVER declare them as local (stack) variables. Use `heap_caps_calloc` in SPIRAM instead. This has caused heap-corrupting crashes twice already. When adding fields to these structs, always check for existing stack-allocated instances (`track_config_t varname;` patterns in `murmura.c` and `http_server.c`).
+- **Boot ordering**: `mur_listener_init()` must be called AFTER `scene_activate()` so that the initial gateway subscribe message contains the correct trigger names from the active scene's tracks. The mur_listener also needs the `scene_manager_t*` for scene trigger dispatch.
 - **SPIRAM and synchronization primitives**: The ESP32's S32C1I atomic compare-and-swap instruction does not work correctly through the SPI cache to external PSRAM. Never embed spinlocks, raw atomic variables, or any synchronization primitive inside a struct allocated wholesale in PSRAM. FreeRTOS `SemaphoreHandle_t` is safe because `xSemaphoreCreate*` allocates from internal RAM by default — but the handle itself (a pointer) must not be confused with the underlying memory. Pattern: keep the struct with the lock in internal RAM and point to bulk data in SPIRAM, or use FreeRTOS semaphore handles (which are internally allocated correctly).
 
 # API contract
@@ -51,7 +53,7 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **main/http_server.h/c** - HTTP API, type definitions (track_mode_t, track_status_t, track_manager_t)
 - **main/scene_manager.h/c** - Scene system: named playback configs, CRUD, activate, atomic patch, JSON persistence to /sdcard/scenes.json
 - **main/config_manager.h/c** - SD card config persistence (track_config_t for gateway config), shared JSON helpers
-- **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing
+- **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing, scene trigger dispatch (discrete + per-scene button triggers)
 - **main/unit_status_manager.h/c** - Device identity and network status
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
 - **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices)

@@ -80,6 +80,12 @@ class ScriptContext:
         self.cycle = 0
         self._start_time = time.time()
         self._event_id = 0
+        # Parse --extra key=value pairs into a dict
+        self.extra = {}
+        for item in getattr(args, 'extra', None) or []:
+            if '=' in item:
+                k, v = item.split('=', 1)
+                self.extra[k] = v
 
     @property
     def elapsed(self) -> float:
@@ -294,6 +300,8 @@ def main():
                         help="Seconds between Off and next On (default: 5)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"Device listen port (default: {DEFAULT_PORT})")
+    parser.add_argument("--extra", nargs="*", metavar="KEY=VALUE",
+                        help="Extra parameters for scripts (e.g. scenes=day,night)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
 

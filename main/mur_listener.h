@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include "http_server.h"
+#include "scene_manager.h"
 
 /**
  * @brief Initialize the Mur Gateway listener.
@@ -17,10 +18,11 @@
  *
  * Call after http_server_set_track_manager() so the manager pointer is valid.
  *
- * @param manager  Pointer to the live track_manager_t (must remain valid for the
- *                 lifetime of the application).
+ * @param manager    Pointer to the live track_manager_t (must remain valid).
+ * @param scene_mgr  Pointer to the scene_manager_t for scene trigger dispatch
+ *                   (may be NULL to disable scene triggers).
  */
-esp_err_t mur_listener_init(track_manager_t *manager);
+esp_err_t mur_listener_init(track_manager_t *manager, scene_manager_t *scene_mgr);
 
 /**
  * @brief Stop the Mur Gateway listener task.

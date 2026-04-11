@@ -47,6 +47,7 @@ typedef struct {
     QueueHandle_t audio_control_queue;
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];       // empty = no mur gateway
     int mur_gateway_port;                           // default 4000
+    char scene_trigger_name[MAX_TRIGGER_NAME_LEN]; // discrete scene trigger: value = scene name
 } track_manager_t;
 
 /**

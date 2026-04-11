@@ -53,6 +53,7 @@ esp_err_t config_save(const track_manager_t *manager) {
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
+    cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -192,6 +193,8 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
     strncpy(track_manager->mur_gateway_ip, config->mur_gateway_ip,
             sizeof(track_manager->mur_gateway_ip) - 1);
     track_manager->mur_gateway_port = config->mur_gateway_port;
+    strncpy(track_manager->scene_trigger_name, config->scene_trigger_name,
+            sizeof(track_manager->scene_trigger_name) - 1);
     ESP_LOGI(TAG, "Configuration applied successfully");
     return ESP_OK;
 }
@@ -273,6 +276,7 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
+    cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -334,6 +338,12 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     if (!gw_port) gw_port = cJSON_GetObjectItem(root, "trigger_server_port");
     if (cJSON_IsNumber(gw_port)) {
         config->mur_gateway_port = gw_port->valueint;
+    }
+
+    cJSON *stn = cJSON_GetObjectItem(root, "scene_trigger_name");
+    if (cJSON_IsString(stn) && stn->valuestring) {
+        strncpy(config->scene_trigger_name, stn->valuestring,
+                sizeof(config->scene_trigger_name) - 1);
     }
 
     cJSON *tracks_arr = cJSON_GetObjectItem(root, "tracks");

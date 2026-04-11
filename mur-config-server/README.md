@@ -113,11 +113,14 @@ python3 network_scanner.py
 - Configure loop settings
 
 #### Batch Operations
-1. Select devices using the checkboxes on each card
+1. All online devices are selected by default; deselect to exclude
 2. Use the batch controls at the top:
    - "Select All" / "Deselect All" for quick selection
-   - "Play All Selected" / "Stop All Selected" for playback control
-   - Batch volume slider to set volume for all selected devices
+   - Save Config / Reboot for device management
+   - Scene: activate or create scenes across all selected devices
+   - Mur Gateway: set the gateway IP/port (OK remembers locally, Set Devices pushes to devices)
+   - Scene Trigger: set the discrete scene trigger name on devices (filtered to Discrete trigger types)
+
 
 ### Automatic Scanning
 
@@ -133,21 +136,22 @@ The server provides RESTful API endpoints for programmatic access:
 - `POST /api/scan` - Trigger a network scan
 
 ### Device Control
-- `POST /api/device/<device_id>/volume` - Set global volume
+- `POST /api/device/<device_id>/volume` - Set global volume (via active scene)
 - `POST /api/device/<device_id>/play` - Enable/disable all tracks
 - `GET /api/device/<device_id>/files` - Get file list
-- `GET /api/device/<device_id>/tracks` - Get track configuration
-- `POST /api/device/<device_id>/tracks` - Set track configuration
-- `POST /api/device/<device_id>/track/control` - Enable/disable individual track
-- `POST /api/device/<device_id>/track/volume` - Set per-track volume
-- `POST /api/device/<device_id>/track/file` - Set track file
-- `POST /api/device/<device_id>/track/trigger` - Set track trigger config
-- `GET /api/device/<device_id>/mur-gateway` - Get Mur Gateway config
+- `GET/POST /api/device/<device_id>/scenes` - Get/patch scene configuration
+- `POST /api/device/<device_id>/scene` - Scene actions (create, delete, activate, set_default)
+- `GET /api/device/<device_id>/mur-gateway` - Get Mur Gateway + scene trigger config
 - `POST /api/device/<device_id>/mur-gateway` - Set Mur Gateway config
+- `POST /api/device/<device_id>/device-config` - Generic proxy to device's POST /api/device
+- `GET /api/triggers` - Fetch trigger names from Mur Gateway (with type info)
 
 ### Batch Operations
 - `POST /api/batch/volume` - Set global volume for multiple devices
 - `POST /api/batch/play` - Enable/disable tracks for multiple devices
+- `POST /api/batch/scene/activate` - Activate a scene on multiple devices
+- `POST /api/batch/scene/create` - Create a scene on multiple devices (idempotent)
+- `POST /api/batch/scene-trigger` - Set scene trigger name on multiple devices
 - `POST /api/batch/mur-gateway` - Set Mur Gateway on multiple devices
 - `POST /api/batch/save-config` - Save config on multiple devices
 - `POST /api/batch/reboot` - Reboot multiple devices

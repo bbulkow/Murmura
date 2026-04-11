@@ -119,6 +119,21 @@
                 <button onclick="saveMurGateway()" class="btn btn-primary" style="padding: 4px 12px; font-size: 13px;">Save</button>
                 <button onclick="hideMurGatewayEdit()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Cancel</button>
             </div>
+            <div class="info-row" style="margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span class="info-label" style="display: inline-block; width: 120px;">Scene Trigger:</span>
+                <span id="sceneTriggerDisplay" style="color: #555;">--</span>
+                <button onclick="showSceneTriggerEdit()" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">Set</button>
+            </div>
+            <div id="sceneTriggerEditRow" style="display: none; margin-top: 6px; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <input type="text" id="sceneTriggerInput" placeholder="trigger name" list="sceneTriggerDatalist" style="width: 200px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <datalist id="sceneTriggerDatalist"></datalist>
+                <datalist id="buttonTriggerDatalist"></datalist>
+                <button onclick="saveSceneTrigger()" class="btn btn-primary" style="padding: 4px 12px; font-size: 13px;">Save</button>
+                <button onclick="clearSceneTrigger()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Clear</button>
+                <button onclick="hideSceneTriggerEdit()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Cancel</button>
+                <button onclick="refreshSceneTriggerList()" style="padding: 4px 8px; font-size: 13px; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #f8f9fa;" title="Refresh trigger list">&#x21bb;</button>
+            </div>
+            <div id="sceneTriggerWarnings" style="display:none; margin-top:6px;"></div>
         </div>
         
         <div class="device-detail-content" style="margin-bottom: 20px;">

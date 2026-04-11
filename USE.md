@@ -234,6 +234,34 @@ python device_controller.py --id MURMURA-001 --command set-scene --scene night -
 
 If the scene being edited is the active scene, changes take effect on the hardware immediately.
 
+### Trigger-based scene switching
+
+Scenes can be switched automatically via the Haven trigger system. Two mechanisms:
+
+**Discrete scene trigger** — a single trigger (Discrete type) whose value is treated as a scene name. Configure the trigger name at the device level:
+
+```bash
+# Set the discrete scene trigger name
+curl -X POST http://<device-ip>/api/device \
+  -H "Content-Type: application/json" \
+  -d '{"scene_trigger_name": "SceneSelector"}'
+```
+
+When an event arrives with `name=SceneSelector` and `value=night`, the device activates scene "night". If the value doesn't match any scene, the device activates the default scene.
+
+**Per-scene button trigger** — each scene can have a trigger (On/Off type) that activates it when an "On" event arrives:
+
+```bash
+# Set a button trigger on the "night" scene
+curl -X POST http://<device-ip>/api/scenes \
+  -H "Content-Type: application/json" \
+  -d '{"night": {"button_trigger": "ButtonB"}}'
+```
+
+When an event arrives with `name=ButtonB` and `value=On`, the device activates scene "night".
+
+Via mur-config-server: the device detail page shows Scene Trigger and per-scene Trigger fields. The batch panel allows setting the scene trigger name across all devices at once.
+
 ### Saving configuration
 
 Changes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved scenes and activates the default scene.

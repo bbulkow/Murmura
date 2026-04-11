@@ -75,6 +75,9 @@ esp_err_t scene_manager_save(const scene_manager_t *mgr) {
         const scene_config_t *sc = &mgr->scenes[i];
         cJSON *scene_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(scene_json, "global_volume", sc->global_volume_percent);
+        if (sc->button_trigger[0] != '\0') {
+            cJSON_AddStringToObject(scene_json, "button_trigger", sc->button_trigger);
+        }
         cJSON *tracks = config_tracks_to_json(sc->tracks);
         if (tracks) cJSON_AddItemToObject(scene_json, "tracks", tracks);
         cJSON_AddItemToObject(scenes_obj, sc->name, scene_json);
@@ -182,6 +185,10 @@ esp_err_t scene_manager_load(scene_manager_t *mgr) {
             sc->name[MAX_SCENE_NAME_LEN - 1] = '\0';
 
             config_parse_scene_from_json(scene_json, &sc->global_volume_percent, sc->tracks);
+            cJSON *bt = cJSON_GetObjectItem(scene_json, "button_trigger");
+            if (cJSON_IsString(bt) && bt->valuestring) {
+                strncpy(sc->button_trigger, bt->valuestring, sizeof(sc->button_trigger) - 1);
+            }
             mgr->scene_count++;
         }
     }
@@ -325,7 +332,7 @@ esp_err_t scene_activate(scene_manager_t *mgr, const char *name,
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Allocate in SPIRAM — track_config_t is ~500 bytes, too large for the
+    // Allocate in SPIRAM — track_config_t is ~1300+ bytes, too large for the
     // audio_control_task's 4096-byte stack
     track_config_t *config = heap_caps_calloc(1, sizeof(track_config_t),
                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -334,10 +341,12 @@ esp_err_t scene_activate(scene_manager_t *mgr, const char *name,
     config->global_volume_percent = sc->global_volume_percent;
     memcpy(config->tracks, sc->tracks, sizeof(config->tracks));
 
-    // Preserve gateway config from current track_manager
+    // Preserve device-level config from current track_manager
     strncpy(config->mur_gateway_ip, track_mgr->mur_gateway_ip,
             sizeof(config->mur_gateway_ip) - 1);
     config->mur_gateway_port = track_mgr->mur_gateway_port;
+    strncpy(config->scene_trigger_name, track_mgr->scene_trigger_name,
+            sizeof(config->scene_trigger_name) - 1);
 
     esp_err_t ret = config_apply(config, queue, track_mgr);
     free(config);
@@ -533,6 +542,13 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
             }
         }
 
+        // Apply button_trigger
+        cJSON *bt = cJSON_GetObjectItem(scene_patch, "button_trigger");
+        if (cJSON_IsString(bt)) {
+            strncpy(sc->button_trigger, bt->valuestring, sizeof(sc->button_trigger) - 1);
+            sc->button_trigger[sizeof(sc->button_trigger) - 1] = '\0';
+        }
+
         // Apply tracks
         cJSON *tracks_arr = cJSON_GetObjectItem(scene_patch, "tracks");
         if (cJSON_IsArray(tracks_arr)) {
@@ -550,6 +566,9 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                 cJSON *mode = cJSON_GetObjectItem(t, "mode");
                 if (cJSON_IsString(mode)) {
                     entry->mode = config_str_to_mode(mode->valuestring);
+                    if (is_active && track_mgr) {
+                        track_mgr->tracks[track].mode = entry->mode;
+                    }
                 }
 
                 // trigger_name
@@ -558,12 +577,19 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                     strncpy(entry->trigger_name, tn->valuestring,
                             sizeof(entry->trigger_name) - 1);
                     entry->trigger_name[sizeof(entry->trigger_name) - 1] = '\0';
+                    if (is_active && track_mgr) {
+                        strncpy(track_mgr->tracks[track].trigger_name, entry->trigger_name,
+                                sizeof(track_mgr->tracks[track].trigger_name) - 1);
+                    }
                 }
 
                 // trigger_mode
                 cJSON *tm = cJSON_GetObjectItem(t, "trigger_mode");
                 if (cJSON_IsString(tm)) {
                     entry->trigger_mode = config_str_to_trigger_mode(tm->valuestring);
+                    if (is_active && track_mgr) {
+                        track_mgr->tracks[track].trigger_mode = entry->trigger_mode;
+                    }
                 }
 
                 // file_path
@@ -680,6 +706,7 @@ cJSON* scene_build_get_response(const scene_manager_t *mgr, const track_manager_
         const scene_config_t *sc = &mgr->scenes[i];
         cJSON *scene_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(scene_json, "global_volume", sc->global_volume_percent);
+        cJSON_AddStringToObject(scene_json, "button_trigger", sc->button_trigger);
 
         bool is_active = (strcmp(mgr->active_scene, sc->name) == 0);
 

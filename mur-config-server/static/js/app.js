@@ -16,6 +16,7 @@ let modalRefreshActive = false;  // Track if modal is open
 document.addEventListener('DOMContentLoaded', function() {
     initializeSocket();
     attachEventListeners();
+    loadLastGateway();
     loadDevices();
     startAutoRefresh();  // Start auto-refresh timer
 });
@@ -109,9 +110,13 @@ function attachEventListeners() {
     document.getElementById('deselectAllBtn').addEventListener('click', deselectAllDevices);
     document.getElementById('batchSaveConfigBtn').addEventListener('click', batchSaveConfig);
     document.getElementById('batchRebootBtn').addEventListener('click', batchReboot);
-    document.getElementById('batchTriggerServerBtn').addEventListener('click', batchSetTriggerServer);
+    document.getElementById('batchRememberGatewayBtn').addEventListener('click', rememberGateway);
+    document.getElementById('batchSetGatewayBtn').addEventListener('click', batchSetGateway);
     document.getElementById('batchActivateSceneBtn').addEventListener('click', batchActivateScene);
     document.getElementById('batchCreateSceneBtn').addEventListener('click', batchCreateScene);
+    document.getElementById('batchSetSceneTriggerBtn').addEventListener('click', batchSetSceneTrigger);
+    document.getElementById('batchClearSceneTriggerBtn').addEventListener('click', batchClearSceneTrigger);
+    document.getElementById('batchRefreshSceneTriggers').addEventListener('click', refreshBatchSceneTriggerList);
 
     // Modal controls
     document.querySelector('.close').addEventListener('click', closeModal);
@@ -170,6 +175,7 @@ async function loadDevices() {
         updateDeviceList(devices);
         updateStatusBar(data.count, data.online, data.registry_only || 0);
         updateBatchSceneDropdown();
+        updateBatchGatewayDropdown();
 
         // Update refresh indicator
         updateRefreshIndicator();
@@ -1448,25 +1454,61 @@ async function batchReboot() {
     }
 }
 
-// Batch set Mur Gateway IP/port
-async function batchSetTriggerServer() {
-    const ip = document.getElementById('batchTriggerIp').value.trim();
-    const portRaw = document.getElementById('batchTriggerPort').value.trim();
+// Update the Mur Gateway datalist from online devices' gateway configs
+function updateBatchGatewayDropdown() {
+    const datalist = document.getElementById('batchGatewayList');
+    if (!datalist) return;
 
-    if (!ip) {
-        showError('Please enter a Mur Gateway IP address');
+    // Collect unique gateway IPs from online devices
+    const gatewayIps = new Set();
+    devices.forEach(device => {
+        if (device.status !== 'online') return;
+        const ip = device.mur_gateway_ip;
+        if (ip) gatewayIps.add(ip);
+    });
+
+    datalist.innerHTML = '';
+    Array.from(gatewayIps).sort().forEach(ip => {
+        const opt = document.createElement('option');
+        opt.value = ip;
+        datalist.appendChild(opt);
+    });
+}
+
+// Get the gateway IP and port from the batch inputs
+function getSelectedGateway() {
+    const ip = document.getElementById('batchGatewayInput').value.trim();
+    if (!ip) return null;
+    const portRaw = document.getElementById('batchGatewayPort').value.trim();
+    return { ip, port: portRaw ? parseInt(portRaw) : 4000 };
+}
+
+// Remember Mur Gateway locally (for trigger lookups, scene trigger refresh, etc.)
+async function rememberGateway() {
+    const gw = getSelectedGateway();
+    if (!gw) {
+        showError('Enter a Mur Gateway IP');
+        return;
+    }
+    await saveLastGateway(gw.ip, gw.port);
+    showSuccess(`Mur Gateway ${gw.ip}:${gw.port} remembered`);
+}
+
+// Batch set Mur Gateway IP/port on selected devices
+async function batchSetGateway() {
+    const gw = getSelectedGateway();
+    if (!gw) {
+        showError('Enter a Mur Gateway IP');
         return;
     }
 
     const targetDevices = Array.from(selectedDevices);
-
     if (targetDevices.length === 0) {
         showError('No devices selected');
         return;
     }
 
-    const payload = { device_ids: targetDevices, mur_gateway_ip: ip };
-    if (portRaw) payload.mur_gateway_port = parseInt(portRaw);
+    const payload = { device_ids: targetDevices, mur_gateway_ip: gw.ip, mur_gateway_port: gw.port };
 
     try {
         const response = await fetch('/api/batch/mur-gateway', {
@@ -1476,11 +1518,38 @@ async function batchSetTriggerServer() {
         });
         const data = await response.json();
         const successCount = data.results.filter(r => r.status === 'success').length;
-        showSuccess(`Mur Gateway set on ${successCount}/${targetDevices.length} device(s)`);
+        showSuccess(`Mur Gateway ${gw.ip}:${gw.port} set on ${successCount}/${targetDevices.length} device(s)`);
+        setTimeout(loadDevices, 1000);
     } catch (error) {
         console.error('Error setting Mur Gateway:', error);
         showError('Failed to set Mur Gateway');
     }
+}
+
+// Persist the last-used Mur Gateway to server config
+async function saveLastGateway(ip, port) {
+    try {
+        await fetch('/api/network/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ mur_gateway_ip: ip, mur_gateway_port: port })
+        });
+    } catch (e) { /* best-effort */ }
+}
+
+// Load the last-used Mur Gateway from server config on startup
+async function loadLastGateway() {
+    try {
+        const response = await fetch('/api/network/config');
+        if (!response.ok) return;
+        const config = await response.json();
+        const ip = config.mur_gateway_ip || '';
+        const port = config.mur_gateway_port;
+        if (ip) {
+            document.getElementById('batchGatewayInput').value = ip;
+            if (port) document.getElementById('batchGatewayPort').value = port;
+        }
+    } catch (e) { /* best-effort */ }
 }
 
 // Update the batch scene dropdown with the union of all scene names from online devices
@@ -1592,5 +1661,91 @@ async function batchCreateScene() {
     } catch (error) {
         console.error('Error creating scene:', error);
         showError('Failed to create scene');
+    }
+}
+
+// Refresh scene trigger name list from the gateway configured in the batch panel
+async function refreshBatchSceneTriggerList() {
+    const gw = getSelectedGateway();
+    if (!gw) {
+        showError('Select a Mur Gateway first');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/triggers?gateway_ip=${encodeURIComponent(gw.ip)}&gateway_port=${encodeURIComponent(gw.port)}`);
+        const data = await response.json();
+        const datalist = document.getElementById('batchSceneTriggerList');
+        datalist.innerHTML = '';
+
+        // Filter to Discrete triggers only (scene triggers send string values)
+        const triggers = data.triggers || [];
+        const discrete = triggers.filter(t => t.type === 'Discrete');
+
+        discrete.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.name;
+            datalist.appendChild(opt);
+        });
+        showSuccess(`Loaded ${discrete.length} Discrete trigger(s) (${triggers.length} total)`);
+    } catch (error) {
+        console.error('Error fetching trigger names:', error);
+        showError('Failed to fetch trigger names');
+    }
+}
+
+// Batch set scene trigger name
+async function batchSetSceneTrigger() {
+    const triggerName = document.getElementById('batchSceneTriggerInput').value.trim();
+
+    if (!triggerName) {
+        showError('Enter a scene trigger name');
+        return;
+    }
+
+    const targetDevices = Array.from(selectedDevices);
+
+    if (targetDevices.length === 0) {
+        showError('No devices selected');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/batch/scene-trigger', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ device_ids: targetDevices, scene_trigger_name: triggerName })
+        });
+        const data = await response.json();
+        const successCount = data.results.filter(r => r.status === 'success').length;
+        showSuccess(`Scene trigger '${triggerName}' set on ${successCount}/${targetDevices.length} device(s)`);
+    } catch (error) {
+        console.error('Error setting scene trigger:', error);
+        showError('Failed to set scene trigger');
+    }
+}
+
+// Batch clear scene trigger name
+async function batchClearSceneTrigger() {
+    const targetDevices = Array.from(selectedDevices);
+
+    if (targetDevices.length === 0) {
+        showError('No devices selected');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/batch/scene-trigger', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ device_ids: targetDevices, scene_trigger_name: '' })
+        });
+        const data = await response.json();
+        const successCount = data.results.filter(r => r.status === 'success').length;
+        showSuccess(`Scene trigger cleared on ${successCount}/${targetDevices.length} device(s)`);
+        document.getElementById('batchSceneTriggerInput').value = '';
+    } catch (error) {
+        console.error('Error clearing scene trigger:', error);
+        showError('Failed to clear scene trigger');
     }
 }

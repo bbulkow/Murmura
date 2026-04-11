@@ -9,11 +9,11 @@ let activeSceneName = 'default'; // Active scene name from last fetch
 let lastScenesData = null;       // Full scenes response from last fetch
 let deviceMurGatewayIp = '';     // Mur Gateway IP for this device
 let deviceMurGatewayPort = 4000; // Mur Gateway device port
-let cachedTriggerNames = null;   // Cached trigger name list from gateway
+let cachedTriggerData = null;    // Cached trigger list with type info [{name, type}]
 let triggerNamesFetchPromise = null; // Dedup concurrent fetches
 
-async function fetchTriggerNames(forceRefresh = false) {
-    if (cachedTriggerNames && !forceRefresh) return cachedTriggerNames;
+async function fetchTriggerData(forceRefresh = false) {
+    if (cachedTriggerData && !forceRefresh) return cachedTriggerData;
     if (triggerNamesFetchPromise) return triggerNamesFetchPromise;
     if (!deviceMurGatewayIp) return [];
 
@@ -22,18 +22,31 @@ async function fetchTriggerNames(forceRefresh = false) {
             const resp = await fetch(`/api/triggers?gateway_ip=${encodeURIComponent(deviceMurGatewayIp)}&gateway_port=${deviceMurGatewayPort}`);
             if (resp.ok) {
                 const data = await resp.json();
-                cachedTriggerNames = data.trigger_names || [];
+                // Prefer typed triggers array; fall back to names-only
+                cachedTriggerData = data.triggers || (data.trigger_names || []).map(n => ({name: n, type: ''}));
             } else {
-                cachedTriggerNames = [];
+                cachedTriggerData = [];
             }
         } catch (e) {
             console.warn('[TRIGGERS] Failed to fetch trigger names:', e);
-            cachedTriggerNames = [];
+            cachedTriggerData = [];
         }
         triggerNamesFetchPromise = null;
-        return cachedTriggerNames;
+        return cachedTriggerData;
     })();
     return triggerNamesFetchPromise;
+}
+
+// Filter trigger names by type (e.g. 'On/Off', 'Discrete')
+async function fetchTriggerNamesByType(type, forceRefresh = false) {
+    const triggers = await fetchTriggerData(forceRefresh);
+    return triggers.filter(t => t.type === type).map(t => t.name);
+}
+
+// Backward compat: return all trigger names
+async function fetchTriggerNames(forceRefresh = false) {
+    const triggers = await fetchTriggerData(forceRefresh);
+    return triggers.map(t => t.name);
 }
 
 // Helper: build a scenes patch body for a track update in a specific scene
@@ -99,8 +112,9 @@ async function loadDeviceData() {
             }
         }
 
-        // Get mur gateway config
+        // Get mur gateway config + scene trigger config
         loadMurGateway();
+        loadSceneTriggerConfig();
     } catch (error) {
         console.error('[DEVICE-DETAIL] Error loading device data:', error);
         // Show clear error message if Flask server is down
@@ -366,8 +380,8 @@ function attachTrackHandlers() {
             editRow.style.display = 'flex';
             const input = editRow.querySelector('.trigger-name-input');
             input.focus();
-            // Populate datalist from gateway in background
-            fetchTriggerNames().then(names => {
+            // Populate datalist from gateway in background (On/Off triggers only)
+            fetchTriggerNamesByType('On/Off').then(names => {
                 const datalist = document.getElementById(`triggerList-legacy-${track}`);
                 if (datalist && names.length > 0) {
                     datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -409,12 +423,12 @@ function attachTrackHandlers() {
         });
     });
 
-    // Trigger list refresh button (legacy path)
+    // Trigger list refresh button (legacy path — On/Off triggers only)
     document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const track = this.dataset.track;
-            const names = await fetchTriggerNames(true);
+            const names = await fetchTriggerNamesByType('On/Off', true);
             const datalist = document.getElementById(`triggerList-legacy-${track}`);
             if (datalist) {
                 datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -998,6 +1012,164 @@ window.saveMurGateway = async function() {
     }
 };
 
+// --- Scene Trigger per-device ---
+
+async function loadSceneTriggerConfig() {
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/mur-gateway`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const stn = data.scene_trigger_name || '';
+        document.getElementById('sceneTriggerDisplay').textContent = stn || '--';
+        // Check for scene/trigger value mismatches
+        if (stn) {
+            checkSceneTriggerMismatch(stn);
+        } else {
+            const warningDiv = document.getElementById('sceneTriggerWarnings');
+            if (warningDiv) warningDiv.style.display = 'none';
+        }
+    } catch (e) {
+        // not critical
+    }
+    // Pre-populate the button trigger datalist (On/Off triggers)
+    populateButtonTriggerDatalist();
+}
+
+async function checkSceneTriggerMismatch(triggerName) {
+    const warningDiv = document.getElementById('sceneTriggerWarnings');
+    if (!warningDiv) return;
+
+    try {
+        // Get scene names from the device
+        const scenesResp = await fetch(`/api/device/${currentDevice}/scenes`);
+        if (!scenesResp.ok) return;
+        const scenesData = await scenesResp.json();
+        const sceneNames = new Set(Object.keys(scenesData.scenes || {}));
+
+        // Get trigger definition with values from the gateway
+        const triggers = await fetchTriggerData();
+        const triggerDef = triggers.find(t => t.name === triggerName);
+
+        if (!triggerDef) {
+            warningDiv.innerHTML = `<div style="color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:6px 10px;font-size:12px;">Trigger '${triggerName}' not found in gateway</div>`;
+            warningDiv.style.display = 'block';
+            return;
+        }
+
+        if (triggerDef.type !== 'Discrete') {
+            warningDiv.innerHTML = `<div style="color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:6px 10px;font-size:12px;">Trigger '${triggerName}' is type '${triggerDef.type}', expected Discrete</div>`;
+            warningDiv.style.display = 'block';
+            return;
+        }
+
+        const triggerValues = new Set((triggerDef.range && triggerDef.range.values) || []);
+        if (triggerValues.size === 0) {
+            warningDiv.style.display = 'none';
+            return;
+        }
+
+        // Convert trigger values to strings for comparison (they may be ints)
+        const triggerStrValues = new Set(Array.from(triggerValues).map(String));
+
+        const warnings = [];
+
+        // Scenes with no matching trigger value (unreachable by trigger)
+        const unreachable = Array.from(sceneNames).filter(s => !triggerStrValues.has(s));
+        if (unreachable.length > 0) {
+            warnings.push(`Scenes not in trigger values (unreachable): ${unreachable.join(', ')}`);
+        }
+
+        // Trigger values with no matching scene (will fall back to default)
+        const noScene = Array.from(triggerStrValues).filter(v => !sceneNames.has(v));
+        if (noScene.length > 0) {
+            const defaultScene = scenesData.default_scene || '(none)';
+            warnings.push(`Trigger values with no matching scene (will use default '${defaultScene}'): ${noScene.join(', ')}`);
+        }
+
+        if (warnings.length > 0) {
+            warningDiv.innerHTML = warnings.map(w =>
+                `<div style="color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:6px 10px;font-size:12px;margin-bottom:4px;">${w}</div>`
+            ).join('');
+            warningDiv.style.display = 'block';
+        } else {
+            warningDiv.innerHTML = `<div style="color:#155724;background:#d4edda;border:1px solid #28a745;border-radius:4px;padding:6px 10px;font-size:12px;">Scene trigger values match scene names</div>`;
+            warningDiv.style.display = 'block';
+        }
+    } catch (e) {
+        // best effort
+        console.warn('Scene trigger mismatch check failed:', e);
+    }
+}
+
+async function populateButtonTriggerDatalist() {
+    if (!deviceMurGatewayIp) return;
+    try {
+        const names = await fetchTriggerNamesByType('On/Off');
+        const dl = document.getElementById('buttonTriggerDatalist');
+        if (dl) {
+            dl.innerHTML = '';
+            names.forEach(n => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
+        }
+    } catch (e) { /* ignore */ }
+}
+
+window.showSceneTriggerEdit = function() {
+    document.getElementById('sceneTriggerEditRow').style.display = 'flex';
+    populateSceneTriggerDatalist();
+};
+
+window.hideSceneTriggerEdit = function() {
+    document.getElementById('sceneTriggerEditRow').style.display = 'none';
+};
+
+async function populateSceneTriggerDatalist() {
+    if (!deviceMurGatewayIp) return;
+    try {
+        const names = await fetchTriggerNamesByType('Discrete');
+        const dl = document.getElementById('sceneTriggerDatalist');
+        dl.innerHTML = '';
+        names.forEach(n => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
+    } catch (e) { /* ignore */ }
+}
+
+window.saveSceneTrigger = async function() {
+    const name = document.getElementById('sceneTriggerInput').value.trim();
+    if (!name) { showMessage('Enter a trigger name', 'error'); return; }
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/device-config`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ scene_trigger_name: name })
+        });
+        if (response.ok) {
+            showMessage('Scene trigger set', 'success');
+            hideSceneTriggerEdit();
+            loadSceneTriggerConfig();
+        } else { showMessage('Failed to set scene trigger', 'error'); }
+    } catch (e) { showMessage('Error setting scene trigger', 'error'); }
+};
+
+window.clearSceneTrigger = async function() {
+    try {
+        const response = await fetch(`/api/device/${currentDevice}/device-config`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ scene_trigger_name: '' })
+        });
+        if (response.ok) {
+            showMessage('Scene trigger cleared', 'success');
+            hideSceneTriggerEdit();
+            loadSceneTriggerConfig();
+        } else { showMessage('Failed to clear scene trigger', 'error'); }
+    } catch (e) { showMessage('Error clearing scene trigger', 'error'); }
+};
+
+window.refreshSceneTriggerList = function() {
+    cachedTriggerData = null;
+    populateSceneTriggerDatalist();
+    populateButtonTriggerDatalist();
+};
+
 // Set trigger_name / trigger_mode for a track
 async function setTrackTriggerConfig(track, fields, sceneName) {
     try {
@@ -1136,6 +1308,22 @@ function renderAllScenes(scenesData) {
                     ${triggerSection}
                 </div>`;
         });
+
+        // Button trigger field — same Edit/OK/Cancel pattern as track triggers
+        const btnTrigger = scene.button_trigger || '';
+        const btnTriggerDisplay = btnTrigger || '(none)';
+        html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">`;
+        html += `<label style="font-size:12px;color:#666;white-space:nowrap;">Trigger:</label>`;
+        html += `<span class="btn-trigger-display" data-scene="${sceneName}" style="font-size:13px;color:#555;min-width:80px;">${btnTriggerDisplay}</span>`;
+        html += `<button class="btn-trigger-edit-btn" data-scene="${sceneName}" style="padding:2px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#eee;color:#333;">Edit</button>`;
+        html += `<div class="btn-trigger-edit-row" data-scene="${sceneName}" style="display:none;align-items:center;gap:4px;">`;
+        html += `<input type="text" class="btn-trigger-input" data-scene="${sceneName}" placeholder="trigger name" value="${btnTrigger}" list="buttonTriggerDatalist" autocomplete="off" style="width:200px;padding:3px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;">`;
+        html += `<button class="btn-trigger-ok-btn" data-scene="${sceneName}" style="padding:2px 8px;font-size:12px;border:1px solid #2a5298;border-radius:4px;cursor:pointer;background:#2a5298;color:#fff;">OK</button>`;
+        html += `<button class="btn-trigger-cancel-btn" data-scene="${sceneName}" style="padding:2px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#eee;color:#333;">Cancel</button>`;
+        html += `<button class="btn-trigger-refresh-btn" data-scene="${sceneName}" style="padding:2px 6px;font-size:11px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#555;" title="Refresh trigger list">&#x21bb;</button>`;
+        html += `</div>`;
+        html += `</div>`;
+
         html += `</div></div>`;
     });
 
@@ -1230,8 +1418,8 @@ function attachAllSceneHandlers() {
                 editRow.style.display = 'flex';
                 const input = editRow.querySelector('.trigger-name-input');
                 input.select();
-                // Populate datalist from gateway in background
-                fetchTriggerNames().then(names => {
+                // Populate datalist from gateway in background (On/Off triggers only)
+                fetchTriggerNamesByType('On/Off').then(names => {
                     const datalist = document.getElementById(`triggerList-${scene}-${track}`);
                     if (datalist && names.length > 0) {
                         datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -1279,12 +1467,12 @@ function attachAllSceneHandlers() {
         });
     });
 
-    // Trigger list refresh button
+    // Trigger list refresh button (On/Off triggers only for track triggers)
     document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const {track, scene} = this.dataset;
-            const names = await fetchTriggerNames(true);
+            const names = await fetchTriggerNamesByType('On/Off', true);
             const datalist = document.getElementById(`triggerList-${scene}-${track}`);
             if (datalist) {
                 datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -1299,6 +1487,96 @@ function attachAllSceneHandlers() {
             if (this.classList.contains('active')) return;
             await setTrackTriggerConfig(parseInt(this.dataset.track), { trigger_mode: this.dataset.tmode }, this.dataset.scene);
             setTimeout(loadDeviceData, 400);
+        });
+    });
+
+    // Per-scene button trigger: Edit button
+    document.querySelectorAll('.btn-trigger-edit-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const scene = this.dataset.scene;
+            const display = document.querySelector(`.btn-trigger-display[data-scene="${scene}"]`);
+            const editRow = document.querySelector(`.btn-trigger-edit-row[data-scene="${scene}"]`);
+            this.style.display = 'none';
+            if (display) display.style.display = 'none';
+            if (editRow) {
+                editRow.style.display = 'flex';
+                const input = editRow.querySelector('.btn-trigger-input');
+                input.select();
+                // Populate datalist from gateway in background (On/Off triggers)
+                fetchTriggerNamesByType('On/Off').then(names => {
+                    const dl = document.getElementById('buttonTriggerDatalist');
+                    if (dl && names.length > 0) {
+                        dl.innerHTML = names.map(n => `<option value="${n}">`).join('');
+                    }
+                });
+            }
+        });
+    });
+
+    // Per-scene button trigger: OK button
+    document.querySelectorAll('.btn-trigger-ok-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const scene = this.dataset.scene;
+            const input = document.querySelector(`.btn-trigger-input[data-scene="${scene}"]`);
+            const value = input ? input.value.trim() : '';
+            try {
+                const body = buildScenePatch({ button_trigger: value }, scene);
+                const response = await fetch(`/api/device/${currentDevice}/scenes`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+                if (response.ok) {
+                    showMessage(`Button trigger ${value ? "'" + value + "'" : 'cleared'} for scene '${scene}'`, 'success');
+                    setTimeout(loadDeviceData, 400);
+                } else {
+                    showMessage('Failed to set button trigger', 'error');
+                }
+            } catch (err) {
+                showMessage('Error setting button trigger', 'error');
+            }
+        });
+    });
+
+    // Per-scene button trigger: Cancel button
+    document.querySelectorAll('.btn-trigger-cancel-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const scene = this.dataset.scene;
+            const editRow = document.querySelector(`.btn-trigger-edit-row[data-scene="${scene}"]`);
+            const display = document.querySelector(`.btn-trigger-display[data-scene="${scene}"]`);
+            const editBtn = document.querySelector(`.btn-trigger-edit-btn[data-scene="${scene}"]`);
+            if (editRow) editRow.style.display = 'none';
+            if (display) display.style.display = '';
+            if (editBtn) editBtn.style.display = '';
+        });
+    });
+
+    // Per-scene button trigger: Enter/Escape key handling
+    document.querySelectorAll('.btn-trigger-input').forEach(input => {
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const okBtn = document.querySelector(`.btn-trigger-ok-btn[data-scene="${this.dataset.scene}"]`);
+                if (okBtn) okBtn.click();
+            } else if (e.key === 'Escape') {
+                const cancelBtn = document.querySelector(`.btn-trigger-cancel-btn[data-scene="${this.dataset.scene}"]`);
+                if (cancelBtn) cancelBtn.click();
+            }
+        });
+    });
+
+    // Per-scene button trigger: Refresh button (On/Off triggers)
+    document.querySelectorAll('.btn-trigger-refresh-btn').forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.stopPropagation();
+            const names = await fetchTriggerNamesByType('On/Off', true);
+            const dl = document.getElementById('buttonTriggerDatalist');
+            if (dl) {
+                dl.innerHTML = names.map(n => `<option value="${n}">`).join('');
+            }
         });
     });
 }

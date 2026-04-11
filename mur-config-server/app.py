@@ -143,7 +143,11 @@ def network_configuration():
             network_config.config['probe_timeout'] = data['probe_timeout']
         if 'refresh_interval' in data:
             network_config.config['refresh_interval'] = data['refresh_interval']
-        
+        if 'mur_gateway_ip' in data:
+            network_config.config['mur_gateway_ip'] = data['mur_gateway_ip']
+        if 'mur_gateway_port' in data:
+            network_config.config['mur_gateway_port'] = data['mur_gateway_port']
+
         network_config.save_config()
         
         return jsonify({'status': 'success', 'config': network_config.config})
@@ -219,6 +223,8 @@ def get_devices():
                 # Update other device info
                 formatted['firmware_version'] = status_data.get('firmware_version', formatted['firmware_version'])
                 formatted['ssid'] = status_data.get('wifi_ssid', device.get('wifi_ssid', 'Unknown'))
+                formatted['mur_gateway_ip'] = status_data.get('mur_gateway_ip', '')
+                formatted['mur_gateway_port'] = status_data.get('mur_gateway_port', 4000)
                 
                 # Always update registry with latest info including MAC
                 registry.update_device(device)
@@ -768,6 +774,41 @@ def batch_create_scene():
 
     return jsonify({'results': results})
 
+@app.route('/api/batch/scene-trigger', methods=['POST'])
+def batch_set_scene_trigger():
+    """Set scene trigger name on multiple devices."""
+    data = request.json
+    device_ids = data.get('device_ids', [])
+    scene_trigger_name = data.get('scene_trigger_name', '')
+
+    logger.info(f"Batch setting scene trigger '{scene_trigger_name}' on {len(device_ids)} devices")
+    results = []
+
+    for device_id in device_ids:
+        device = registry.get_device(device_id)
+        if device:
+            try:
+                response = requests.post(
+                    f"http://{device.get('ip_address')}/api/device",
+                    json={'scene_trigger_name': scene_trigger_name},
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    resp_data = response.json()
+                    if resp_data.get('success'):
+                        results.append({'device_id': device_id, 'status': 'success'})
+                    else:
+                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
+                else:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+            except requests.RequestException as e:
+                results.append({'device_id': device_id, 'status': 'error'})
+                logger.error(f"Error setting scene trigger on {device_id}: {e}")
+        else:
+            results.append({'device_id': device_id, 'status': 'not_found'})
+
+    return jsonify({'results': results})
+
 @app.route('/api/batch/save-config', methods=['POST'])
 def batch_save_config():
     """Save configuration on multiple devices."""
@@ -850,7 +891,8 @@ def get_device_mur_gateway(device_id):
             data = response.json()
             return jsonify({
                 'mur_gateway_ip': data.get('mur_gateway_ip', ''),
-                'mur_gateway_port': data.get('mur_gateway_port', 4000)
+                'mur_gateway_port': data.get('mur_gateway_port', 4000),
+                'scene_trigger_name': data.get('scene_trigger_name', '')
             })
         return jsonify({'error': f'HTTP {response.status_code}'}), 500
     except requests.RequestException as e:
@@ -875,6 +917,22 @@ def set_device_mur_gateway(device_id):
             return jsonify({'status': 'success'})
         return jsonify({'error': f'HTTP {response.status_code}'}), 500
     except requests.RequestException as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/<device_id>/device-config', methods=['POST'])
+def set_device_config(device_id):
+    """Proxy arbitrary fields to a device's POST /api/device endpoint."""
+    device = registry.get_device(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    try:
+        response = requests.post(
+            f"http://{device.get('ip_address')}/api/device",
+            json=request.json, timeout=2
+        )
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error(f"Failed to set device config for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/triggers')

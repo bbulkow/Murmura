@@ -53,6 +53,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **WiFi with multi-network failover** -- stores up to 10 networks, auto-selects the strongest available signal
 - **HTTP API** for full remote control (playback, volume, files, configuration, WiFi, device identity, reboot)
 - **Scenes** -- named playback configurations ("day", "night", "show") with instant switching, default boot scene, full config per scene
+- **Trigger-based scene switching** -- discrete triggers (value = scene name) and per-scene button triggers for hands-free scene changes via the Haven trigger system
 - **Configuration persistence** -- scene configs saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
@@ -91,11 +92,12 @@ main/                   ESP32 firmware source
   wifi_manager.h          WiFi manager API
   music_files.c/h         SD card file enumeration
   unit_status_manager.c/h Device identity and status
-  mur_listener.c/h        Mur Gateway TCP client for trigger events
+  mur_listener.c/h        Mur Gateway TCP client, trigger event processing, scene trigger dispatch
 aithinker-adf/          Board support overlay files and build instructions
 mur-config-server/      Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 mur-gateway/            Mur Gateway server (bridges trigger sources to devices)
+trigger-test/           Trigger test tool (replaces Mur Gateway for automated testing)
 ```
 
 ## Building and Running a Mur
@@ -197,7 +199,7 @@ Each device exposes a JSON API on port 80. Key endpoints:
 | `/api/scenes` | POST | Patch-style update of scene configs (atomic, body keys = scene names) |
 | `/api/scene` | POST | Scene management: create, delete, activate, set_default |
 | `/api/device` | GET | Device config and status (identity, gateway, wifi) |
-| `/api/device` | POST | Update device config (id, mur gateway) |
+| `/api/device` | POST | Update device config (id, mur gateway, scene trigger) |
 | `/api/files` | GET | List audio files on SD card |
 | `/api/upload` | POST | Upload audio file to SD card |
 | `/api/file/delete` | DELETE | Delete an audio file from SD card |
@@ -219,6 +221,7 @@ See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response 
 - [mur-config-server/README.md](mur-config-server/README.md) -- fleet management server documentation
 - [mur-config-server/SYSTEMD_INSTALL.md](mur-config-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
 - [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) -- CLI tools reference
+- [mur-gateway/MUR_PROTOCOL.md](mur-gateway/MUR_PROTOCOL.md) -- device ↔ Mur Gateway protocol spec
 
 ## License
 
