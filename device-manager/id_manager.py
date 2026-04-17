@@ -308,48 +308,56 @@ class IDManager:
         logger.info(f"  Duration: {duration} seconds")
         
         try:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            scenes_url = f"http://{ip}/api/scenes"
+
             async with aiohttp.ClientSession() as session:
-                # First, stop any playing loops
-                logger.info("Stopping current tracks...")
-                for track in range(3):
-                    url = f"http://{ip}/api/track"
-                    data = {'track': track, 'active': False}
-                    await session.post(url, json=data,
-                                      timeout=aiohttp.ClientTimeout(total=self.timeout))
-                
-                # Start identify sound on track 0
-                # Using file index 0 as a default identify sound
-                # You may want to adjust this based on available files
-                logger.info("Starting identify sound loop...")
-                url = f"http://{ip}/api/track"
-                data = {
-                    'track': 0,
-                    'active': True
-                }
-                
-                async with session.post(url, json=data,
-                                       timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
-                    if response.status == 200:
-                        logger.info(f"✓ Identify mode started on {dev_id} (MAC: {mac})")
-                        logger.info(f"  The device will play a sound loop for identification")
-                        logger.info(f"  Sound will play for {duration} seconds...")
-                        
-                        # Wait for the specified duration
-                        await asyncio.sleep(duration)
-                        
-                        # Stop the identify sound
-                        logger.info("Stopping identify sound...")
-                        url = f"http://{ip}/api/track"
-                        data = {'track': 0, 'active': False}
-                        await session.post(url, json=data,
-                                         timeout=aiohttp.ClientTimeout(total=self.timeout))
-                        
-                        logger.info("✓ Identify mode completed")
-                        return True
-                    else:
+                # Resolve the active scene name so we can patch the right one
+                async with session.get(scenes_url, timeout=timeout) as r:
+                    if r.status != 200:
+                        logger.error(f"Failed to read scenes: HTTP {r.status}")
+                        return False
+                    scenes_data = await r.json()
+
+                active_name = scenes_data.get('active_scene') or 'default'
+                active_scene = (scenes_data.get('scenes') or {}).get(active_name, {})
+
+                track0_has_file = bool(
+                    next((t for t in (active_scene.get('tracks') or [])
+                          if t.get('track') == 0 and t.get('file_path')), None)
+                )
+                if not track0_has_file:
+                    logger.warning(f"Track 0 on active scene '{active_name}' has no file_path — "
+                                   f"identify may be silent")
+
+                # Stop all tracks on the active scene, then start track 0
+                logger.info("Stopping current tracks on active scene...")
+                stop_body = {active_name: {'tracks': [{'track': i, 'active': False} for i in range(3)]}}
+                async with session.post(scenes_url, json=stop_body, timeout=timeout) as r:
+                    if r.status != 200:
+                        logger.error(f"Failed to stop tracks: HTTP {r.status}")
+                        return False
+
+                logger.info("Starting identify sound on track 0...")
+                start_body = {active_name: {'tracks': [{'track': 0, 'active': True}]}}
+                async with session.post(scenes_url, json=start_body, timeout=timeout) as response:
+                    if response.status != 200:
                         logger.error(f"Failed to start identify mode: HTTP {response.status}")
                         return False
-                        
+
+                logger.info(f"✓ Identify mode started on {dev_id} (MAC: {mac})")
+                logger.info(f"  Sound will play for {duration} seconds...")
+
+                await asyncio.sleep(duration)
+
+                logger.info("Stopping identify sound...")
+                stop_one_body = {active_name: {'tracks': [{'track': 0, 'active': False}]}}
+                async with session.post(scenes_url, json=stop_one_body, timeout=timeout) as _:
+                    pass
+
+                logger.info("✓ Identify mode completed")
+                return True
+
         except asyncio.TimeoutError:
             logger.error(f"Timeout connecting to device at {ip}")
             return False

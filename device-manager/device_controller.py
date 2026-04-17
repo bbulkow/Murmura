@@ -297,6 +297,19 @@ class DeviceController:
         else:
             logger.error(f"Failed to get Mur Gateway config: {result.get('error', 'Unknown error')}")
 
+    async def set_device_volume(self, volume: int) -> None:
+        """Set the per-device master volume (0-100) via POST /api/device."""
+        if volume < 0 or volume > 100:
+            logger.error("Volume must be between 0 and 100")
+            return
+        result = await self.send_request('POST', '/api/device', {'device_volume': volume})
+        if result['success']:
+            resp = result.get('response') or {}
+            logger.info(f"✓ device_volume set to {resp.get('device_volume', volume)}%")
+        else:
+            resp = result.get('response', {}) or {}
+            logger.error(f"✗ Failed: {resp.get('error', result.get('error', 'Unknown error'))}")
+
     async def set_mur_gateway(self, ip: Optional[str], port: Optional[int]) -> None:
         """Set Mur Gateway IP and/or port (via consolidated /api/device)."""
         payload: Dict[str, Any] = {}
@@ -447,6 +460,7 @@ Examples:
                           choices=['status', 'get-scenes', 'set-scene',
                                    'create-scene', 'delete-scene', 'activate-scene',
                                    'set-default-scene',
+                                   'set-device-volume',
                                    'set-id', 'save-config', 'load-config', 'reboot', 'list-files',
                                    'get-mur-gateway', 'set-mur-gateway'],
                           help='Command to execute on the device')
@@ -597,6 +611,12 @@ Examples:
                 'set-default-scene': 'set_default',
             }
             asyncio.run(controller.scene_action(action_map[args.command], args.scene))
+
+        elif args.command == 'set-device-volume':
+            if args.volume is None:
+                logger.error("Volume level required (use --volume)")
+                sys.exit(1)
+            asyncio.run(controller.set_device_volume(args.volume))
 
         elif args.command == 'set-id':
             if not args.new_id:
