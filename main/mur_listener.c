@@ -46,6 +46,10 @@ static const char *TAG = "MUR_LISTENER";
 #define WIFI_POLL_MS        1000
 /* Retry interval after a failed gateway connection or disconnect */
 #define RECONNECT_MS        5000
+/* Reliability loop: re-pull current scene from gateway every 5s.
+ * The push path (SceneChange trigger events) stays authoritative for
+ * latency; this catches dropped events and boot/reconnect drift. */
+#define SCENE_PULL_INTERVAL_MS  5000
 
 /* Module state */
 static track_manager_t  *s_manager     = NULL;
@@ -60,6 +64,8 @@ static void  dispatch_event(const char *trigger_name, const char *value);
 static int   connect_to_gateway(void);
 static bool  send_announce(int sock);
 static bool  send_subscribe(int sock);
+static bool  send_get_scene(int sock);
+static void  handle_scene_response(cJSON *event);
 
 /* ================================================================== */
 /*  Public API                                                          */
@@ -252,6 +258,75 @@ static bool send_subscribe(int sock)
 }
 
 /*
+ * send_get_scene — ask the gateway for the current active scene.  The
+ * gateway answers asynchronously with a {"type":"scene","value":...}
+ * message, handled by handle_scene_response().
+ */
+static bool send_get_scene(int sock)
+{
+    static const char msg[] = "{\"type\":\"get_scene\"}\n";
+    int len = (int)(sizeof(msg) - 1);
+    if (send(sock, msg, len, 0) != len) {
+        ESP_LOGW(TAG, "Failed to send get_scene");
+        return false;
+    }
+    ESP_LOGD(TAG, "Sent get_scene");
+    return true;
+}
+
+/*
+ * handle_scene_response — apply a {"type":"scene","value":...} message
+ * from the gateway.  Idempotent: if the reported scene already matches
+ * the active scene, does nothing (important because we re-pull every 5 s).
+ * If the reported scene is unknown locally, falls back to default_scene.
+ */
+static void handle_scene_response(cJSON *event)
+{
+    if (!s_scene_mgr || !s_manager) return;
+
+    cJSON *value_j = cJSON_GetObjectItem(event, "value");
+    const char *value = cJSON_IsString(value_j) ? value_j->valuestring : NULL;
+
+    if (!value || value[0] == '\0') {
+        ESP_LOGD(TAG, "Scene pull: gateway has no current scene; keeping active '%s'",
+                 s_scene_mgr->active_scene);
+        return;
+    }
+
+    /* Idempotent: already on this scene — avoid churning the audio pipeline */
+    if (strcmp(value, s_scene_mgr->active_scene) == 0) {
+        ESP_LOGD(TAG, "Scene pull: '%s' already active", value);
+        return;
+    }
+
+    /* Pick target: the reported scene if known locally, else default_scene */
+    const char *target = value;
+    if (!scene_find(s_scene_mgr, target)) {
+        ESP_LOGW(TAG, "Scene pull: '%s' unknown locally, falling back to default '%s'",
+                 target, s_scene_mgr->default_scene);
+        target = s_scene_mgr->default_scene;
+        if (target[0] == '\0' || !scene_find(s_scene_mgr, target)) {
+            ESP_LOGW(TAG, "Scene pull: no usable default — ignored");
+            return;
+        }
+        if (strcmp(target, s_scene_mgr->active_scene) == 0) {
+            ESP_LOGD(TAG, "Scene pull: default '%s' already active", target);
+            return;
+        }
+    }
+
+    esp_err_t ret = scene_activate(s_scene_mgr, target,
+                                   s_manager->audio_control_queue, s_manager);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Scene pull activated '%s'", target);
+        mur_listener_resubscribe();
+    } else {
+        ESP_LOGW(TAG, "Scene pull failed to activate '%s': %s",
+                 target, esp_err_to_name(ret));
+    }
+}
+
+/*
  * dispatch_event — map a trigger event to zero or more tracks and queue
  * the appropriate audio control message.
  */
@@ -377,6 +452,8 @@ static void process_line(const char *line)
             cJSON *ver = cJSON_GetObjectItem(event, "version");
             ESP_LOGI(TAG, "Gateway welcome (version %s)",
                      cJSON_IsString(ver) ? ver->valuestring : "?");
+        } else if (strcmp(type_j->valuestring, "scene") == 0) {
+            handle_scene_response(event);
         } else {
             ESP_LOGD(TAG, "Gateway message type='%s'", type_j->valuestring);
         }
@@ -429,14 +506,16 @@ static void mur_task(void *arg)
             continue;
         }
 
-        /* Send announce and subscribe */
+        /* Send announce, subscribe, and initial scene pull */
         if (!send_announce(sock) || !send_subscribe(sock)) {
             close(sock);
             continue;
         }
+        send_get_scene(sock);   /* non-fatal if it fails; periodic timer will retry */
 
         s_resubscribe = false;
         line_pos = 0;
+        TickType_t last_pull_tick = xTaskGetTickCount();
 
         /* Event receive loop */
         while (1) {
@@ -444,6 +523,16 @@ static void mur_task(void *arg)
             if (s_resubscribe) {
                 send_subscribe(sock);
                 s_resubscribe = false;
+            }
+
+            /* Reliability loop: re-pull current scene every SCENE_PULL_INTERVAL_MS */
+            TickType_t now = xTaskGetTickCount();
+            if ((now - last_pull_tick) >= pdMS_TO_TICKS(SCENE_PULL_INTERVAL_MS)) {
+                if (!send_get_scene(sock)) {
+                    /* Send failed — socket is dead; break to reconnect */
+                    break;
+                }
+                last_pull_tick = now;
             }
 
             int len = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);

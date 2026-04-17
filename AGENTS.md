@@ -53,7 +53,8 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **main/http_server.h/c** - HTTP API, type definitions (track_mode_t, track_status_t, track_manager_t)
 - **main/scene_manager.h/c** - Scene system: named playback configs, CRUD, activate, atomic patch, JSON persistence to /sdcard/scenes.json
 - **main/config_manager.h/c** - SD card config persistence (track_config_t for gateway config), shared JSON helpers
-- **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing, scene trigger dispatch (discrete + per-scene button triggers)
+- **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing, scene trigger dispatch (discrete + per-scene button triggers), periodic `get_scene` pull (5 s) for reliability against lost SceneChange events
+- **mur-gateway scene cache** - Gateway caches the current scene (primed from Scene Service at startup, refreshed on SceneChange events, lazy HTTP refresh on TTL expiry). Answers device `get_scene` queries from cache.
 - **main/unit_status_manager.h/c** - Device identity and network status
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
 - **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices)

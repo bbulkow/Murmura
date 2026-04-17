@@ -37,7 +37,12 @@ DEFAULT_DEVICE_PORT = 4000
 DEFAULT_UPSTREAM_PORT = 5100
 DEFAULT_TRIGGER_PORT = 5002
 DEFAULT_STATUS_PORT = 4001
-REREGISTER_INTERVAL = 30  # seconds
+DEFAULT_SCENE_SERVICE_URL = "http://localhost:5003"
+DEFAULT_SCENE_CACHE_TTL = 30   # seconds
+REREGISTER_INTERVAL = 30       # seconds
+
+# Well-known trigger name fired by scene_service on active-scene change.
+SCENE_TRIGGER_NAME = "SceneChange"
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,8 @@ class MurGateway:
         self.upstream_port: int = args.upstream_port
         self.status_port: int = args.status_port
         self.gateway_name: str = args.name
+        self.scene_service_url: str = args.scene_service_url.rstrip("/")
+        self.scene_cache_ttl: float = float(args.scene_cache_ttl)
 
         # Connected devices keyed by (reader, writer) id for uniqueness
         self.devices: dict[int, DeviceConnection] = {}
@@ -84,8 +91,19 @@ class MurGateway:
         self.upstream_reader: Optional[asyncio.StreamReader] = None
         self.upstream_writer: Optional[asyncio.StreamWriter] = None
         self._register_task: Optional[asyncio.Task] = None
+        self._prime_task: Optional[asyncio.Task] = None
         self._upstream_task: Optional[asyncio.Task] = None
         self._running = True
+
+        # Scene cache — primed from scene service at startup, refreshed by
+        # SceneChange trigger events (push) and lazy refresh on device query
+        # when the cache ages past scene_cache_ttl.
+        self.cached_scene: Optional[str] = None
+        self.cached_scene_at: float = 0.0   # monotonic timestamp of last cache write
+        # Serializes refresh-from-scene-service to avoid thundering-herd HTTP
+        # calls when many devices pull right after TTL expiry. Created lazily
+        # because asyncio locks must be instantiated inside a running loop.
+        self._scene_refresh_lock: Optional[asyncio.Lock] = None
 
     # -------------------------------------------------------------------
     #  Upstream: Trigger Server connection
@@ -166,6 +184,17 @@ class MurGateway:
 
         trigger_value = event.get("value", "?")
         logger.info("Trigger event: %s value=%s", trigger_name, trigger_value)
+
+        # Fast-path scene cache update: SceneChange events carry the new active
+        # scene name in the 'value' field. Update the cache so subsequent
+        # get_scene queries answer correctly without an HTTP round-trip.
+        # Fan-out to subscribed devices still happens below as normal.
+        if trigger_name == SCENE_TRIGGER_NAME:
+            new_value = event.get("value")
+            new_scene = new_value if isinstance(new_value, str) and new_value else None
+            self.cached_scene = new_scene
+            self.cached_scene_at = time.monotonic()
+            logger.info("Scene cache updated from trigger: %s", new_scene)
 
         # Find all device connections subscribed to this trigger
         conn_ids = self.subscriptions.get(trigger_name, set())
@@ -297,8 +326,95 @@ class MurGateway:
                             del self.subscriptions[t]
                 logger.info("Device %s unsubscribed from: %s", device.device_id, triggers)
 
+        elif msg_type == "get_scene":
+            # Device pull: answer from cache, lazily refreshing from scene
+            # service if the cache is older than scene_cache_ttl.
+            asyncio.ensure_future(self._answer_get_scene(conn_id))
+
         else:
             logger.warning("Unknown message type '%s' from device %s", msg_type, device.device_id)
+
+    # -------------------------------------------------------------------
+    #  Scene cache
+    # -------------------------------------------------------------------
+
+    async def _answer_get_scene(self, conn_id: int):
+        """Respond to a device's get_scene query.
+
+        Lazy refresh: if the cache is stale, attempt one HTTP fetch from the
+        Scene Service under a lock (so concurrent device queries collapse into
+        a single upstream call). On refresh failure, keep the stale value and
+        still answer — devices prefer stale truth to silence.
+        """
+        age = time.monotonic() - self.cached_scene_at
+        if age >= self.scene_cache_ttl:
+            await self._refresh_scene_cache()
+
+        device = self.devices.get(conn_id)
+        if not device:
+            return
+        resp = json.dumps({"type": "scene", "value": self.cached_scene})
+        await device.send_line(resp)
+        logger.debug("Answered get_scene → %s (value=%s)", device.device_id, self.cached_scene)
+
+    async def _refresh_scene_cache(self):
+        """Fetch current scene from the Scene Service (one in-flight call max)."""
+        if self._scene_refresh_lock is None:
+            self._scene_refresh_lock = asyncio.Lock()
+        async with self._scene_refresh_lock:
+            # Re-check age inside the lock — another coroutine may have just
+            # refreshed while we were waiting.
+            if time.monotonic() - self.cached_scene_at < self.scene_cache_ttl:
+                return
+            url = f"{self.scene_service_url}/api/scenes/active"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            active = data.get("active_scene")
+                            self.cached_scene = active if isinstance(active, str) and active else None
+                            self.cached_scene_at = time.monotonic()
+                            logger.debug("Scene cache refreshed: %s", self.cached_scene)
+                        else:
+                            logger.warning("Scene service returned HTTP %d; keeping stale cache (%s)",
+                                           resp.status, self.cached_scene)
+            except Exception as e:
+                logger.warning("Scene service unreachable (%s); keeping stale cache (%s)",
+                               e, self.cached_scene)
+
+    async def _prime_scene_cache(self):
+        """Background task: prime the scene cache at startup with retries.
+
+        Mirrors the scene_service → trigger_gateway registration retry pattern
+        (30 attempts × 2 s) so a startup race between the scene service and
+        this gateway doesn't leave the cache empty forever.
+        """
+        MAX_ATTEMPTS = 30
+        RETRY_DELAY = 2
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if not self._running:
+                return
+            url = f"{self.scene_service_url}/api/scenes/active"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            active = data.get("active_scene")
+                            self.cached_scene = active if isinstance(active, str) and active else None
+                            self.cached_scene_at = time.monotonic()
+                            logger.info("Scene cache primed: %s (attempt %d)",
+                                        self.cached_scene, attempt)
+                            return
+                        logger.warning("Scene service prime got HTTP %d (attempt %d/%d)",
+                                       resp.status, attempt, MAX_ATTEMPTS)
+            except Exception as e:
+                logger.warning("Scene service prime failed (attempt %d/%d): %s",
+                               attempt, MAX_ATTEMPTS, e)
+            await asyncio.sleep(RETRY_DELAY)
+        logger.error("Gave up priming scene cache from %s after %d attempts.",
+                     self.scene_service_url, MAX_ATTEMPTS)
 
     def _remove_device(self, conn_id: int):
         """Remove a device and clean up its subscriptions."""
@@ -335,6 +451,10 @@ class MurGateway:
             and not self.upstream_writer.is_closing()
         )
 
+        scene_age = (
+            round(time.monotonic() - self.cached_scene_at, 1)
+            if self.cached_scene_at > 0 else None
+        )
         body = {
             "gateway": self.gateway_name,
             "version": VERSION,
@@ -344,6 +464,10 @@ class MurGateway:
             "devices": devices,
             "device_count": len(devices),
             "subscriptions": {k: len(v) for k, v in self.subscriptions.items()},
+            "scene_service_url": self.scene_service_url,
+            "cached_scene": self.cached_scene,
+            "cached_scene_age_seconds": scene_age,
+            "scene_cache_ttl": self.scene_cache_ttl,
         }
         return web.json_response(body)
 
@@ -427,11 +551,16 @@ class MurGateway:
         # Start registration loop
         self._register_task = asyncio.create_task(self._registration_loop())
 
+        # Prime the scene cache from the Scene Service (background, with retry)
+        self._prime_task = asyncio.create_task(self._prime_scene_cache())
+
         logger.info("Mur Gateway ready.")
         logger.info("  Trigger Server: %s:%d", self.trigger_host, self.trigger_port)
         logger.info("  Upstream port:  %d", self.upstream_port)
         logger.info("  Device port:    %d", self.device_port)
         logger.info("  Status port:    %d", self.status_port)
+        logger.info("  Scene Service:  %s (cache TTL %.0fs)",
+                    self.scene_service_url, self.scene_cache_ttl)
 
         # Wait until shutdown
         stop_event = asyncio.Event()
@@ -457,6 +586,8 @@ class MurGateway:
         # Cleanup
         logger.info("Shutting down...")
         self._register_task.cancel()
+        if self._prime_task:
+            self._prime_task.cancel()
         upstream_server.close()
         device_server.close()
         await runner.cleanup()
@@ -488,6 +619,10 @@ def main():
                         help=f"HTTP port for status endpoint (default: {DEFAULT_STATUS_PORT})")
     parser.add_argument("--name", default="mur-gateway",
                         help="Gateway name used in Trigger Server registration (default: mur-gateway)")
+    parser.add_argument("--scene-service-url", default=DEFAULT_SCENE_SERVICE_URL,
+                        help=f"Scene Service base URL for get_scene queries (default: {DEFAULT_SCENE_SERVICE_URL})")
+    parser.add_argument("--scene-cache-ttl", type=float, default=DEFAULT_SCENE_CACHE_TTL,
+                        help=f"Scene cache freshness window in seconds (default: {DEFAULT_SCENE_CACHE_TTL})")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable debug logging")
 

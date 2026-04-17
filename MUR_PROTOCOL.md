@@ -19,9 +19,16 @@ Device                          Mur Gateway
   |                                  |
   |--- {"type":"subscribe",...} --->|   (3) Device subscribes to triggers
   |                                  |
+  |--- {"type":"get_scene"} ------->|   (4) Device asks for current scene
+  |                                  |
+  |<-- {"type":"scene","value":X} --|   (5) Gateway answers from cache
+  |                                  |
   |          ... time passes ...     |
   |                                  |
-  |<-- {"name":"X","value":"On"} ---|   (4) Trigger event delivered
+  |<-- {"name":"X","value":"On"} ---|   (6) Trigger event delivered
+  |                                  |
+  |--- {"type":"get_scene"} ------->|   (7) Periodic re-pull (every 5 s)
+  |<-- {"type":"scene","value":Y} --|
   |                                  |
 ```
 
@@ -66,6 +73,21 @@ Removes subscriptions for the listed trigger names.
 | `type`     | string   | yes      | `"unsubscribe"` |
 | `triggers` | string[] | yes      | List of trigger names to unsubscribe from |
 
+### get_scene
+
+Asks the gateway for the current active scene. The gateway answers with a
+`scene` message (see below). Devices send this after `subscribe` on every
+(re)connect and on a short periodic timer (default 5 s) as a reliability loop
+against lost `SceneChange` trigger events.
+
+```json
+{"type": "get_scene"}
+```
+
+| Field  | Type   | Required | Description |
+|--------|--------|----------|-------------|
+| `type` | string | yes      | `"get_scene"` |
+
 ## Messages: Gateway → Device
 
 ### welcome
@@ -81,6 +103,36 @@ Sent in response to a valid `announce` message.
 | `type`    | string | `"welcome"` |
 | `gateway` | string | Gateway identifier |
 | `version` | string | Protocol version |
+
+### scene
+
+Response to a `get_scene` query. Carries the current active scene name (or
+`null` if the gateway has no value yet).
+
+```json
+{"type": "scene", "value": "night"}
+{"type": "scene", "value": null}
+```
+
+| Field   | Type            | Description |
+|---------|-----------------|-------------|
+| `type`  | string          | `"scene"` |
+| `value` | string or null  | Active scene name, or `null` if unknown |
+
+The gateway maintains a short-TTL cache (default 30 s) of the current scene.
+The cache is:
+- **Primed at startup** from the Scene Service via `GET /api/scenes/active`.
+- **Updated immediately** whenever a `SceneChange` trigger event arrives from
+  the upstream Trigger Server (push path).
+- **Lazily refreshed** from the Scene Service on a `get_scene` query if the
+  cached value is older than the TTL. Refreshes are serialized so concurrent
+  device queries collapse into at most one upstream HTTP call.
+
+Device behavior on receipt:
+- `value` is a known scene on this device → activate it (idempotent — if the
+  same scene is already active, the device silently ignores the message).
+- `value` is an unknown scene name → fall back to the device's `default_scene`.
+- `value` is `null` → keep whatever scene is currently active.
 
 ### Trigger Event
 
