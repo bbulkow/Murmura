@@ -27,6 +27,7 @@
 #include "audio_pipeline.h"
 #include "audio_event_iface.h"
 #include "audio_common.h"
+#include "ringbuf.h"
 #include "fatfs_stream.h"
 #include "i2s_stream.h"
 #include "downmix.h"
@@ -64,6 +65,39 @@
 #include "esp_heap_caps.h"
 
 static const char *TAG = "MURMURA";
+
+BaseType_t audio_control_send_start_track(QueueHandle_t queue, int track_index,
+                                          const char *file_path, TickType_t timeout) {
+    if (!queue || !file_path) return pdFAIL;
+    size_t len = strlen(file_path);
+    char *buf = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGE(TAG, "send_start_track: PSRAM alloc failed for path of %u bytes", (unsigned)(len + 1));
+        return pdFAIL;
+    }
+    memcpy(buf, file_path, len + 1);
+    audio_control_msg_t msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
+    msg.data.start_track.track_index = track_index;
+    msg.data.start_track.file_path = buf;
+    BaseType_t r = xQueueSend(queue, &msg, timeout);
+    if (r != pdPASS) {
+        heap_caps_free(buf);
+    }
+    return r;
+}
+
+// Post-ringbuffer drain time = i2s DMA buffer depth + codec FIFO slop.
+// Derived from I2S_STREAM_CFG_DEFAULT (dma_buf_count * dma_buf_len) at 44.1kHz.
+// If the i2s config is overridden, update these to match.
+#define MURMURA_I2S_DMA_BUF_COUNT  3
+#define MURMURA_I2S_DMA_BUF_LEN    300
+#define MURMURA_I2S_SAMPLE_RATE    44100
+#define MURMURA_DMA_DRAIN_MS \
+    ((MURMURA_I2S_DMA_BUF_COUNT * MURMURA_I2S_DMA_BUF_LEN * 1000 + \
+      MURMURA_I2S_SAMPLE_RATE - 1) / MURMURA_I2S_SAMPLE_RATE + 5)
+#define MURMURA_DRAIN_POLL_MAX_MS  250
+#define MURMURA_DRAIN_POLL_STEP_MS 5
+#define MURMURA_DRAIN_RB_THRESHOLD 64
 
 // Helper function to log memory usage
 static void log_memory_info(const char *context) {
@@ -528,10 +562,11 @@ void audio_control_task(void *pvParameters)
                     break;
 
                 case AUDIO_ACTION_START_TRACK: {
-                    ESP_LOGI(TAG, "Processing START_TRACK action for track %d", msg.data.start_track.track_index);
-
                     int track = msg.data.start_track.track_index;
-                    if (track >= 0 && track < MAX_TRACKS) {
+                    char *path = msg.data.start_track.file_path;
+                    ESP_LOGI(TAG, "Processing START_TRACK action for track %d", track);
+
+                    if (track >= 0 && track < MAX_TRACKS && path) {
                         // Log all pipeline states BEFORE touching anything —
                         // this reveals whether the output pipeline (downmix/i2s) has gone
                         // FINISHED after all tracks were previously terminated.
@@ -542,22 +577,23 @@ void audio_control_task(void *pvParameters)
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
                         audio_pipeline_reset_ringbuffer(stream->tracks[track].pipeline);
                         audio_pipeline_reset_elements(stream->tracks[track].pipeline);
-                        
+
                         // Set new file path
-                        audio_element_set_uri(stream->tracks[track].fatfs_e, msg.data.start_track.file_path);
-                        
+                        audio_element_set_uri(stream->tracks[track].fatfs_e, path);
+
                         // Start the track
                         audio_pipeline_run(stream->tracks[track].pipeline);
-                        ESP_LOGI(TAG, "Started track %d with file: %s", track, msg.data.start_track.file_path);
+                        ESP_LOGI(TAG, "Started track %d with file: %s", track, path);
 
                         // Log states again after run — confirms whether output pipeline
                         // is still RUNNING or stayed FINISHED (no sound if FINISHED).
                         log_pipeline_states(stream, track_manager, "post-start");
 
                         // Update file_path (active is set by ENABLE_TRACK, not here)
-                        strncpy(track_manager->tracks[track].file_path, msg.data.start_track.file_path,
+                        strncpy(track_manager->tracks[track].file_path, path,
                                 sizeof(track_manager->tracks[track].file_path) - 1);
                     }
+                    if (path) heap_caps_free(path);
                     break;
                 }
 
@@ -648,6 +684,31 @@ void audio_control_task(void *pvParameters)
                         audio_pipeline_wait_for_stop(stream->tracks[track].pipeline);
                         ESP_LOGI(TAG, "Track %d disabled", track);
                     }
+                    break;
+                }
+
+                case AUDIO_ACTION_DRAIN_OUTPUT: {
+                    // Wait for the i2s element's input ringbuffer to drain, then
+                    // sleep MURMURA_DMA_DRAIN_MS for the unobservable hardware tail.
+                    // Used between scene-change mute and unmute so the codec volume
+                    // change lands while the pipeline is silent.
+                    ringbuf_handle_t rb = audio_element_get_input_ringbuf(stream->i2s_e);
+                    int waited_ms = 0;
+                    int filled = rb ? rb_bytes_filled(rb) : 0;
+                    while (rb && filled > MURMURA_DRAIN_RB_THRESHOLD &&
+                           waited_ms < MURMURA_DRAIN_POLL_MAX_MS) {
+                        vTaskDelay(pdMS_TO_TICKS(MURMURA_DRAIN_POLL_STEP_MS));
+                        waited_ms += MURMURA_DRAIN_POLL_STEP_MS;
+                        filled = rb_bytes_filled(rb);
+                    }
+                    if (filled > MURMURA_DRAIN_RB_THRESHOLD) {
+                        ESP_LOGW(TAG, "DRAIN_OUTPUT: i2s rb still %d bytes after %d ms cap",
+                                 filled, waited_ms);
+                    } else {
+                        ESP_LOGI(TAG, "DRAIN_OUTPUT: i2s rb drained in %d ms (residual %d B)",
+                                 waited_ms, filled);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(MURMURA_DMA_DRAIN_MS));
                     break;
                 }
 
@@ -1027,7 +1088,7 @@ void app_main(void)
     params->board_handle = board_handle;
 
     // Pin audio control task to Core 1 (APP CPU) to avoid WiFi interference on Core 0
-    if (xTaskCreatePinnedToCore(audio_control_task, "audio_control", 4096, (void *)params, 
+    if (xTaskCreatePinnedToCore(audio_control_task, "audio_control", 4096, (void *)params,
                                  5,  // Higher priority than WiFi
                                  NULL,
                                  1) != pdPASS) {  // Pin to Core 1 (APP CPU)

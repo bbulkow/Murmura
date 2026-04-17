@@ -664,11 +664,8 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                                 enable_msg.data.stop_track.track_index = track;
                                 xQueueSend(queue, &enable_msg, pdMS_TO_TICKS(500));
 
-                                audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
-                                start_msg.data.start_track.track_index = track;
-                                strncpy(start_msg.data.start_track.file_path, entry->file_path,
-                                        sizeof(start_msg.data.start_track.file_path) - 1);
-                                xQueueSend(queue, &start_msg, pdMS_TO_TICKS(500));
+                                audio_control_send_start_track(queue, track,
+                                        entry->file_path, pdMS_TO_TICKS(500));
                             }
                         } else {
                             audio_control_msg_t disable_msg = { .type = AUDIO_ACTION_DISABLE_TRACK, .data = {} };
@@ -678,11 +675,8 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                     } else if (file_changed && was_active &&
                                is_track_playing(track_mgr, track)) {
                         // File changed while track is playing — restart
-                        audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
-                        start_msg.data.start_track.track_index = track;
-                        strncpy(start_msg.data.start_track.file_path, entry->file_path,
-                                sizeof(start_msg.data.start_track.file_path) - 1);
-                        xQueueSend(queue, &start_msg, pdMS_TO_TICKS(500));
+                        audio_control_send_start_track(queue, track,
+                                entry->file_path, pdMS_TO_TICKS(500));
                     }
                 }
             }

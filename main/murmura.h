@@ -70,12 +70,16 @@ typedef enum {
     AUDIO_ACTION_SET_GLOBAL_VOLUME, // Set global/master volume (0-100%)
     AUDIO_ACTION_ENABLE_TRACK,      // Mark trigger-mode track active (no audio start)
     AUDIO_ACTION_DISABLE_TRACK,     // Mark trigger-mode track inactive (stop if playing)
+    AUDIO_ACTION_DRAIN_OUTPUT,      // Block until i2s ringbuf empty + DMA tail; used between scene mute/unmute
 } audio_action_type_t;
 
 // Data structures for specific actions
 typedef struct {
     int track_index;
-    char file_path[256];
+    // Pointer to a PSRAM-allocated, NUL-terminated path. Sender allocates;
+    // receiver (audio_control_task START_TRACK handler) frees. Use
+    // audio_control_send_start_track() to build and send these messages.
+    char *file_path;
 } track_start_data_t;
 
 typedef struct {
@@ -101,6 +105,12 @@ typedef struct {
         void *generic_data;
     } data;
 } audio_control_msg_t;
+
+// Allocates a PSRAM copy of file_path, builds an AUDIO_ACTION_START_TRACK
+// message, and sends it. On success the receiver owns and frees the buffer;
+// on failure (alloc or queue full) the buffer is freed and pdFAIL is returned.
+BaseType_t audio_control_send_start_track(QueueHandle_t queue, int track_index,
+                                          const char *file_path, TickType_t timeout);
 
 // Debug function declarations
 void debug_audio_event(audio_event_iface_msg_t *msg);

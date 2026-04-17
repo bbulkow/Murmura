@@ -332,12 +332,9 @@ static void dispatch_event(const char *trigger_name, const char *value)
         audio_control_msg_t msg = { .data = {} };
 
         if (is_on) {
-            msg.type = AUDIO_ACTION_START_TRACK;
-            msg.data.start_track.track_index = i;
-            strncpy(msg.data.start_track.file_path, t->file_path,
-                    sizeof(msg.data.start_track.file_path) - 1);
-            if (xQueueSend(s_manager->audio_control_queue, &msg, pdMS_TO_TICKS(100)) != pdPASS) {
-                ESP_LOGW(TAG, "Queue full — START_TRACK for track %d dropped", i);
+            if (audio_control_send_start_track(s_manager->audio_control_queue, i,
+                    t->file_path, pdMS_TO_TICKS(100)) != pdPASS) {
+                ESP_LOGW(TAG, "Queue full or alloc failed — START_TRACK for track %d dropped", i);
             } else {
                 ESP_LOGI(TAG, "Trigger '%s' matched track %d (%s) — starting",
                          trigger_name, i,

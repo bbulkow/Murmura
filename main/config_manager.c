@@ -140,11 +140,33 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
 
     ESP_LOGI(TAG, "Applying configuration...");
 
-    // Set global volume
+    // Phase 0: mute the codec so the post-stop buffer drain plays out silently
+    // and the new global volume can be set while the pipeline is empty.
+    audio_control_msg_t mute_msg = { .type = AUDIO_ACTION_SET_GLOBAL_VOLUME, .data = {} };
+    mute_msg.data.set_global_volume.volume_percent = 0;
+    xQueueSend(audio_control_queue, &mute_msg, pdMS_TO_TICKS(100));
+
+    // Phase 1: stop any currently-active tracks so they stop refilling buffers.
+    // STOP_TRACK preserves the active flag so disable-detection in phase 4 works.
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (track_manager->tracks[i].active) {
+            audio_control_msg_t stop_msg = { .type = AUDIO_ACTION_STOP_TRACK, .data = {} };
+            stop_msg.data.stop_track.track_index = i;
+            xQueueSend(audio_control_queue, &stop_msg, pdMS_TO_TICKS(100));
+        }
+    }
+
+    // Phase 2: drain the i2s ringbuf + DMA tail so the pipeline is empty
+    // before we change global volume.
+    audio_control_msg_t drain_msg = { .type = AUDIO_ACTION_DRAIN_OUTPUT, .data = {} };
+    xQueueSend(audio_control_queue, &drain_msg, pdMS_TO_TICKS(100));
+
+    // Phase 3: set the new global volume (codec ramps to it during silence)
     audio_control_msg_t vol_msg = { .type = AUDIO_ACTION_SET_GLOBAL_VOLUME, .data = {} };
     vol_msg.data.set_global_volume.volume_percent = config->global_volume_percent;
     xQueueSend(audio_control_queue, &vol_msg, pdMS_TO_TICKS(100));
 
+    // Phase 4: per-track volume, enable/disable, and start
     for (int i = 0; i < MAX_TRACKS; i++) {
         // Set track volume
         audio_control_msg_t vol_track = { .type = AUDIO_ACTION_SET_VOLUME, .data = {} };
@@ -171,11 +193,8 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
             if (config->tracks[i].mode == TRACK_MODE_LOOP
                 && strlen(config->tracks[i].file_path) > 0) {
                 // Loop mode: also start playback
-                audio_control_msg_t start_msg = { .type = AUDIO_ACTION_START_TRACK, .data = {} };
-                start_msg.data.start_track.track_index = i;
-                strncpy(start_msg.data.start_track.file_path, config->tracks[i].file_path,
-                        sizeof(start_msg.data.start_track.file_path) - 1);
-                if (xQueueSend(audio_control_queue, &start_msg, pdMS_TO_TICKS(100)) == pdPASS) {
+                if (audio_control_send_start_track(audio_control_queue, i,
+                        config->tracks[i].file_path, pdMS_TO_TICKS(100)) == pdPASS) {
                     ESP_LOGI(TAG, "Started track %d: %s", i, config->tracks[i].file_path);
                 }
             } else if (config->tracks[i].mode == TRACK_MODE_TRIGGER) {
