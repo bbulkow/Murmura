@@ -924,6 +924,7 @@ void app_main(void)
             wifi_manager_add_network("flg-haven", "fuckoffanddie");
         }
 
+#if 1 // MEDEA
         found = false;
         for (int i=0; i < existing_config.network_count; i++) {
              if (strcmp(existing_config.networks[i].ssid, "medea") == 0) { 
@@ -936,9 +937,10 @@ void app_main(void)
              ESP_LOGI(TAG, " Network: medea NOT found, writing");
              wifi_manager_add_network("medea", "!medea4u");
         }
-        
+#else
         // Force-remove medea from NVS if it exists from previous firmware flashes
-        // wifi_manager_remove_network("medea");
+        wifi_manager_remove_network("medea");
+#endif
 
         // Clear auth failures if any exist (allows retry after password change or temporary issues)
         if (has_auth_failures) {

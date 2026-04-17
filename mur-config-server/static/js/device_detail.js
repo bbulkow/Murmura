@@ -774,12 +774,6 @@ async function checkSceneTriggerMismatch(triggerName) {
 
         const warnings = [];
 
-        // Scenes with no matching trigger value (unreachable by trigger)
-        const unreachable = Array.from(sceneNames).filter(s => !triggerStrValues.has(s));
-        if (unreachable.length > 0) {
-            warnings.push(`Scenes not in trigger values (unreachable): ${unreachable.join(', ')}`);
-        }
-
         // Trigger values with no matching scene (will fall back to default)
         const noScene = Array.from(triggerStrValues).filter(v => !sceneNames.has(v));
         if (noScene.length > 0) {
