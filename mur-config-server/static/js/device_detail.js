@@ -11,6 +11,11 @@ let deviceMurGatewayIp = '';     // Mur Gateway IP for this device
 let deviceMurGatewayPort = 4000; // Mur Gateway device port
 let cachedTriggerData = null;    // Cached trigger list with type info [{name, type}]
 let triggerNamesFetchPromise = null; // Dedup concurrent fetches
+// Blocks DOM rebuilds while a slider is being dragged. Number.MAX_SAFE_INTEGER
+// while a pointer is down on a slider; after release, a future timestamp that
+// spans the POST round-trip and at least one poll tick so the server-confirmed
+// value lands before the next rebuild.
+let sliderInteractionBlockUntil = 0;
 
 async function fetchTriggerData(forceRefresh = false) {
     if (cachedTriggerData && !forceRefresh) return cachedTriggerData;
@@ -74,10 +79,29 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log(`[DEVICE-DETAIL] Initializing for device: ${currentDevice}`);
     
     attachEventListeners();
+    setupSliderGuards();
     loadDeviceData();
     loadWiFiStatus();  // One-time WiFi status fetch
     startAutoRefresh();
 });
+
+function setupSliderGuards() {
+    const isRange = (el) => el && el.matches && el.matches('input[type="range"]');
+
+    document.addEventListener('pointerdown', (e) => {
+        if (isRange(e.target)) {
+            sliderInteractionBlockUntil = Number.MAX_SAFE_INTEGER;
+        }
+    }, true);
+
+    const endDrag = () => {
+        if (sliderInteractionBlockUntil === Number.MAX_SAFE_INTEGER) {
+            sliderInteractionBlockUntil = Date.now() + 2500;
+        }
+    };
+    window.addEventListener('pointerup', endDrag, true);
+    window.addEventListener('pointercancel', endDrag, true);
+}
 
 // Attach event listeners
 function attachEventListeners() {
@@ -107,7 +131,10 @@ async function loadDeviceData() {
             lastScenesData = scenesData;
             activeSceneName = scenesData.active_scene || 'default';
             const editOpen = document.querySelector('.trigger-name-edit-row[style*="flex"]');
-            if (!editOpen) {
+            const ae = document.activeElement;
+            const keyboardHoldsSlider = ae && ae.matches && ae.matches('input[type="range"]');
+            const sliderBusy = Date.now() < sliderInteractionBlockUntil;
+            if (!editOpen && !keyboardHoldsSlider && !sliderBusy) {
                 renderAllScenes(scenesData);
             }
         }
@@ -326,72 +353,70 @@ async function setTrackMode(track, mode, sceneName) {
     }
 }
 
-// Set track volume with throttling and immediate final value
-async function setTrackVolume(track, volume, isFinal = false, sceneName = null) {
-    const sn = sceneName || activeSceneName;
-    const volumeKey = `${sn}-track-${track}`;
-    const volumeInt = parseInt(volume);
-    
-    // Reset auto-refresh timer to give server time to process the change
+// Shared volume-update path used by both scene and per-track sliders.
+// isFinal=false → debounced (200 ms) with last-value dedup for smooth dragging.
+// isFinal=true  → sent immediately on release, cancelling any pending debounce.
+async function sendVolumeChange(volumeKey, buildPatch, volumeInt, isFinal, errContext) {
     resetAutoRefresh();
-    
-    // Clear any existing timer for this track
+
     if (volumeDebounceTimers[volumeKey]) {
         clearTimeout(volumeDebounceTimers[volumeKey]);
     }
-    
-    // If this is the final value (user released slider), send immediately
-    if (isFinal) {
-        // Cancel any pending request and send final value now
-        lastVolumeValues[volumeKey] = volumeInt;
-        
+
+    const post = async () => {
         try {
-            const body = buildSceneTrackPatch(track, { volume: volumeInt }, sn);
+            const body = buildPatch();
             const response = await fetch(`/api/device/${currentDevice}/scenes`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body)
             });
-            
             if (!response.ok) {
-                console.error(`Failed to set volume for track ${track}`);
+                console.error(`Failed to set ${errContext} volume`);
             }
         } catch (error) {
-            console.error(`Error setting volume for track ${track}:`, error);
-            if (error.message.includes('Failed to fetch')) {
-                showMessage('Flask server error - Track volume change not saved', 'error');
+            console.error(`Error setting ${errContext} volume:`, error);
+            if (error.message && error.message.includes('Failed to fetch')) {
+                showMessage(`Flask server error - ${errContext} volume change not saved`, 'error');
             }
         }
+    };
+
+    if (isFinal) {
+        lastVolumeValues[volumeKey] = volumeInt;
+        await post();
         return;
     }
-    
-    // Otherwise, throttle the requests during dragging
-    volumeDebounceTimers[volumeKey] = setTimeout(async () => {
-        // Only send if value actually changed
-        if (lastVolumeValues[volumeKey] === volumeInt) {
-            return;
-        }
-        
+
+    volumeDebounceTimers[volumeKey] = setTimeout(() => {
+        if (lastVolumeValues[volumeKey] === volumeInt) return;
         lastVolumeValues[volumeKey] = volumeInt;
-        
-        try {
-            const body = buildSceneTrackPatch(track, { volume: volumeInt }, sn);
-            const response = await fetch(`/api/device/${currentDevice}/scenes`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body)
-            });
-            
-            if (!response.ok) {
-                console.error(`Failed to set volume for track ${track}`);
-            }
-        } catch (error) {
-            console.error(`Error setting volume for track ${track}:`, error);
-            if (error.message.includes('Failed to fetch')) {
-                showMessage('Flask server error - Track volume change not saved', 'error');
-            }
-        }
-    }, 200);  // 200ms = max 5 requests per second while dragging
+        post();
+    }, 200);
+}
+
+async function setTrackVolume(track, volume, isFinal = false, sceneName = null) {
+    const sn = sceneName || activeSceneName;
+    const volumeInt = parseInt(volume);
+    await sendVolumeChange(
+        `${sn}-track-${track}`,
+        () => buildSceneTrackPatch(track, { volume: volumeInt }, sn),
+        volumeInt,
+        isFinal,
+        `track ${track}`
+    );
+}
+
+async function setSceneVolume(volume, isFinal = false, sceneName = null) {
+    const sn = sceneName || activeSceneName;
+    const volumeInt = parseInt(volume);
+    await sendVolumeChange(
+        `${sn}-scene`,
+        () => buildScenePatch({ global_volume: volumeInt }, sn),
+        volumeInt,
+        isFinal,
+        `scene ${sn}`
+    );
 }
 
 // Global variable for track selection
@@ -1038,22 +1063,16 @@ function attachAllSceneHandlers() {
 
         slider.addEventListener('input', function() {
             if (valueSpan) valueSpan.textContent = `${this.value}%`;
+            setSceneVolume(this.value, false, sceneName);
         });
 
         const sendFinal = async () => {
-            const vol = parseInt(slider.value);
-            try {
-                const body = buildScenePatch({ global_volume: vol }, sceneName);
-                await fetch(`/api/device/${currentDevice}/scenes`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(body)
-                });
-            } catch (e) { console.error('Scene volume error:', e); }
+            await setSceneVolume(slider.value, true, sceneName);
         };
         slider.addEventListener('mouseup', sendFinal);
         slider.addEventListener('touchend', sendFinal);
-        slider.addEventListener('change', sendFinal);
+        slider.addEventListener('keyup', sendFinal);
+        slider.addEventListener('blur', sendFinal);
     });
 
     // Track enable/disable
