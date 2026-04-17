@@ -95,7 +95,7 @@ static int i2c_init()
 
 void es8388_read_all()
 {
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i <= ES8388_DACCONTROL30; i++) {
         uint8_t reg = 0;
         es_read_reg(i, &reg);
         ESP_LOGI(ES_TAG, "%x: %x", i, reg);
@@ -121,6 +121,9 @@ esp_err_t es8388_write_reg(uint8_t reg_add, uint8_t data)
 static int es8388_set_adc_dac_volume(int mode, int volume, int dot)
 {
     int res = 0;
+
+    ESP_LOGI(ES_TAG, "es8388_set_adc_dac_volume: mode %d volume %d dot %d",mode,volume,dot);
+
     if ( volume < -96 || volume > 0 ) {
         ESP_LOGW(ES_TAG, "Warning: volume < -96! or > 0!\n");
         if (volume < -96)
@@ -180,6 +183,9 @@ esp_err_t es8388_start(es_module_t mode)
         res |= es8388_set_voice_mute(false);
         ESP_LOGD(ES_TAG, "es8388_start default is mode:%d", mode);
     }
+
+    // ESP_LOGW(ES_TAG, "REGISTERS AFTER START");
+    // es8388_read_all();
 
     return res;
 }
@@ -340,7 +346,11 @@ esp_err_t es8388_init(audio_hal_codec_config_t *cfg)
 
     codec_dac_volume_config_t vol_cfg = ES8388_DAC_VOL_CFG_DEFAULT();
     dac_vol_handle = audio_codec_volume_init(&vol_cfg);
-    ESP_LOGI(ES_TAG, "init,out:%02x, in:%02x", cfg->dac_output, cfg->adc_input);
+    ESP_LOGD(ES_TAG, "init,out:%02x, in:%02x", cfg->dac_output, cfg->adc_input);
+
+    // ESP_LOGW(ES_TAG, "REGISTERS AFTER INIT");
+    // es8388_read_all();
+
     return res;
 }
 
@@ -383,9 +393,30 @@ esp_err_t es8388_config_fmt(es_module_t mode, es_i2s_fmt_t fmt)
  *     - ESP_OK
  *     - ESP_FAIL
  */
+
+// Gamma=2 audio taper, maps volume 0..100 -> LOUT register 0..30 (0 dB max)
+// vol=50 -> -12 dB from max, vol=100 -> 0 dB
+static const uint8_t vol_lut[101] = {
+     0,  0,  0,  0,  0,  0,  0,  0,  1,  2,   //   0..  9
+     3,  4,  5,  6,  7,  8,  9,  9, 10, 11,   //  10.. 19
+    11, 12, 12, 13, 13, 14, 14, 15, 15, 16,   //  20.. 29
+    16, 16, 17, 17, 18, 18, 18, 18, 19, 19,   //  30.. 39
+    19, 20, 20, 20, 20, 21, 21, 21, 21, 22,   //  40.. 49
+    22, 22, 22, 23, 23, 23, 23, 23, 24, 24,   //  50.. 59
+    24, 24, 24, 25, 25, 25, 25, 25, 26, 26,   //  60.. 69
+    26, 26, 26, 26, 27, 27, 27, 27, 27, 27,   //  70.. 79
+    27, 28, 28, 28, 28, 28, 28, 28, 29, 29,   //  80.. 89
+    29, 29, 29, 29, 29, 29, 30, 30, 30, 30,   //  90.. 99
+    30,                                        // 100
+};
+
 esp_err_t es8388_set_voice_volume(int volume)
 {
     // Original
+// NOTE. Everything I read states that using the DAC volume control, instead of the output gain stage,
+// is correct. However, other than with DACCONTROL4 and 5 being 0, there is distortion. I've checked 
+// theory after theory after theory, and can't account for it. There are not multiple writes to the
+// register. Etc. Therefore, we use the analog power amplifier.
 //    esp_err_t res = ESP_OK;
 //    uint8_t reg = 0;
 //    reg = audio_codec_get_dac_reg_value(dac_vol_handle, volume);
@@ -396,29 +427,52 @@ esp_err_t es8388_set_voice_volume(int volume)
 //    return res;
 
     esp_err_t res = ESP_OK; 
+    uint8_t dac_att = 0;
+    uint8_t output_gain = 0;
+
+#if 0 // digitial volume control
+    if (volume == 0) {
+        dac_att = 0xC0;                    // full mute (-96 dB / mute code)
+    } else {
+        dac_att = (uint8_t)(((100 - volume) * 120) / 100);  // 120..0 → -60..0 dB
+    }
+    output_gain = 15;
+#else // analog volume control
+    dac_att = 0;
+
     if (volume < 0) volume = 0; else if (volume > 100) volume = 100; 
-    volume /= 3; 
-    res = es_write_reg(ES8388_ADDR, ES8388_DACCONTROL4, 0); // LDACVOL  0..-96db  in 0.5steps (0=loud, 192=silent)
-    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL5, 0); // RDACVOL 0..-96db  in 0.5steps (0=loud, 192=silent)
-    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL24, volume);  // LOUT1 volume 0..33 dB
-    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL25, volume);  // ROUT1 volume 0..33 dB
-    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL26, volume);  // LOUT2 volume 0..33 dB
-    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL27, volume);  // ROUT2 volume 0..33 dB
-    ESP_LOGI(ES_TAG, "Set volume:%.2d dB:%.1f", (int)dac_vol_handle->user_volume, 
-            audio_codec_cal_dac_volume(dac_vol_handle));
+
+    // linear control
+    // output_gain = volume / 3;
+
+    // Consumer "audio taper": vol=50 sits ~12 dB below max
+    // Maps 0..100 → register 0..33 with perceptual emphasis on upper range
+    output_gain = vol_lut[volume];
+
+    // Intends to cover basically this math:
+    // dB below max = 40 * log10(volume / 100)
+    // float db_below = 40.0f * log10f(volume / 100.0f);
+    // int reg = 33 + (int)(db_below / 1.5f + (db_below < 0 ? -0.5f : 0.5f));
+    // if (reg < 0) reg = 0;
+    // if (reg > 33) reg = 33;
+    // output_gain = (uint8_t)reg;
+
+#endif
+
+    res = es_write_reg(ES8388_ADDR, ES8388_DACCONTROL4, dac_att); // LDACVOL  0..-96db  in 0.5steps (0=loud, 192=silent)
+    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL5, dac_att); // RDACVOL 0..-96db  in 0.5steps (0=loud, 192=silent)
+    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL24, output_gain);  // LOUT1 volume 0..33 dB
+    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL25, output_gain);  // ROUT1 volume 0..33 dB
+    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL26, output_gain);  // LOUT2 volume 0..33 dB
+    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL27, output_gain);  // ROUT2 volume 0..33 dB
+
+    ESP_LOGW(ES_TAG, "Set voice volume:%d%% (DAC reg=0x%02x, ~%d*0.5dB) (out_gain reg=0x%02x)", volume, (int)dac_att, (int)dac_att,  output_gain);
+
+    // ESP_LOGW(ES_TAG, "REGISTERS AFTER SET VOL");
+    // es8388_read_all();
+
     return res;
 
-   // This was working in older esp-adf
-//    esp_err_t res = ESP_OK; 
-//    if (volume < 0) volume = 0; else if (volume > 100) volume = 100; 
-//    volume /= 3; 
-//    res = es_write_reg(ES8388_ADDR, ES8388_DACCONTROL4, 0); // LDACVOL  0..-96db  in 0.5steps (0=loud, 192=silent)
-//    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL5, 0); // RDACVOL 0..-96db  in 0.5steps (0=loud, 192=silent)
-//    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL24, volume);  // LOUT1 volume 0..33 dB
-//    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL25, volume);  // ROUT1 volume 0..33 dB
-//    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL26, volume);  // LOUT2 volume 0..33 dB
-//    res |= es_write_reg(ES8388_ADDR, ES8388_DACCONTROL27, volume);  // ROUT2 volume 0..33 dB
-//    return res; 
 }
 
 esp_err_t es8388_get_voice_volume(int *volume)
@@ -455,6 +509,7 @@ esp_err_t es8388_set_bits_per_sample(es_module_t mode, es_bits_length_t bits_len
     esp_err_t res = ESP_OK;
     uint8_t reg = 0;
     int bits = (int)bits_length;
+
 
     if (mode == ES_MODULE_ADC || mode == ES_MODULE_ADC_DAC) {
         res = es_read_reg(ES8388_ADCCONTROL4, &reg);
@@ -606,3 +661,4 @@ esp_err_t es8388_pa_power(bool enable)
     }
     return res;
 }
+
