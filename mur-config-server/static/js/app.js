@@ -117,6 +117,13 @@ function attachEventListeners() {
     document.getElementById('batchSetSceneTriggerBtn').addEventListener('click', batchSetSceneTrigger);
     document.getElementById('batchClearSceneTriggerBtn').addEventListener('click', batchClearSceneTrigger);
     document.getElementById('batchRefreshSceneTriggers').addEventListener('click', refreshBatchSceneTriggerList);
+    document.getElementById('batchSetDeviceVolumeBtn').addEventListener('click', batchSetDeviceVolume);
+    const bdv = document.getElementById('batchDeviceVolumeInput');
+    if (bdv) {
+        bdv.addEventListener('input', () => {
+            document.getElementById('batchDeviceVolumeValue').textContent = bdv.value + '%';
+        });
+    }
 
     // Clear datalist inputs on focus so dropdown shows all options (browser filters by current value)
     document.querySelectorAll('input[list]').forEach(input => {
@@ -146,6 +153,17 @@ function attachEventListeners() {
         modalVolumeValue.textContent = this.value;
         setDeviceGlobalVolume(this.value);
     });
+
+    const modalDeviceVolume = document.getElementById('modalDeviceVolume');
+    const modalDeviceVolumeValue = document.getElementById('modalDeviceVolumeValue');
+    if (modalDeviceVolume && modalDeviceVolumeValue) {
+        modalDeviceVolume.addEventListener('input', function() {
+            modalDeviceVolumeValue.textContent = this.value;
+        });
+        modalDeviceVolume.addEventListener('change', function() {
+            setDeviceDeviceVolume(this.value);
+        });
+    }
     
     // Network config modal controls
     document.querySelector('.close-network').addEventListener('click', closeNetworkModal);
@@ -617,6 +635,22 @@ async function openDeviceModal(device) {
     const actualVolume = device.global_volume || device.volume || 0;
     volumeSlider.value = actualVolume;
     volumeValue.textContent = actualVolume;
+
+    // Device volume (per-device master) — fetched from the device endpoint
+    const deviceVolSlider = document.getElementById('modalDeviceVolume');
+    const deviceVolValue = document.getElementById('modalDeviceVolumeValue');
+    if (deviceVolSlider && deviceVolValue) {
+        const dv = (typeof device.device_volume === 'number') ? device.device_volume : 100;
+        deviceVolSlider.value = dv;
+        deviceVolValue.textContent = dv;
+    }
+    // Fetch fresh device_volume asynchronously (device.device_volume may be stale from registry)
+    fetch(`/api/device/${currentDevice}`).then(r => r.ok ? r.json() : null).then(data => {
+        if (data && typeof data.device_volume === 'number' && deviceVolSlider) {
+            deviceVolSlider.value = data.device_volume;
+            deviceVolValue.textContent = data.device_volume;
+        }
+    }).catch(() => {});
     
     // Display loop information if available
     const loopsSection = document.getElementById('loopsSection');
@@ -805,7 +839,7 @@ async function controlDevicePlayback(action) {
 // Set device global volume
 async function setDeviceGlobalVolume(volume) {
     if (!currentDevice) return;
-    
+
     // Use batch endpoint but with single device to avoid CORS issues
     try {
         const response = await fetch('/api/batch/volume', {
@@ -818,7 +852,7 @@ async function setDeviceGlobalVolume(volume) {
                 volume: parseInt(volume)
             })
         });
-        
+
         if (response.ok) {
             console.log(`Global volume set to ${volume}%`);
         } else {
@@ -826,6 +860,25 @@ async function setDeviceGlobalVolume(volume) {
         }
     } catch (error) {
         console.error('Error setting volume:', error);
+    }
+}
+
+async function setDeviceDeviceVolume(volume) {
+    if (!currentDevice) return;
+    try {
+        const response = await fetch('/api/batch/device-volume', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                device_ids: [currentDevice],
+                device_volume: parseInt(volume)
+            })
+        });
+        if (!response.ok) {
+            console.error('Failed to set device_volume');
+        }
+    } catch (error) {
+        console.error('Error setting device_volume:', error);
     }
 }
 
@@ -1537,6 +1590,37 @@ async function batchSetGateway() {
     } catch (error) {
         console.error('Error setting Mur Gateway:', error);
         showError('Failed to set Mur Gateway');
+    }
+}
+
+// Batch set per-device master volume on selected devices
+async function batchSetDeviceVolume() {
+    const input = document.getElementById('batchDeviceVolumeInput');
+    const volume = parseInt(input.value, 10);
+    if (isNaN(volume) || volume < 0 || volume > 100) {
+        showError('Device volume must be 0-100');
+        return;
+    }
+
+    const targetDevices = Array.from(selectedDevices);
+    if (targetDevices.length === 0) {
+        showError('No devices selected');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/batch/device-volume', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ device_ids: targetDevices, device_volume: volume })
+        });
+        const data = await response.json();
+        const successCount = (data.results || []).filter(r => r.status === 'success').length;
+        showSuccess(`Device volume ${volume}% set on ${successCount}/${targetDevices.length} device(s)`);
+        setTimeout(loadDevices, 1000);
+    } catch (error) {
+        console.error('Error setting device volume:', error);
+        showError('Failed to set device volume');
     }
 }
 

@@ -100,6 +100,7 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
   "scene_trigger_name": "SceneSelector",
+  "device_volume": 100,
   "wifi": {
     "connected": true,
     "ssid": "MyNetwork",
@@ -118,6 +119,7 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
 - `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
 - `mur_gateway_port`: Mur Gateway TCP port (default 4000)
 - `scene_trigger_name`: trigger name for discrete scene changes — when an event with this name arrives, the `value` is used as the scene name to activate. If the value doesn't match any scene, the default scene is activated. Empty string disables.
+- `device_volume`: per-device master attenuator, 0–100. Composes multiplicatively with the active scene's `global_volume` and each track's `volume` — effective output = `device_volume × scene.global_volume × track.volume`. Persisted to `/sdcard/track_config.json`, survives scene changes and reboot. Default 100.
 - `wifi.connected`: whether WiFi is connected
 - `wifi.ssid`, `wifi.rssi`, `wifi.signal_strength`: current connection info (only present when connected)
 - `wifi.networks`: list of configured WiFi networks
@@ -134,7 +136,8 @@ Patch-style update of settable device fields. All fields are optional — only t
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
-  "scene_trigger_name": "SceneSelector"
+  "scene_trigger_name": "SceneSelector",
+  "device_volume": 80
 }
 ```
 
@@ -145,9 +148,12 @@ Patch-style update of settable device fields. All fields are optional — only t
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
-  "scene_trigger_name": "SceneSelector"
+  "scene_trigger_name": "SceneSelector",
+  "device_volume": 80
 }
 ```
+
+A `device_volume` change returns HTTP 503 if the internal audio control queue is full.
 
 **Response (error):**
 ```json

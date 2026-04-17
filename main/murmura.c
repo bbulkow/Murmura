@@ -453,6 +453,7 @@ void audio_control_task(void *pvParameters)
     track_manager->audio_stream = stream;
     track_manager->audio_control_queue = control_queue;
     track_manager->global_volume_percent = 75;
+    track_manager->device_volume_percent = 100;
     for (int i = 0; i < MAX_TRACKS; i++) {
         track_manager->tracks[i].active = false;
         track_manager->tracks[i].mode = TRACK_MODE_LOOP;
@@ -493,10 +494,12 @@ void audio_control_task(void *pvParameters)
             track_manager->mur_gateway_port = gw_config->mur_gateway_port;
             strncpy(track_manager->scene_trigger_name, gw_config->scene_trigger_name,
                     sizeof(track_manager->scene_trigger_name) - 1);
-            ESP_LOGI(TAG, "Gateway config: %s:%d, scene_trigger: '%s'",
+            track_manager->device_volume_percent = gw_config->device_volume_percent;
+            ESP_LOGI(TAG, "Gateway config: %s:%d, scene_trigger: '%s', device_volume: %d%%",
                      track_manager->mur_gateway_ip[0] ? track_manager->mur_gateway_ip : "(not set)",
                      track_manager->mur_gateway_port,
-                     track_manager->scene_trigger_name[0] ? track_manager->scene_trigger_name : "(none)");
+                     track_manager->scene_trigger_name[0] ? track_manager->scene_trigger_name : "(none)",
+                     track_manager->device_volume_percent);
         }
         free(gw_config);
 
@@ -652,16 +655,42 @@ void audio_control_task(void *pvParameters)
                     int volume = msg.data.set_global_volume.volume_percent;
                     if (volume < 0) volume = 0;
                     if (volume > 100) volume = 100;
-                    
+
                     // Update loop manager state
                     track_manager->global_volume_percent = volume;
-                    
-                    // Actually set the hardware volume using the board handle
+
+                    // Compose with device_volume before sending to codec.
+                    int dev = track_manager->device_volume_percent;
+                    if (dev < 0) dev = 0;
+                    if (dev > 100) dev = 100;
+                    int composed = (volume * dev) / 100;
+
                     if (params->board_handle && params->board_handle->audio_hal) {
-                        audio_hal_set_volume(params->board_handle->audio_hal, volume);
-                        ESP_LOGI(TAG, "Global volume set to %d%% (hardware codec updated)", volume);
+                        audio_hal_set_volume(params->board_handle->audio_hal, composed);
+                        ESP_LOGI(TAG, "Global volume %d%% * device %d%% = codec %d%%", volume, dev, composed);
                     } else {
                         ESP_LOGW(TAG, "Global volume set to %d%% (no board handle available)", volume);
+                    }
+                    break;
+                }
+
+                case AUDIO_ACTION_SET_DEVICE_VOLUME: {
+                    int volume = msg.data.set_device_volume.volume_percent;
+                    if (volume < 0) volume = 0;
+                    if (volume > 100) volume = 100;
+
+                    track_manager->device_volume_percent = volume;
+
+                    int scene_vol = track_manager->global_volume_percent;
+                    if (scene_vol < 0) scene_vol = 0;
+                    if (scene_vol > 100) scene_vol = 100;
+                    int composed = (scene_vol * volume) / 100;
+
+                    if (params->board_handle && params->board_handle->audio_hal) {
+                        audio_hal_set_volume(params->board_handle->audio_hal, composed);
+                        ESP_LOGI(TAG, "Device volume %d%% * global %d%% = codec %d%%", volume, scene_vol, composed);
+                    } else {
+                        ESP_LOGW(TAG, "Device volume set to %d%% (no board handle available)", volume);
                     }
                     break;
                 }
@@ -1131,12 +1160,9 @@ void app_main(void)
                 if (player_volume > 100) {
                     player_volume = 100;
                 }
-                if (board_handle && board_handle->audio_hal) {
-                    audio_hal_set_volume(board_handle->audio_hal, player_volume);
-                }
-                ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
-                
-                // Also update the loop manager's global volume state via control queue
+                ESP_LOGI(TAG, "[ * ] Scene global volume set to %d %%", player_volume);
+
+                // Update via control queue so device_volume composition is applied.
                 audio_control_msg_t vol_msg = {
                     .type = AUDIO_ACTION_SET_GLOBAL_VOLUME,
                     .data = {}
@@ -1149,12 +1175,9 @@ void app_main(void)
                 if (player_volume < 0) {
                     player_volume = 0;
                 }
-                if (board_handle && board_handle->audio_hal) {
-                    audio_hal_set_volume(board_handle->audio_hal, player_volume);
-                }
-                ESP_LOGI(TAG, "[ * ] Volume set to %d %%", player_volume);
-                
-                // Also update the loop manager's global volume state via control queue
+                ESP_LOGI(TAG, "[ * ] Scene global volume set to %d %%", player_volume);
+
+                // Update via control queue so device_volume composition is applied.
                 audio_control_msg_t vol_msg = {
                     .type = AUDIO_ACTION_SET_GLOBAL_VOLUME,
                     .data = {}

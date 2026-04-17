@@ -435,15 +435,17 @@ static esp_err_t device_get_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(response, "uptime_seconds", status.uptime_seconds);
     }
 
-    // --- Mur Gateway config ---
+    // --- Mur Gateway config + device volume ---
     if (g_track_manager) {
         cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
         cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
+        cJSON_AddNumberToObject(response, "device_volume", g_track_manager->device_volume_percent);
     } else {
         cJSON_AddStringToObject(response, "mur_gateway_ip", "");
         cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
         cJSON_AddStringToObject(response, "scene_trigger_name", "");
+        cJSON_AddNumberToObject(response, "device_volume", 100);
     }
 
     // --- WiFi status and networks ---
@@ -560,6 +562,30 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
             mur_listener_resubscribe();
         }
 
+        // --- Device volume (per-device master, composes with scene global) ---
+        cJSON *dv_json = cJSON_GetObjectItem(request, "device_volume");
+        if (cJSON_IsNumber(dv_json)) {
+            int dv = dv_json->valueint;
+            if (dv < 0) dv = 0;
+            if (dv > 100) dv = 100;
+
+            audio_control_msg_t vmsg = { .type = AUDIO_ACTION_SET_DEVICE_VOLUME, .data = {} };
+            vmsg.data.set_device_volume.volume_percent = dv;
+            if (g_track_manager->audio_control_queue &&
+                xQueueSend(g_track_manager->audio_control_queue, &vmsg, pdMS_TO_TICKS(100)) == pdPASS) {
+                any_update = true;
+            } else {
+                ESP_LOGE(TAG, "audio_control_queue full; device_volume not applied");
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error", "audio queue full");
+                httpd_resp_set_status(req, "503 Service Unavailable");
+                send_json_response(req, response);
+                cJSON_Delete(response);
+                cJSON_Delete(request);
+                return ESP_OK;
+            }
+        }
+
     }
 
     if (!any_update) {
@@ -582,6 +608,7 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
         cJSON_AddStringToObject(response, "mur_gateway_ip", g_track_manager->mur_gateway_ip);
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
         cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
+        cJSON_AddNumberToObject(response, "device_volume", g_track_manager->device_volume_percent);
     }
 
     esp_err_t send_ret = send_json_response(req, response);
@@ -803,6 +830,7 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
             g_track_manager->mur_gateway_port = gw_config->mur_gateway_port;
             strncpy(g_track_manager->scene_trigger_name, gw_config->scene_trigger_name,
                     sizeof(g_track_manager->scene_trigger_name) - 1);
+            g_track_manager->device_volume_percent = gw_config->device_volume_percent;
         }
         free(gw_config);
 

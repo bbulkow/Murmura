@@ -75,6 +75,16 @@
                 </div>
 
                 <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
+                    <label style="font-weight: 500; white-space: nowrap;">Device Volume:</label>
+                    <input type="range" id="batchDeviceVolumeInput" min="0" max="100" value="100" style="width: 200px;">
+                    <span id="batchDeviceVolumeValue" style="min-width: 40px; font-weight: 500;">100%</span>
+                    <button id="batchSetDeviceVolumeBtn" class="btn btn-batch btn-primary" style="padding: 8px 15px; font-size: 14px;">
+                        Set Devices
+                    </button>
+                    <small style="color: #666;">Per-device master (composes with scene and track volumes)</small>
+                </div>
+
+                <div class="batch-action-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid #c1dce5;">
                     <label style="font-weight: 500; white-space: nowrap;">Scene Trigger:</label>
                     <input type="text" id="batchSceneTriggerInput" placeholder="trigger name" list="batchSceneTriggerList" style="width: 180px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px;">
                     <datalist id="batchSceneTriggerList"></datalist>
@@ -143,6 +153,12 @@
                         <span class="info-label">Global Volume:</span>
                         <input type="range" id="modalVolume" min="0" max="100">
                         <span id="modalVolumeValue">0</span>%
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Device Volume:</span>
+                        <input type="range" id="modalDeviceVolume" min="0" max="100">
+                        <span id="modalDeviceVolumeValue">100</span>%
+                        <small style="margin-left: 10px; color: #666;">per-device master</small>
                     </div>
                 </div>
 

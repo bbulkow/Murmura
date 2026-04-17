@@ -994,6 +994,50 @@ def batch_set_mur_gateway():
 # have been removed. Use POST /api/device/<id>/scenes to patch track
 # properties within a scene instead.
 
+@app.route('/api/batch/device-volume', methods=['POST'])
+def batch_set_device_volume():
+    """Set per-device master volume on multiple devices (via /api/device)."""
+    data = request.json
+    device_ids = data.get('device_ids', [])
+    device_volume = data.get('device_volume')
+
+    if device_volume is None:
+        return jsonify({'error': 'Missing required field: device_volume'}), 400
+    try:
+        device_volume = int(device_volume)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'device_volume must be an integer 0-100'}), 400
+    if device_volume < 0 or device_volume > 100:
+        return jsonify({'error': 'device_volume must be between 0 and 100'}), 400
+
+    logger.info(f"Batch setting device_volume to {device_volume} for {len(device_ids)} devices")
+    results = []
+
+    for device_id in device_ids:
+        device = registry.get_device(device_id)
+        if device:
+            try:
+                response = requests.post(
+                    f"http://{device.get('ip_address')}/api/device",
+                    json={'device_volume': device_volume},
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    device['device_volume'] = device_volume
+                    registry.update_device(device)
+                    results.append({'device_id': device_id, 'status': 'success'})
+                    logger.debug(f"Set device_volume on {device_id} to {device_volume}%")
+                else:
+                    results.append({'device_id': device_id, 'status': 'failed'})
+                    logger.warning(f"Failed to set device_volume on {device_id}: HTTP {response.status_code}")
+            except requests.RequestException as e:
+                results.append({'device_id': device_id, 'status': 'error'})
+                logger.error(f"Error setting device_volume on {device_id}: {e}")
+        else:
+            results.append({'device_id': device_id, 'status': 'not_found'})
+
+    return jsonify({'results': results})
+
 @app.route('/api/batch/play', methods=['POST'])
 def batch_control_playback():
     """Control playback for multiple devices via scenes API."""

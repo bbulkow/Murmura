@@ -42,7 +42,8 @@ typedef struct {
 // Global track manager
 typedef struct {
     track_status_t tracks[MAX_TRACKS];
-    int global_volume_percent;  // 0-100%
+    int global_volume_percent;  // 0-100% — active scene's global volume
+    int device_volume_percent;  // 0-100% — per-device master attenuator (composes with scene+track)
     audio_stream_t *audio_stream;
     QueueHandle_t audio_control_queue;
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];       // empty = no mur gateway

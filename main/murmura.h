@@ -67,7 +67,8 @@ typedef enum {
     AUDIO_ACTION_START_TRACK,  // Start a specific track with file
     AUDIO_ACTION_STOP_TRACK,   // Stop a specific track
     AUDIO_ACTION_SET_VOLUME,        // Set volume for a track (0-100%)
-    AUDIO_ACTION_SET_GLOBAL_VOLUME, // Set global/master volume (0-100%)
+    AUDIO_ACTION_SET_GLOBAL_VOLUME, // Set scene's global/master volume (0-100%)
+    AUDIO_ACTION_SET_DEVICE_VOLUME, // Set per-device master volume (0-100%), composes with global
     AUDIO_ACTION_ENABLE_TRACK,      // Mark trigger-mode track active (no audio start)
     AUDIO_ACTION_DISABLE_TRACK,     // Mark trigger-mode track inactive (stop if playing)
     AUDIO_ACTION_DRAIN_OUTPUT,      // Block until i2s ringbuf empty + DMA tail; used between scene mute/unmute
@@ -96,12 +97,17 @@ typedef struct {
 } global_volume_data_t;
 
 typedef struct {
+    int volume_percent;  // 0-100%
+} device_volume_data_t;
+
+typedef struct {
     audio_action_type_t type;
     union {
         track_start_data_t start_track;
         track_stop_data_t stop_track;
         track_volume_data_t set_volume;
         global_volume_data_t set_global_volume;
+        device_volume_data_t set_device_volume;
         void *generic_data;
     } data;
 } audio_control_msg_t;

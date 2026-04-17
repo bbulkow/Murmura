@@ -24,6 +24,7 @@ typedef struct {
 typedef struct {
     track_config_entry_t tracks[MAX_TRACKS];
     int global_volume_percent;
+    int device_volume_percent;  // per-device master (0-100)
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];
     int mur_gateway_port;
     char scene_trigger_name[MAX_TRIGGER_NAME_LEN];

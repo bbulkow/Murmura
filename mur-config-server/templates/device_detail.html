@@ -120,6 +120,12 @@
                 <button onclick="hideMurGatewayEdit()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Cancel</button>
             </div>
             <div class="info-row" style="margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span class="info-label" style="display: inline-block; width: 120px;">Device Volume:</span>
+                <input type="range" id="deviceVolumeSlider" min="0" max="100" value="100" style="width: 220px;">
+                <span id="deviceVolumeValue" style="min-width: 40px; font-weight: 500;">100%</span>
+                <small style="color: #666;">per-device master — composes with scene and track volumes</small>
+            </div>
+            <div class="info-row" style="margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
                 <span class="info-label" style="display: inline-block; width: 120px;">Scene Trigger:</span>
                 <span id="sceneTriggerDisplay" style="color: #555;">--</span>
                 <button onclick="showSceneTriggerEdit()" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">Set</button>

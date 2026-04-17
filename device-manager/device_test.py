@@ -271,6 +271,23 @@ def group1_identity(base):
     # Check mur_gateway fields are present
     record("mur_gateway_ip" in data,   "1.1a mur_gateway_ip field present")
     record("mur_gateway_port" in data, "1.1a mur_gateway_port field present")
+    record("device_volume"   in data,  "1.1a device_volume field present")
+
+    # device_volume round-trip: save original, set to 42, verify, restore.
+    orig_dv = data.get("device_volume", 100)
+    code_dv, data_dv = post(base, "/api/device", {"device_volume": 42})
+    record(code_dv == 200 and data_dv.get("success"),
+           "1.1a POST /api/device accepts device_volume=42",
+           data_dv.get("error", ""))
+    record(data_dv.get("device_volume") == 42,
+           "1.1a POST response echoes device_volume=42",
+           str(data_dv.get("device_volume")))
+    code_vd, data_vd = get(base, "/api/device")
+    record(code_vd == 200 and data_vd.get("device_volume") == 42,
+           "1.1a GET confirms device_volume persisted to 42",
+           str(data_vd.get("device_volume")))
+    # Restore original so later tests aren't affected
+    post(base, "/api/device", {"device_volume": orig_dv})
 
     # Check wifi sub-object
     wifi = data.get("wifi", {})

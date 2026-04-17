@@ -51,6 +51,7 @@ esp_err_t config_save(const track_manager_t *manager) {
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
+    cJSON_AddNumberToObject(root, "device_volume", manager->device_volume_percent);
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
     cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
@@ -293,6 +294,7 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     if (!root) return ESP_ERR_NO_MEM;
 
     cJSON_AddNumberToObject(root, "global_volume", manager->global_volume_percent);
+    cJSON_AddNumberToObject(root, "device_volume", manager->device_volume_percent);
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
     cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
@@ -329,6 +331,7 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     // Defaults
     memset(config, 0, sizeof(track_config_t));
     config->global_volume_percent = 75;
+    config->device_volume_percent = 100;
     config->mur_gateway_ip[0] = '\0';
     config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -343,6 +346,14 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     cJSON *global_vol = cJSON_GetObjectItem(root, "global_volume");
     if (cJSON_IsNumber(global_vol)) {
         config->global_volume_percent = global_vol->valueint;
+    }
+
+    cJSON *dev_vol = cJSON_GetObjectItem(root, "device_volume");
+    if (cJSON_IsNumber(dev_vol)) {
+        int v = dev_vol->valueint;
+        if (v < 0) v = 0;
+        if (v > 100) v = 100;
+        config->device_volume_percent = v;
     }
 
     /* Try new key names first, fall back to old names for backward compat */
@@ -426,6 +437,7 @@ esp_err_t config_get_default(track_config_t *config) {
         };
         memset(config, 0, sizeof(track_config_t));
         config->global_volume_percent = 75;
+        config->device_volume_percent = 100;
         config->mur_gateway_ip[0] = '\0';
         config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
         for (int i = 0; i < MAX_TRACKS; i++) {

@@ -110,6 +110,21 @@ function attachEventListeners() {
     document.getElementById('rebootBtn').addEventListener('click', rebootDevice);
     document.getElementById('viewFilesBtn').addEventListener('click', toggleFiles);
     // Global volume is now per-scene, handled in attachAllSceneHandlers
+
+    // Device volume (per-device master attenuator) — mirrors scene-slider pattern.
+    const dvSlider = document.getElementById('deviceVolumeSlider');
+    const dvValue = document.getElementById('deviceVolumeValue');
+    if (dvSlider && dvValue) {
+        dvSlider.addEventListener('input', function() {
+            dvValue.textContent = `${this.value}%`;
+            setDeviceVolume(this.value, false);
+        });
+        const sendFinal = () => setDeviceVolume(dvSlider.value, true);
+        dvSlider.addEventListener('mouseup', sendFinal);
+        dvSlider.addEventListener('touchend', sendFinal);
+        dvSlider.addEventListener('keyup', sendFinal);
+        dvSlider.addEventListener('blur', sendFinal);
+    }
 }
 
 // Load device data and loops
@@ -165,6 +180,20 @@ function updateDeviceInfo(data) {
     // Don't update SSID here - it's handled by loadWiFiStatus()
     if (data.uptime) {
         document.getElementById('deviceUptime').textContent = data.uptime;
+    }
+
+    // Update device_volume slider — guard with the same shape used in loadDeviceData
+    // so dragging or keyboard-focused sliders aren't stomped by a refresh tick.
+    if (typeof data.device_volume === 'number') {
+        const dvSlider = document.getElementById('deviceVolumeSlider');
+        const dvValue = document.getElementById('deviceVolumeValue');
+        const ae = document.activeElement;
+        const keyboardHoldsSlider = ae && ae.matches && ae.matches('input[type="range"]');
+        const sliderBusy = Date.now() < sliderInteractionBlockUntil;
+        if (dvSlider && dvValue && !keyboardHoldsSlider && !sliderBusy) {
+            dvSlider.value = data.device_volume;
+            dvValue.textContent = `${data.device_volume}%`;
+        }
     }
     
     // Handle offline status
@@ -353,10 +382,10 @@ async function setTrackMode(track, mode, sceneName) {
     }
 }
 
-// Shared volume-update path used by both scene and per-track sliders.
+// Shared volume-update path used by scene, per-track, and device-level sliders.
 // isFinal=false → debounced (200 ms) with last-value dedup for smooth dragging.
 // isFinal=true  → sent immediately on release, cancelling any pending debounce.
-async function sendVolumeChange(volumeKey, buildPatch, volumeInt, isFinal, errContext) {
+async function sendVolumeChange(volumeKey, url, buildPatch, volumeInt, isFinal, errContext) {
     resetAutoRefresh();
 
     if (volumeDebounceTimers[volumeKey]) {
@@ -366,7 +395,7 @@ async function sendVolumeChange(volumeKey, buildPatch, volumeInt, isFinal, errCo
     const post = async () => {
         try {
             const body = buildPatch();
-            const response = await fetch(`/api/device/${currentDevice}/scenes`, {
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body)
@@ -400,6 +429,7 @@ async function setTrackVolume(track, volume, isFinal = false, sceneName = null) 
     const volumeInt = parseInt(volume);
     await sendVolumeChange(
         `${sn}-track-${track}`,
+        `/api/device/${currentDevice}/scenes`,
         () => buildSceneTrackPatch(track, { volume: volumeInt }, sn),
         volumeInt,
         isFinal,
@@ -412,10 +442,23 @@ async function setSceneVolume(volume, isFinal = false, sceneName = null) {
     const volumeInt = parseInt(volume);
     await sendVolumeChange(
         `${sn}-scene`,
+        `/api/device/${currentDevice}/scenes`,
         () => buildScenePatch({ global_volume: volumeInt }, sn),
         volumeInt,
         isFinal,
         `scene ${sn}`
+    );
+}
+
+async function setDeviceVolume(volume, isFinal = false) {
+    const volumeInt = parseInt(volume);
+    await sendVolumeChange(
+        'device-volume',
+        '/api/batch/device-volume',
+        () => ({ device_ids: [currentDevice], device_volume: volumeInt }),
+        volumeInt,
+        isFinal,
+        'device'
     );
 }
 
