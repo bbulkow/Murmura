@@ -3,9 +3,8 @@ build/
 sdkconfig
 sdkconfig.old
 
-# ESP-IDF managed components (downloaded automatically)
+# ESP-IDF managed components (downloaded automatically — derived from dependencies.lock)
 managed_components/
-dependencies.lock
 
 # ESP-IDF / CMake generated files
 .cmake/
