@@ -1,19 +1,20 @@
 # Mur Config Server Systemd Installation Guide
 
-This guide explains how to install and configure the Mur Config Server as a systemd service on Raspberry Pi (Bookworm or similar).
+This guide explains how to install and configure the Mur Config Server as a systemd service on Linux (tested on Ubuntu 22.04 / Jetson and Raspberry Pi Bookworm).
 
-## Features Added
+The checked-in service file targets `brian@/home/brian/Murmura/mur-config-server` (the `recomputer` Jetson). On other deployments (e.g. Raspberry Pi as user `pi`), edit `User=`, `Group=`, `WorkingDirectory=`, and `ExecStart=` paths to match.
 
-1. **Runs on port 80 by default** - The service file is configured to run on port 80 for easier access (no port number needed in URLs).
-2. **Easy port override** - You can change the port using the `MUR_CONFIG_SERVER_PORT` environment variable.
-3. **Systemd service file** - Automatically start the server on boot and restart on failure.
-4. **Privileged port support** - Uses systemd capabilities to allow binding to port 80 without running as root.
+## Features
+
+1. **Runs on port 8765 by default** - Unprivileged port; no special capabilities needed.
+2. **Easy port override** - Change the port using the `MUR_CONFIG_SERVER_PORT` environment variable in the service file.
+3. **Systemd service file** - Automatically starts the server on boot and restarts on failure.
 
 ## Port Configuration
 
 ### Default Port
-- **In service**: The systemd service runs on port **80** (configured in service file)
-- **Manual run**: When run manually, defaults to port **8765** (unless overridden)
+- **In service**: Port **8765** (configured via `MUR_CONFIG_SERVER_PORT` in the service file).
+- **Manual run**: Same default of **8765** (unless overridden).
 
 ### Overriding the Port
 
@@ -38,15 +39,15 @@ You can override the port in several ways:
 
 1. Ensure Python 3 and required dependencies are installed:
    ```bash
-   cd /home/pi/Murmura/mur-config-server
-   pip3 install -r requirements.txt
+   cd ~/Murmura/mur-config-server
+   pip3 install --user -r requirements.txt
    ```
 
 ### Installation Steps
 
 1. **Copy the service file to systemd directory**:
    ```bash
-   sudo cp /home/pi/Murmura/mur-config-server/mur-config-server.service /etc/systemd/system/
+   sudo cp ~/Murmura/mur-config-server/mur-config-server.service /etc/systemd/system/
    ```
 
 2. **Reload systemd to recognize the new service**:
@@ -87,10 +88,10 @@ To change the port when running as a systemd service:
 
 2. **Modify the port environment variable**:
    ```ini
-   Environment="MUR_CONFIG_SERVER_PORT=8765"  # or any port you prefer
+   Environment="MUR_CONFIG_SERVER_PORT=9000"  # or any port you prefer
    ```
 
-   **Note**: For ports below 1024 (privileged ports), ensure these lines are present:
+   **Note**: For ports below 1024 (privileged ports), add these lines under `[Service]`:
    ```ini
    AmbientCapabilities=CAP_NET_BIND_SERVICE
    CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -119,12 +120,10 @@ To change the port when running as a systemd service:
 
 Once the service is running:
 
-- **From the Raspberry Pi**: http://localhost (port 80 is default)
-- **From other devices on the network**: http://[raspberry-pi-ip]
+- **From the host**: http://localhost:8765
+- **From other devices on the network**: http://[host-ip]:8765
 
-No port number is needed in the URL since it runs on port 80!
-
-To find your Raspberry Pi's IP address:
+To find the host's IP address:
 ```bash
 hostname -I
 ```
@@ -134,17 +133,16 @@ hostname -I
 ### Service won't start
 1. Check the logs: `sudo journalctl -u mur-config-server.service -n 50`
 2. Verify Python dependencies are installed: `pip3 list`
-3. Check file permissions: `ls -l /home/pi/Murmura/mur-config-server/`
+3. Check file permissions: `ls -l ~/Murmura/mur-config-server/`
 
 ### Port already in use
 If you get a "port already in use" error:
-1. Check what's using the port: `sudo lsof -i :80` (or your configured port)
-2. For port 80, check if Apache or nginx is running: `sudo systemctl status apache2 nginx`
-3. Stop conflicting services or change the port using the environment variable method above
+1. Check what's using the port: `sudo lsof -i :8765` (or your configured port)
+2. Stop the conflicting service or change the port using the environment variable method above
 
 ### Can't access from network
 1. Check firewall settings: `sudo ufw status`
-2. If firewall is active, allow the port: `sudo ufw allow 80/tcp`
+2. If firewall is active, allow the port: `sudo ufw allow 8765/tcp`
 
 ## Uninstalling
 
@@ -164,7 +162,6 @@ sudo systemctl daemon-reload
 
 ## Notes
 
-- The service runs as the `pi` user with the home directory `/home/pi`
-- If you installed the repository in a different location, update the paths in the service file
+- The checked-in service file runs as `brian` from `/home/brian/Murmura/mur-config-server`. For other deployments, edit `User=`, `Group=`, `WorkingDirectory=`, and the `ExecStart=` path in the service file before installing.
 - The service automatically restarts on failure with a 10-second delay
 - Logs are sent to the systemd journal (use `journalctl` to view)

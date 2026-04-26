@@ -1,0 +1,20 @@
+[Unit]
+Description=Mur Gateway - Haven Trigger Server bridge for Murmura ESP32 devices
+After=network-online.target trigger.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brian
+Group=brian
+WorkingDirectory=/home/brian/Murmura/mur-gateway
+Environment="PATH=/home/brian/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /home/brian/Murmura/mur-gateway/mur_gateway.py --trigger-host localhost --trigger-port 5002
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mur-gateway
+
+[Install]
+WantedBy=multi-user.target

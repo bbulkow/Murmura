@@ -227,11 +227,9 @@ The server maintains a persistent registry of discovered devices in `device_regi
 2. Increase scan interval for less frequent updates
 3. Disable auto-scan when not needed
 
-## Running on Raspberry Pi
+## Auto-start on Boot with Systemd
 
-### Auto-start on Boot with Systemd
-
-The mur-config-server includes a pre-configured systemd service file for easy installation on Raspberry Pi.
+The mur-config-server includes a pre-configured systemd service file. The checked-in file targets `brian@/home/brian/Murmura/mur-config-server`; edit `User=` and paths for other deployments.
 
 **For detailed installation instructions, see [SYSTEMD_INSTALL.md](SYSTEMD_INSTALL.md)**
 
@@ -239,14 +237,13 @@ Quick installation:
 
 1. Copy the service file:
 ```bash
-sudo cp /home/pi/Murmura/mur-config-server/mur-config-server.service /etc/systemd/system/
+sudo cp ~/Murmura/mur-config-server/mur-config-server.service /etc/systemd/system/
 ```
 
 2. Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable mur-config-server.service
-sudo systemctl start mur-config-server.service
+sudo systemctl enable --now mur-config-server.service
 ```
 
 3. Check status:
