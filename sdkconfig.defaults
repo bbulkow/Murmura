@@ -1,4 +1,4 @@
-# This file was generated using idf.py save-defconfig. It can be edited manually.
+# This file was generated using idf.py save-defconfig or menuconfig [D] key. It can be edited manually.
 # Espressif IoT Development Framework (ESP-IDF) 5.3.1 Project Minimal Configuration
 #
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -24,3 +24,7 @@ CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FREERTOS_HZ=250
 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+CONFIG_LWIP_IPV6=n
+CONFIG_LWIP_TCP_MAXRTX=7
+CONFIG_LWIP_TCP_TMR_INTERVAL=100
+CONFIG_LWIP_TCP_RTO_TIME=750

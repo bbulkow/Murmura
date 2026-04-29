@@ -52,6 +52,18 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 - **MUR_PROTOCOL.md** — wire-format spec for device ↔ Mur Gateway.
 - **HTTP_API.md** — authoritative HTTP API contract.
 - **SYNC_DESIGN.md** — synchronized multi-MUR playback (TSF-based). Read this before touching `mur_scheduler.{h,c}`, the time fields on the MUR Protocol, the gateway's `TsfMap`, or the per-MUR `late_policy`.
+- **TCP_TUNING.md** — TCP/lwIP rationale for the non-default knobs in `sdkconfig.defaults`. Read this before changing any LWIP submenu setting or chasing latency/jitter/stuck-socket bugs.
+
+# Scope discipline (READ THIS)
+
+When the user asks you to **verify, check, audit, or look at** something, your job is to **inspect and report** — not to refactor, "fix," or remove anything that looks inconsistent to you. Inconsistencies are often *features* whose rationale isn't immediately visible in the code.
+
+Concrete rules:
+- "Check that X is applied everywhere" means *report where X is and isn't applied*. It does **not** authorize you to make X apply everywhere.
+- "Is this consistent?" means *describe the consistency or asymmetry*. It does **not** authorize you to flatten the asymmetry.
+- Asymmetric, conditional, or special-case behavior in this codebase is almost always intentional. Examples that have already burned past sessions:
+  - The 1-subscriber non-SceneChange passthrough in `mur_gateway._resolve_target_tsf` (regular triggers fire immediately on a single MUR; only multi-MUR or SceneChange get `fanout_delay_ms`). **This is a critical feature, not a bug.** Do not "apply the delay everywhere" — that change has been proposed and explicitly rejected.
+- If you spot what looks like a bug while doing a verification task, **stop and ask**. Describe what you see and why you think it's wrong, then wait for the user to confirm before changing anything. Auto mode does not authorize destructive scope creep — and removing a designed feature is destructive.
 
 # Project architecture
 

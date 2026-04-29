@@ -52,10 +52,10 @@ static const char *TAG = "MUR_LISTENER";
 #define WIFI_POLL_MS        1000
 /* Retry interval after a failed gateway connection or disconnect */
 #define RECONNECT_MS        5000
-/* Reliability loop: re-pull current scene from gateway every 5s.
+/* Reliability loop: re-pull current scene from gateway every 10s.
  * The push path (SceneChange trigger events) stays authoritative for
  * latency; this catches dropped events and boot/reconnect drift. */
-#define SCENE_PULL_INTERVAL_MS  5000
+#define SCENE_PULL_INTERVAL_MS  10000
 
 /* If a scheduled event arrives within this many µs of its target TSF,
  * the listener still submits it (the scheduler will fire immediately).
@@ -581,8 +581,9 @@ static void dispatch_or_defer(const char *name, const char *value,
     }
 
     int64_t lead_us = -lateness_us;
-    ESP_LOGD(TAG, "scheduled '%s' for tsf=%" PRIu64 " (in %" PRId64 " us)",
-             name ? name : "(null)", target_tsf_us, lead_us);
+    ESP_LOGI(TAG, "deferred '%s' value='%s' for %lld ms (offset=%ld us, target_tsf=%" PRIu64 ")",
+             name ? name : "(null)", value ? value : "(null)",
+             (long long)(lead_us / 1000), (long)offset_us, target_tsf_us);
 }
 
 /*

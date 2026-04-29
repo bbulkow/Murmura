@@ -50,7 +50,7 @@ SCENE_TRIGGER_NAME = "SceneChange"
 
 # Sync-feature knobs (overridable via config.json — see SYNC_DESIGN.md).
 SYNC_DEFAULTS = {
-    "fanout_delay_ms": 100,
+    "fanout_delay_ms": 2500,
     "tsf_query_interval_s": 30,
     "tsf_query_devices_count": 3,
     "tsf_jitter_warn_us": 1000,
@@ -339,6 +339,15 @@ class MurGateway:
         so single-MUR test runs behave identically to multi-MUR production
         (and so a synchronized scene's activation is always deferred-dispatched,
         not fired in the listener's immediate path).
+
+        ===== CRITICAL DESIGN FEATURE — DO NOT "FIX" =====
+        The 1-subscriber non-SceneChange passthrough is INTENTIONAL. A single
+        MUR receiving a regular trigger has no one to sync with, so it fires
+        on receipt for snappy local response. The fanout_delay_ms only kicks
+        in when there's actual work for it to do (>1 subscriber) or when the
+        sync-scene path requires it (SceneChange). Do not remove this branch
+        thinking the delay should be "applied everywhere" — that change has
+        been proposed and rejected.
 
         See SYNC_DESIGN.md.
         """

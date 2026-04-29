@@ -88,7 +88,7 @@ Edit on-site, restart the service. Config file fields override built-in defaults
 
 | Field | Default | What it tunes |
 |---|---|---|
-| `fanout_delay_ms` | 100 | Implicit "now" + multi-MUR scheduling — set above LAN RTT/jitter for your network, below human-perceptible delay for cued audio. |
+| `fanout_delay_ms` | 2500 | Implicit "now" + multi-MUR scheduling — set above worst-case end-to-end delivery latency on your network. Production WiFi installs commonly see 1–2 s HTTP/TCP delays under load, so 2500 ms gives ~500 ms–1.5 s of margin. Drop it on a clean dev LAN if you want snappier "now" cues; raise it if you see late-event drops/warnings. |
 | `tsf_query_interval_s` | 30 | How often to refresh the TSF map. Lower = fresher, more LAN traffic. The TSF test showed sub-ms drift over 30 s. |
 | `tsf_query_devices_count` | 3 | Sample size per pull cycle. Lets the gateway compute pairwise jitter for diagnostics. |
 | `tsf_jitter_warn_us` | 1000 | Pairwise TSF disagreement threshold for a logged warning. |
@@ -200,9 +200,11 @@ Two reasons:
 - **Test-vs-production parity.** A single-MUR test rig should exhibit the same scheduling path as a multi-MUR production install — both go through `mur_scheduler` with a future `target_tsf_us` deadline. Behavior doesn't snap from "instant fire" to "scheduled fire" the moment a second MUR connects.
 - **Synchronized-scene activation always lands on the deferred path.** Even with one MUR, `scene_activate(SCENE_ACTIVATE_TRIGGER)` is invoked from the scheduler callback rather than from the listener's immediate dispatch. Cleaner separation of "this is a synchronized event" from "this is the listener's hot path."
 
-Cost: `fanout_delay_ms` (default 100 ms) of latency on single-MUR scene changes. Acceptable, given the parity benefit.
+Cost: `fanout_delay_ms` (default 2500 ms) of latency on single-MUR scene changes — sized for production WiFi. Acceptable for scene transitions (visitors don't notice 2 s on a wall display); if you're testing on a clean LAN and want faster scene-change feedback, lower the value in `config.json`.
 
 This carve-out lives in `_resolve_target_tsf` and applies only when no explicit time field is provided (`target_tsf_us` / `iso_time` / `delta_ms` are still honored verbatim, as for any trigger).
+
+**Critical design feature — do not "fix":** the 1-subscriber non-SceneChange passthrough (regular triggers fire immediately when only one MUR is subscribed) is intentional. A single MUR receiving a regular trigger has no one to sync with, so it fires on receipt for snappy local response. Removing this branch and applying `fanout_delay_ms` "everywhere" has been proposed and rejected — the asymmetry is the whole point.
 
 ## Event lifetime on the MUR
 

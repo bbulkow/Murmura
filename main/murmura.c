@@ -418,12 +418,12 @@ bool is_track_playing(track_manager_t *mgr, int track_index) {
 // Call this at START_TRACK and STOP_TRACK to see if the output pipeline
 // goes FINISHED when all tracks are terminated.
 static void log_pipeline_states(audio_stream_t *stream, track_manager_t *tm, const char *ctx) {
-    ESP_LOGI(TAG, "[states/%s] output: downmix=%s  i2s=%s",
+    ESP_LOGD(TAG, "[states/%s] output: downmix=%s  i2s=%s",
              ctx,
              ael_state_name(audio_element_get_state(stream->downmix_e)),
              ael_state_name(audio_element_get_state(stream->i2s_e)));
     for (int i = 0; i < MAX_TRACKS; i++) {
-        ESP_LOGI(TAG, "[states/%s] track[%d]: fatfs=%s  dec=%s  active=%s",
+        ESP_LOGD(TAG, "[states/%s] track[%d]: fatfs=%s  dec=%s  active=%s",
                  ctx, i,
                  ael_state_name(audio_element_get_state(stream->tracks[i].fatfs_e)),
                  ael_state_name(audio_element_get_state(stream->tracks[i].decode_e)),
@@ -555,7 +555,7 @@ void audio_control_task(void *pvParameters)
     while (1) {
         // Check for control messages with a short timeout
         if (xQueueReceive(control_queue, &msg, pdMS_TO_TICKS(10)) == pdPASS) {
-            ESP_LOGI(TAG, "Received control action: %d", msg.type);
+            ESP_LOGD(TAG, "Received control action: %d", msg.type);
 
             switch (msg.type) {
                 case AUDIO_ACTION_START:
@@ -569,7 +569,7 @@ void audio_control_task(void *pvParameters)
                 case AUDIO_ACTION_START_TRACK: {
                     int track = msg.data.start_track.track_index;
                     char *path = msg.data.start_track.file_path;
-                    ESP_LOGI(TAG, "Processing START_TRACK action for track %d", track);
+                    ESP_LOGD(TAG, "Processing START_TRACK action for track %d", track);
 
                     if (track >= 0 && track < MAX_TRACKS && path) {
                         // Log all pipeline states BEFORE touching anything —
@@ -796,7 +796,7 @@ void audio_control_task(void *pvParameters)
                 // Detect when track has finished playing
                 if (at_end && !track_finished[i]) {
                     track_finished[i] = true;
-                    ESP_LOGI(TAG, "Track %d reached end of file, marking for restart", i);
+                    ESP_LOGD(TAG, "Track %d reached end of file, marking for restart", i);
                 }
                 
                 // Handle track finished
@@ -815,7 +815,7 @@ void audio_control_task(void *pvParameters)
                     if (should_loop) {
                         audio_element_set_uri(stream->tracks[i].fatfs_e, current_file);
                         audio_pipeline_run(stream->tracks[i].pipeline);
-                        ESP_LOGI(TAG, "Track %d looped: %s", i, current_file);
+                        ESP_LOGD(TAG, "Track %d looped: %s", i, current_file);
                     } else {
                         // Track finished — do not touch active (user intent).
                         ESP_LOGI(TAG, "Track %d finished (mode=%s, not restarting)",
@@ -872,7 +872,7 @@ void audio_control_task(void *pvParameters)
                         && evt_msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
                         int st = (int)evt_msg.data;
                         if (st == AEL_STATUS_OUTPUT_DONE || st == AEL_STATUS_STATE_FINISHED) {
-                            ESP_LOGI(TAG, "track[%d] decoder: status=%d (output done/finished — "
+                            ESP_LOGD(TAG, "track[%d] decoder: status=%d (output done/finished — "
                                      "downmix input ringbuf may be aborted)", i, st);
                         }
                     }
@@ -905,7 +905,7 @@ void audio_control_task(void *pvParameters)
                             if ((int)evt_msg.data == AEL_STATUS_STATE_FINISHED ||
                                 (int)evt_msg.data == AEL_STATUS_INPUT_DONE) {
                                 should_restart = true;
-                                ESP_LOGI(TAG, "Track %d element reported finish (status=%d)", i, (int)evt_msg.data);
+                                ESP_LOGD(TAG, "Track %d element reported finish (status=%d)", i, (int)evt_msg.data);
                             }
                         }
                         
@@ -921,7 +921,7 @@ void audio_control_task(void *pvParameters)
 
                             if (do_loop) {
                                 audio_pipeline_run(stream->tracks[i].pipeline);
-                                ESP_LOGI(TAG, "Track %d event-looped", i);
+                                ESP_LOGD(TAG, "Track %d event-looped", i);
                             } else {
                                 ESP_LOGI(TAG, "Track %d event-finished (no loop)", i);
                             }
@@ -953,6 +953,8 @@ void app_main(void)
     esp_log_level_set("FATFS_STREAM", ESP_LOG_ERROR);
     esp_log_level_set("CODEC_ELEMENT_HELPER", ESP_LOG_ERROR); 
     esp_log_level_set("DEC_WAV", ESP_LOG_ERROR);
+    esp_log_level_set("AUDIO_EVT", ESP_LOG_ERROR);
+    esp_log_level_set("ESP_DECODER", ESP_LOG_WARN);
 
     // wifis a little chatty too
     esp_log_level_set("wifi", ESP_LOG_WARN);

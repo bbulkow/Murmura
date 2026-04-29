@@ -1,5 +1,5 @@
 {
-  "fanout_delay_ms": 100,
+  "fanout_delay_ms": 2500,
   "tsf_query_interval_s": 5,
   "tsf_query_devices_count": 3,
   "tsf_jitter_warn_us": 1000,
