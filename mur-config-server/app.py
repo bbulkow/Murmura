@@ -7,6 +7,7 @@ import json
 import time
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
@@ -39,6 +40,17 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Initialize components
 network_config = NetworkConfig()
 registry = DeviceRegistry()
+
+# Probe grace window state (in-memory, ephemeral across server restarts).
+# Keyed by the same device_id the registry uses (id || ip_address). A single
+# missed probe does not flip the UI to offline if the device answered
+# successfully within GRACE_WINDOW_SEC and we have fewer than
+# GRACE_MAX_FAILURES misses in a row. Hides single-probe blips on a marginal
+# Wi-Fi link without delaying real outage detection.
+_probe_state = {}
+_probe_state_lock = threading.Lock()
+GRACE_WINDOW_SEC = 30
+GRACE_MAX_FAILURES = 2
 
 # Background scanning thread
 scan_thread = None
@@ -152,159 +164,170 @@ def network_configuration():
         
         return jsonify({'status': 'success', 'config': network_config.config})
 
+def _probe_one_device(device, probe_timeout):
+    """Probe a single device's /api/device and (if reachable) /api/scenes.
+
+    Returns (formatted, device, is_actually_online) where formatted is the
+    UI dict, device is the (possibly mutated) registry record, and
+    is_actually_online is the raw network outcome before any grace window.
+    """
+    formatted = {
+        'id': device.get('id', device.get('ip_address', 'unknown')),
+        'ip': device.get('ip_address', 'unknown'),
+        'status': 'online' if device.get('online', False) else 'offline',
+        'playing': False,
+        'volume': 0,
+        'ssid': device.get('wifi_ssid', 'Unknown'),
+        'mac_address': device.get('mac_address', 'Unknown'),
+        'firmware_version': device.get('firmware_version', 'Unknown'),
+        'last_seen': device.get('last_seen', ''),
+        'loops': [],
+        'global_volume': 0,
+        'active_loops': 0,
+    }
+
+    ip_address = device.get('ip_address')
+    is_actually_online = False
+
+    logger.info(f"[PROBE START] Device: {formatted['id']} | IP: {ip_address} | Timeout: {probe_timeout}s")
+    probe_start_time = time.time()
+
+    try:
+        status_response = requests.get(f"http://{ip_address}/api/device", timeout=probe_timeout)
+        probe_elapsed = time.time() - probe_start_time
+
+        if status_response.status_code == 200:
+            is_actually_online = True
+            status_data = status_response.json()
+
+            mac_address = status_data.get('mac_address')
+            if mac_address:
+                device['mac_address'] = mac_address
+                formatted['mac_address'] = mac_address
+                logger.debug(f"MAC Address confirmed: {mac_address}")
+            else:
+                logger.error(f"WARNING: No MAC address returned from {ip_address}/api/device!")
+
+            new_id = status_data.get('id')
+            if new_id and new_id != device.get('id'):
+                logger.warning(f"[ID CHANGE] Device ID changed from {device.get('id')} to {new_id} at IP {ip_address} (MAC: {mac_address})")
+                device['id'] = new_id
+                formatted['id'] = new_id
+            else:
+                formatted['id'] = status_data.get('id', formatted['id'])
+
+            formatted['firmware_version'] = status_data.get('firmware_version', formatted['firmware_version'])
+            formatted['ssid'] = status_data.get('wifi_ssid', device.get('wifi_ssid', 'Unknown'))
+            formatted['mur_gateway_ip'] = status_data.get('mur_gateway_ip', '')
+            formatted['mur_gateway_port'] = status_data.get('mur_gateway_port', 4000)
+
+            logger.info(f"[PROBE SUCCESS] Device: {formatted['id']} | MAC: {mac_address} | Response time: {probe_elapsed:.2f}s | Status: ONLINE")
+        else:
+            logger.warning(f"[PROBE FAILED] Device: {formatted['id']} | HTTP {status_response.status_code} | Response time: {probe_elapsed:.2f}s")
+    except requests.Timeout:
+        probe_elapsed = time.time() - probe_start_time
+        logger.warning(f"[PROBE TIMEOUT] Device: {formatted['id']} | Timeout after {probe_elapsed:.2f}s | Status: OFFLINE")
+    except requests.ConnectionError as e:
+        probe_elapsed = time.time() - probe_start_time
+        logger.warning(f"[PROBE CONNECTION ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
+    except requests.RequestException as e:
+        probe_elapsed = time.time() - probe_start_time
+        logger.error(f"[PROBE ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
+
+    if is_actually_online:
+        try:
+            response = requests.get(f"http://{ip_address}/api/scenes", timeout=probe_timeout)
+
+            if response.status_code == 200:
+                scenes_data = response.json()
+
+                active_scene = scenes_data.get('active_scene', '')
+                scene_data = scenes_data.get('scenes', {}).get(active_scene, {})
+
+                formatted['global_volume'] = scene_data.get('global_volume', 0)
+                formatted['volume'] = formatted['global_volume']
+                formatted['active_scene'] = active_scene
+                formatted['scenes'] = scenes_data.get('scenes', {})
+
+                loops = []
+                active_count = 0
+                for track in scene_data.get('tracks', []):
+                    fp = track.get('file_path', '') or track.get('file', '')
+                    loop_info = {
+                        'track': track.get('track', 0),
+                        'active': track.get('active', False),
+                        'mode': track.get('mode', 'loop'),
+                        'playing': track.get('playing', False),
+                        'volume': track.get('volume', 0),
+                        'file': fp,
+                        'filename': fp.split('/')[-1] if fp else 'No file',
+                        'trigger_name': track.get('trigger_name', ''),
+                        'trigger_mode': track.get('trigger_mode', 'momentary'),
+                    }
+                    loops.append(loop_info)
+                    if loop_info['active']:
+                        active_count += 1
+
+                formatted['loops'] = loops
+                formatted['active_loops'] = active_count
+                formatted['playing'] = active_count > 0
+
+                logger.debug(f"Device {formatted['id']}: active_scene={active_scene}, {active_count} active tracks, global vol: {formatted['global_volume']}")
+
+        except requests.RequestException as e:
+            logger.debug(f"Could not get scene status for {formatted['id']}: {e}")
+
+    return formatted, device, is_actually_online
+
+
 @app.route('/api/devices')
 def get_devices():
     """Get all registered devices with detailed loop information."""
-    # Reload registry to get latest data
     registry.load_registry()
     devices = registry.get_device_list()
-    
-    # Format devices for web display with loop information
+    probe_timeout = network_config.config.get('probe_timeout', 3)
+
+    # Probe devices in parallel; each worker does /api/device + /api/scenes.
+    # Bounded pool so the request doesn't fan out unboundedly as registry grows.
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe") as pool:
+        results = list(pool.map(lambda d: _probe_one_device(d, probe_timeout), devices))
+
     formatted_devices = []
     online_count = 0
-    
-    for device in devices:
-        formatted = {
-            'id': device.get('id', device.get('ip_address', 'unknown')),
-            'ip': device.get('ip_address', 'unknown'),
-            'status': 'online' if device.get('online', False) else 'offline',
-            'playing': False,  # Will be updated from loop status
-            'volume': 0,  # Will be updated to global volume
-            'ssid': device.get('wifi_ssid', 'Unknown'),
-            'mac_address': device.get('mac_address', 'Unknown'),
-            'firmware_version': device.get('firmware_version', 'Unknown'),
-            'last_seen': device.get('last_seen', ''),
-            'loops': [],  # Will hold detailed loop information
-            'global_volume': 0,
-            'active_loops': 0
-        }
-        
-        # Always probe device to check if it's really online
-        ip_address = device.get('ip_address')
-        is_actually_online = False
-        
-        # Get probe timeout from config (default 3 seconds)
-        probe_timeout = network_config.config.get('probe_timeout', 3)
-        
-        # Log probe attempt
-        logger.info(f"[PROBE START] Device: {formatted['id']} | IP: {ip_address} | Timeout: {probe_timeout}s")
-        probe_start_time = time.time()
-        
-        # First, check if device is reachable using /api/device (consolidated endpoint)
-        try:
-            status_response = requests.get(f"http://{ip_address}/api/device", timeout=probe_timeout)
-            probe_elapsed = time.time() - probe_start_time
-            
-            if status_response.status_code == 200:
-                is_actually_online = True
-                # Update device info from status
-                status_data = status_response.json()
-                
-                # ALWAYS capture MAC address - it's the fundamental unique identifier
-                mac_address = status_data.get('mac_address')
-                if mac_address:
-                    # Always update MAC address in registry - it's the key identifier
-                    device['mac_address'] = mac_address
-                    formatted['mac_address'] = mac_address
-                    logger.debug(f"MAC Address confirmed: {mac_address}")
-                else:
-                    logger.error(f"WARNING: No MAC address returned from {ip_address}/api/device!")
-                
-                # Check if device ID has changed (ID can be user-configured)
-                new_id = status_data.get('id')
-                if new_id and new_id != device.get('id'):
-                    logger.warning(f"[ID CHANGE] Device ID changed from {device.get('id')} to {new_id} at IP {ip_address} (MAC: {mac_address})")
-                    # Update the device ID in the registry
-                    device['id'] = new_id
-                    formatted['id'] = new_id
-                else:
-                    formatted['id'] = status_data.get('id', formatted['id'])
-                
-                # Update other device info
-                formatted['firmware_version'] = status_data.get('firmware_version', formatted['firmware_version'])
-                formatted['ssid'] = status_data.get('wifi_ssid', device.get('wifi_ssid', 'Unknown'))
-                formatted['mur_gateway_ip'] = status_data.get('mur_gateway_ip', '')
-                formatted['mur_gateway_port'] = status_data.get('mur_gateway_port', 4000)
-                
-                # Always update registry with latest info including MAC
-                registry.update_device(device)
-                
-                logger.info(f"[PROBE SUCCESS] Device: {formatted['id']} | MAC: {mac_address} | Response time: {probe_elapsed:.2f}s | Status: ONLINE")
+    now = time.time()
+
+    for formatted, device, is_actually_online in results:
+        device_id = formatted['id']
+
+        with _probe_state_lock:
+            state = _probe_state.setdefault(device_id, {'last_ok_at': 0.0, 'consecutive_failures': 0})
+            if is_actually_online:
+                state['last_ok_at'] = now
+                state['consecutive_failures'] = 0
+                display_online = True
+                grace = False
+                age = 0.0
+                failures = 0
             else:
-                logger.warning(f"[PROBE FAILED] Device: {formatted['id']} | HTTP {status_response.status_code} | Response time: {probe_elapsed:.2f}s")
-                
-        except requests.Timeout:
-            probe_elapsed = time.time() - probe_start_time
-            logger.warning(f"[PROBE TIMEOUT] Device: {formatted['id']} | Timeout after {probe_elapsed:.2f}s | Status: OFFLINE")
-            is_actually_online = False
-        except requests.ConnectionError as e:
-            probe_elapsed = time.time() - probe_start_time
-            logger.warning(f"[PROBE CONNECTION ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
-            is_actually_online = False
-        except requests.RequestException as e:
-            probe_elapsed = time.time() - probe_start_time
-            logger.error(f"[PROBE ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
-            is_actually_online = False
-        
-        # Update the actual status based on probe
-        formatted['status'] = 'online' if is_actually_online else 'offline'
-        
-        # If device is actually online, get detailed scene/track information
-        if is_actually_online:
+                state['consecutive_failures'] += 1
+                age = now - state['last_ok_at']
+                failures = state['consecutive_failures']
+                display_online = age < GRACE_WINDOW_SEC and failures < GRACE_MAX_FAILURES
+                grace = display_online
+
+        if grace:
+            logger.info(f"[GRACE] Device: {device_id} | Last OK: {age:.1f}s ago | Failures: {failures} | Status: ONLINE (grace)")
+
+        formatted['status'] = 'online' if display_online else 'offline'
+        formatted['source'] = 'scanned' if is_actually_online else 'registry'
+
+        if not is_actually_online:
+            device['online'] = False
+        registry.update_device(device)
+
+        if display_online:
             online_count += 1
 
-            try:
-                # Get scenes status (replaces old /api/tracks)
-                response = requests.get(f"http://{ip_address}/api/scenes", timeout=1)
-
-                if response.status_code == 200:
-                    scenes_data = response.json()
-
-                    # Extract active scene info
-                    active_scene = scenes_data.get('active_scene', '')
-                    scene_data = scenes_data.get('scenes', {}).get(active_scene, {})
-
-                    # Update with actual scene information
-                    formatted['global_volume'] = scene_data.get('global_volume', 0)
-                    formatted['volume'] = formatted['global_volume']  # For compatibility
-                    formatted['active_scene'] = active_scene
-                    formatted['scenes'] = scenes_data.get('scenes', {})
-
-                    # Process tracks from active scene for backward compatibility
-                    loops = []
-                    active_count = 0
-                    for track in scene_data.get('tracks', []):
-                        fp = track.get('file_path', '') or track.get('file', '')
-                        loop_info = {
-                            'track': track.get('track', 0),
-                            'active': track.get('active', False),
-                            'mode': track.get('mode', 'loop'),
-                            'playing': track.get('playing', False),
-                            'volume': track.get('volume', 0),
-                            'file': fp,
-                            'filename': fp.split('/')[-1] if fp else 'No file',
-                            'trigger_name': track.get('trigger_name', ''),
-                            'trigger_mode': track.get('trigger_mode', 'momentary'),
-                        }
-                        loops.append(loop_info)
-                        if loop_info['active']:
-                            active_count += 1
-
-                    formatted['loops'] = loops
-                    formatted['active_loops'] = active_count
-                    formatted['playing'] = active_count > 0
-
-                    logger.debug(f"Device {formatted['id']}: active_scene={active_scene}, {active_count} active tracks, global vol: {formatted['global_volume']}")
-
-            except requests.RequestException as e:
-                logger.debug(f"Could not get scene status for {formatted['id']}: {e}")
-                # Keep default values if we can't get scene status
-        else:
-            # Device is offline, update registry to reflect this
-            device['online'] = False
-            registry.update_device(device)
-        
-        formatted['source'] = 'scanned' if is_actually_online else 'registry'
         formatted_devices.append(formatted)
 
     registry_only = len(formatted_devices) - online_count
@@ -415,27 +438,26 @@ def get_device(device_id):
     if device:
         uptime_str = 'Unknown'
         ssid = device.get('wifi_ssid', 'Unknown')  # Default from registry
-        
-        # Try to get fresh status
+        probe_timeout = network_config.config.get('probe_timeout', 3)
+        is_actually_online = False
+
         try:
             logger.info(f"Getting status for device {device_id} at {device.get('ip_address')}")
-            response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=2)
+            response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=probe_timeout)
             if response.status_code == 200:
+                is_actually_online = True
                 data = response.json()
                 device.update(data)
                 device['online'] = True
-                
-                # Log the actual data received from device (for debugging)
+
                 logger.debug(f"[DEVICE STATUS] Device {device_id} status: {data}")
-                
-                # Extract and format uptime - device returns it as 'uptime_seconds'
+
                 uptime_seconds = data.get('uptime_seconds', 0)
-                
                 if uptime_seconds > 0:
                     days = uptime_seconds // 86400
                     hours = (uptime_seconds % 86400) // 3600
                     minutes = (uptime_seconds % 3600) // 60
-                    
+
                     if days > 0:
                         uptime_str = f"{days}d {hours}h {minutes}m"
                     elif hours > 0:
@@ -444,26 +466,45 @@ def get_device(device_id):
                         uptime_str = f"{minutes}m"
                 else:
                     uptime_str = 'Just started'
-                
+
                 registry.update_device(device)
         except requests.RequestException as e:
             logger.warning(f"Failed to get status for {device_id}: {e}")
             device['online'] = False
             uptime_str = 'N/A'
-        
-        # Format for web display with uptime and firmware
+
+        # Apply the same grace window used by /api/devices so a single missed
+        # probe during a detail-page refresh doesn't flip a healthy device
+        # to offline. Uses the live device id (which may have been refreshed
+        # from the probe response) for consistency with get_devices().
+        live_device_id = device.get('id', device_id)
+        now = time.time()
+        with _probe_state_lock:
+            state = _probe_state.setdefault(live_device_id, {'last_ok_at': 0.0, 'consecutive_failures': 0})
+            if is_actually_online:
+                state['last_ok_at'] = now
+                state['consecutive_failures'] = 0
+                display_online = True
+            else:
+                state['consecutive_failures'] += 1
+                age = now - state['last_ok_at']
+                failures = state['consecutive_failures']
+                display_online = age < GRACE_WINDOW_SEC and failures < GRACE_MAX_FAILURES
+                if display_online:
+                    logger.info(f"[GRACE] Device: {live_device_id} | Last OK: {age:.1f}s ago | Failures: {failures} | Status: ONLINE (grace)")
+
         formatted = {
-            'id': device.get('id', device_id),
+            'id': live_device_id,
             'ip': device.get('ip_address', 'unknown'),
-            'status': 'online' if device.get('online', False) else 'offline',
+            'status': 'online' if display_online else 'offline',
             'playing': device.get('playing', False),
             'volume': device.get('volume', 0),
             'mac_address': device.get('mac_address', 'Unknown'),
             'firmware_version': device.get('firmware_version', 'Unknown'),
             'last_seen': device.get('last_seen', ''),
-            'uptime': uptime_str  # Add formatted uptime to response
+            'uptime': uptime_str
         }
-        
+
         return jsonify(formatted)
     else:
         return jsonify({'error': 'Device not found'}), 404
