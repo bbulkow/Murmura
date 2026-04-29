@@ -16,6 +16,11 @@
 #define MUR_GATEWAY_IP_LEN 64
 #define MUR_GATEWAY_DEFAULT_PORT 4000
 
+// System-wide default scene-change trigger name. Hardcoded in scene_service
+// and mur_gateway too; changing it here requires changing those. See
+// SYNC_DESIGN.md "How well-known is SceneChange".
+#define DEFAULT_SCENE_TRIGGER_NAME "SceneChange"
+
 // Track playback mode
 typedef enum {
     TRACK_MODE_LOOP = 0,    // Continuously loop the file
@@ -27,6 +32,13 @@ typedef enum {
     TRIGGER_MODE_MOMENTARY = 0, // Play on keyDown ("On"), stop on keyUp ("Off")
     TRIGGER_MODE_ONESHOT   = 1  // Play once on keyDown; ignore keyUp (plays to end)
 } trigger_mode_t;
+
+// Per-MUR policy when a scheduled event arrives already past its deadline.
+// See SYNC_DESIGN.md for the why.
+typedef enum {
+    LATE_POLICY_PLAY = 0,  // fire immediately, log a 'late' warning (default)
+    LATE_POLICY_DROP = 1   // discard the event, log a 'late' warning
+} late_policy_t;
 
 // Per-track runtime state
 typedef struct {
@@ -49,6 +61,8 @@ typedef struct {
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];       // empty = no mur gateway
     int mur_gateway_port;                           // default 4000
     char scene_trigger_name[MAX_TRIGGER_NAME_LEN]; // discrete scene trigger: value = scene name
+    late_policy_t late_policy;                     // play (default) | drop — for scheduled events past deadline
+    int32_t playback_offset_us;                    // signed per-device offset applied to target_tsf_us; +delays, -advances
 } track_manager_t;
 
 /**

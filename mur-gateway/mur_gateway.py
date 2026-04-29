@@ -20,11 +20,15 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import random
 import signal
 import socket
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -43,6 +47,50 @@ REREGISTER_INTERVAL = 30       # seconds
 
 # Well-known trigger name fired by scene_service on active-scene change.
 SCENE_TRIGGER_NAME = "SceneChange"
+
+# Sync-feature knobs (overridable via config.json — see SYNC_DESIGN.md).
+SYNC_DEFAULTS = {
+    "fanout_delay_ms": 100,
+    "tsf_query_interval_s": 30,
+    "tsf_query_devices_count": 3,
+    "tsf_jitter_warn_us": 1000,
+    "tsf_map_max_age_s": 120,
+}
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+
+
+def load_sync_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
+    """Load the sync-feature knobs from config.json, falling back to built-in
+    defaults for any missing field. CLI args do NOT touch these (they live
+    here so installs can edit on-site without reflashing or re-deploying).
+    """
+    cfg = dict(SYNC_DEFAULTS)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            user_cfg = json.load(f)
+        if isinstance(user_cfg, dict):
+            for k in SYNC_DEFAULTS:
+                if k in user_cfg:
+                    cfg[k] = user_cfg[k]
+            logger.info("Loaded sync config from %s", path)
+        else:
+            logger.warning("%s is not a JSON object — using defaults", path)
+    except FileNotFoundError:
+        logger.info("No %s found — using built-in sync defaults", path)
+    except json.JSONDecodeError as e:
+        logger.warning("Bad JSON in %s (%s) — using built-in sync defaults", path, e)
+    return cfg
+
+
+def parse_iso_to_unix_secs(s: str) -> float:
+    """Parse an ISO 8601 string to a unix timestamp (seconds, fractional)."""
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        # Treat naive timestamps as UTC; sender should use Z or +00:00.
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +118,102 @@ class DeviceConnection:
             return False
 
 
+@dataclass
+class _TsfSample:
+    iso_recv: float        # gateway wall-clock timestamp at receive (unix secs)
+    tsf_us:   int          # TSF reading reported by the MUR
+
+
+class TsfMap:
+    """ISO ↔ TSF translator.
+
+    Single-AP simplifying assumption: all MURs share one TSF clock (the one
+    locked to the AP via beacons). We keep the most recent sample per MUR
+    for cross-device jitter checks, and a single canonical sample (most
+    recently received from any MUR) for ISO→TSF translation.
+
+    Rate is treated as 1µs/µs (the TSF drift test confirmed this is good to
+    sub-ms over 30s). If samples grow stale beyond max_age_s we still
+    translate (best effort) but log a warning.
+
+    See SYNC_DESIGN.md for the why.
+    """
+
+    def __init__(self, jitter_warn_us: int, max_age_s: float):
+        self.per_mur: dict[str, _TsfSample] = {}
+        self.canonical: Optional[_TsfSample] = None
+        self.jitter_warn_us = int(jitter_warn_us)
+        self.max_age_s = float(max_age_s)
+
+    def update(self, mur_id: str, iso_recv: float, tsf_us: int) -> None:
+        sample = _TsfSample(iso_recv=iso_recv, tsf_us=int(tsf_us))
+
+        was_empty = self.canonical is None
+        prev_age = (time.time() - self.canonical.iso_recv) if self.canonical else 0.0
+        was_stale = (not was_empty) and prev_age > self.max_age_s
+
+        self.per_mur[mur_id] = sample
+        if self.canonical is None or iso_recv >= self.canonical.iso_recv:
+            self.canonical = sample
+
+        if was_empty:
+            logger.info("TSF map: first canonical sample from %s (tsf_us=%d)",
+                        mur_id, sample.tsf_us)
+        elif was_stale:
+            logger.info("TSF map: canonical refreshed by %s (was %.0fs stale)",
+                        mur_id, prev_age - self.max_age_s)
+
+        self._check_jitter(mur_id, sample)
+
+    def _check_jitter(self, fresh_id: str, fresh: _TsfSample) -> None:
+        """If other MURs have recent samples, check pairwise TSF agreement."""
+        for other_id, other in self.per_mur.items():
+            if other_id == fresh_id:
+                continue
+            dt = fresh.iso_recv - other.iso_recv
+            if abs(dt) > 1.0:
+                # Older than 1 second apart — not a meaningful direct comparison.
+                continue
+            # Project the older sample forward by dt to compare at the same instant.
+            other_tsf_at_fresh = other.tsf_us + int(round(dt * 1_000_000))
+            jitter = abs(fresh.tsf_us - other_tsf_at_fresh)
+            if jitter > self.jitter_warn_us:
+                logger.warning(
+                    "TSF jitter between %s and %s: %d us (>%d us threshold)",
+                    fresh_id, other_id, jitter, self.jitter_warn_us,
+                )
+
+    def iso_to_tsf(self, iso_secs: float) -> Optional[int]:
+        if self.canonical is None:
+            return None
+        delta_us = int(round((iso_secs - self.canonical.iso_recv) * 1_000_000))
+        return self.canonical.tsf_us + delta_us
+
+    def now_to_tsf(self) -> Optional[int]:
+        return self.iso_to_tsf(time.time())
+
+    def is_stale(self) -> bool:
+        if self.canonical is None:
+            return True
+        return (time.time() - self.canonical.iso_recv) > self.max_age_s
+
+    def status(self) -> dict:
+        return {
+            "have_canonical": self.canonical is not None,
+            "canonical_age_seconds": (
+                round(time.time() - self.canonical.iso_recv, 1)
+                if self.canonical else None
+            ),
+            "mur_sample_count": len(self.per_mur),
+            "max_age_seconds": self.max_age_s,
+            "jitter_warn_us": self.jitter_warn_us,
+        }
+
+
 class MurGateway:
     """Main gateway coordinating upstream and downstream connections."""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, sync_cfg: dict):
         self.trigger_host: str = args.trigger_host
         self.trigger_port: int = args.trigger_port
         self.device_port: int = args.device_port
@@ -82,6 +222,15 @@ class MurGateway:
         self.gateway_name: str = args.name
         self.scene_service_url: str = args.scene_service_url.rstrip("/")
         self.scene_cache_ttl: float = float(args.scene_cache_ttl)
+
+        # Sync feature config (from config.json, see SYNC_DESIGN.md).
+        self.fanout_delay_ms: int = int(sync_cfg["fanout_delay_ms"])
+        self.tsf_query_interval_s: float = float(sync_cfg["tsf_query_interval_s"])
+        self.tsf_query_devices_count: int = int(sync_cfg["tsf_query_devices_count"])
+        self.tsf_map: TsfMap = TsfMap(
+            jitter_warn_us=int(sync_cfg["tsf_jitter_warn_us"]),
+            max_age_s=float(sync_cfg["tsf_map_max_age_s"]),
+        )
 
         # Connected devices keyed by (reader, writer) id for uniqueness
         self.devices: dict[int, DeviceConnection] = {}
@@ -93,6 +242,7 @@ class MurGateway:
         self._register_task: Optional[asyncio.Task] = None
         self._prime_task: Optional[asyncio.Task] = None
         self._upstream_task: Optional[asyncio.Task] = None
+        self._tsf_query_task: Optional[asyncio.Task] = None
         self._running = True
 
         # Scene cache — primed from scene service at startup, refreshed by
@@ -169,6 +319,85 @@ class MurGateway:
         finally:
             writer.close()
 
+    def _resolve_target_tsf(self, event: dict, subscriber_count: int
+                            ) -> tuple[Optional[int], Optional[str]]:
+        """Translate the time fields on an incoming trigger event into an
+        absolute TSF target (or None for "now" passthrough).
+
+        Returns (target_tsf_us, error_msg). target_tsf_us is None to mean
+        "send without target_tsf_us" (i.e. fire immediately on the MUR).
+        error_msg non-None means drop the event.
+
+        Field rules (mutually exclusive):
+        - target_tsf_us: pass through as-is (test/debug)
+        - iso_time:      ISO 8601 absolute → translate via TsfMap
+        - delta_ms:      milliseconds from now → translate via TsfMap.now_to_tsf
+        - none:          if 1 subscriber and not SceneChange, "now";
+                         otherwise add fanout_delay_ms.
+
+        SceneChange always gets fanout_delay_ms regardless of subscriber count
+        so single-MUR test runs behave identically to multi-MUR production
+        (and so a synchronized scene's activation is always deferred-dispatched,
+        not fired in the listener's immediate path).
+
+        See SYNC_DESIGN.md.
+        """
+        has_target = "target_tsf_us" in event
+        has_iso    = "iso_time" in event
+        has_delta  = "delta_ms" in event
+        n = sum([has_target, has_iso, has_delta])
+        if n > 1:
+            return None, "multiple time fields specified (target_tsf_us, iso_time, delta_ms)"
+
+        if has_target:
+            try:
+                return int(event["target_tsf_us"]), None
+            except (TypeError, ValueError):
+                return None, "target_tsf_us is not an integer"
+
+        if has_iso:
+            iso = event["iso_time"]
+            if not isinstance(iso, str):
+                return None, "iso_time must be a string"
+            try:
+                iso_secs = parse_iso_to_unix_secs(iso)
+            except (ValueError, TypeError) as e:
+                return None, f"bad iso_time '{iso}': {e}"
+            target = self.tsf_map.iso_to_tsf(iso_secs)
+            if target is None:
+                logger.warning("No TSF map yet — passing iso_time event as 'now'")
+                return None, None
+            if self.tsf_map.is_stale():
+                logger.warning("TSF map is stale (>%ds) — translating anyway",
+                               int(self.tsf_map.max_age_s))
+            return target, None
+
+        if has_delta:
+            try:
+                delta_ms = int(event["delta_ms"])
+            except (TypeError, ValueError):
+                return None, "delta_ms is not an integer"
+            base = self.tsf_map.now_to_tsf()
+            if base is None:
+                logger.warning("No TSF map yet — passing delta_ms event as 'now'")
+                return None, None
+            return base + delta_ms * 1000, None
+
+        # No time field — implicit "now". SceneChange always gets fanout
+        # for predictable sync-scene activation (see docstring).
+        is_scene_change = event.get("name") == SCENE_TRIGGER_NAME
+        if subscriber_count > 1 or is_scene_change:
+            base = self.tsf_map.now_to_tsf()
+            if base is None:
+                logger.warning(
+                    "No TSF map yet — %s falls back to passthrough",
+                    "SceneChange" if is_scene_change else "multi-subscriber 'now'",
+                )
+                return None, None
+            return base + self.fanout_delay_ms * 1000, None
+
+        return None, None  # 0 or 1 subscribers, non-SceneChange — direct passthrough
+
     async def _handle_trigger_event(self, line: str):
         """Parse a trigger event from upstream and fan out to subscribed devices."""
         try:
@@ -202,15 +431,30 @@ class MurGateway:
             logger.info("No subscribers for trigger '%s'", trigger_name)
             return
 
-        # Fan out — send the original line verbatim
+        # Translate time fields → absolute TSF target (or None for "now").
+        target_tsf_us, err = self._resolve_target_tsf(event, len(conn_ids))
+        if err is not None:
+            logger.warning("Dropping trigger '%s': %s", trigger_name, err)
+            return
+
+        out_event = dict(event)
+        if target_tsf_us is not None:
+            out_event["target_tsf_us"] = int(target_tsf_us)
+        # Drop incoming-only fields so we don't ship redundant time info to MURs.
+        out_event.pop("iso_time", None)
+        out_event.pop("delta_ms", None)
+        out_line = json.dumps(out_event)
+
+        # Fan out — send re-serialized line (with target_tsf_us injected if any).
         failed = []
         sent_count = 0
         for conn_id in list(conn_ids):
             device = self.devices.get(conn_id)
             if device:
-                ok = await device.send_line(line)
+                ok = await device.send_line(out_line)
                 if ok:
-                    logger.info("  → forwarded to %s", device.device_id)
+                    logger.info("  → forwarded to %s%s", device.device_id,
+                                f" target_tsf_us={target_tsf_us}" if target_tsf_us else "")
                     sent_count += 1
                 else:
                     failed.append(conn_id)
@@ -301,9 +545,27 @@ class MurGateway:
             device_id = msg.get("id", "(unknown)")
             device.device_id = device_id
             logger.info("Device announced: %s from %s", device_id, device.peer)
+            # Seed the TSF map if the announce carried a tsf_us reading.
+            tsf_us = msg.get("tsf_us")
+            if isinstance(tsf_us, (int, float)) and tsf_us > 0:
+                self.tsf_map.update(device_id, time.time(), int(tsf_us))
+                logger.info("TSF map: seeded from %s announce (tsf_us=%d)",
+                            device_id, int(tsf_us))
+            else:
+                logger.info("TSF map: %s announced without tsf_us (firmware predates sync feature?)",
+                            device_id)
             # Send welcome
             welcome = json.dumps({"type": "welcome", "gateway": "mur-gateway", "version": VERSION})
             asyncio.ensure_future(device.send_line(welcome))
+
+        elif msg_type == "tsf_reply":
+            tsf_us = msg.get("tsf_us")
+            if isinstance(tsf_us, (int, float)) and tsf_us > 0:
+                self.tsf_map.update(device.device_id, time.time(), int(tsf_us))
+                logger.info("TSF map: reply from %s (tsf_us=%d)",
+                            device.device_id, int(tsf_us))
+            else:
+                logger.warning("tsf_reply from %s missing/invalid tsf_us", device.device_id)
 
         elif msg_type == "subscribe":
             triggers = msg.get("triggers", [])
@@ -345,6 +607,12 @@ class MurGateway:
         Scene Service under a lock (so concurrent device queries collapse into
         a single upstream call). On refresh failure, keep the stale value and
         still answer — devices prefer stale truth to silence.
+
+        Cache invariant: cached_scene is updated synchronously the moment a
+        SceneChange trigger arrives (see _handle_trigger_event). Combined
+        with TCP per-connection FIFO, this means we never hand a MUR an
+        old scene name after that MUR's TCP connection has already been
+        sent the new trigger. See SYNC_DESIGN.md.
         """
         age = time.monotonic() - self.cached_scene_at
         if age >= self.scene_cache_ttl:
@@ -416,6 +684,54 @@ class MurGateway:
         logger.error("Gave up priming scene cache from %s after %d attempts.",
                      self.scene_service_url, MAX_ATTEMPTS)
 
+    # -------------------------------------------------------------------
+    #  TSF pull loop
+    # -------------------------------------------------------------------
+
+    async def _tsf_query_loop(self):
+        """Periodically pull TSF readings from a sample of connected MURs to
+        keep the ISO↔TSF map fresh. Cadence and sample size are config knobs;
+        all MURs share one AP, so any MUR's TSF is canonical (we sample
+        several for jitter checking — see TsfMap._check_jitter).
+
+        Logs an INFO heartbeat each cycle showing how many devices were
+        queried and the current map state (empty/fresh/stale, canonical age,
+        sample count). This is the operator's primary visibility into the
+        sync subsystem.
+        """
+        # Initial delay so the first announce flurry has settled.
+        await asyncio.sleep(min(5.0, self.tsf_query_interval_s))
+        query_msg = json.dumps({"type": "tsf_query"})
+        while self._running:
+            try:
+                ids = list(self.devices.keys())
+                k = 0
+                if ids:
+                    k = min(self.tsf_query_devices_count, len(ids))
+                    chosen = random.sample(ids, k)
+                    for conn_id in chosen:
+                        device = self.devices.get(conn_id)
+                        if device:
+                            await device.send_line(query_msg)
+
+                status = self.tsf_map.status()
+                if not status["have_canonical"]:
+                    state = "empty"
+                elif self.tsf_map.is_stale():
+                    state = "stale"
+                else:
+                    state = "fresh"
+                age = status["canonical_age_seconds"]
+                age_str = f"{age:.1f}s" if age is not None else "n/a"
+                logger.info(
+                    "TSF pull: queried %d/%d device(s); map %s "
+                    "(canonical age %s, %d MUR sample(s))",
+                    k, len(ids), state, age_str, status["mur_sample_count"],
+                )
+            except Exception as e:
+                logger.warning("tsf_query loop iteration failed: %s", e)
+            await asyncio.sleep(self.tsf_query_interval_s)
+
     def _remove_device(self, conn_id: int):
         """Remove a device and clean up its subscriptions."""
         device = self.devices.pop(conn_id, None)
@@ -468,6 +784,12 @@ class MurGateway:
             "cached_scene": self.cached_scene,
             "cached_scene_age_seconds": scene_age,
             "scene_cache_ttl": self.scene_cache_ttl,
+            "sync": {
+                "fanout_delay_ms": self.fanout_delay_ms,
+                "tsf_query_interval_s": self.tsf_query_interval_s,
+                "tsf_query_devices_count": self.tsf_query_devices_count,
+                "tsf_map": self.tsf_map.status(),
+            },
         }
         return web.json_response(body)
 
@@ -554,6 +876,9 @@ class MurGateway:
         # Prime the scene cache from the Scene Service (background, with retry)
         self._prime_task = asyncio.create_task(self._prime_scene_cache())
 
+        # Start the periodic TSF pull loop
+        self._tsf_query_task = asyncio.create_task(self._tsf_query_loop())
+
         logger.info("Mur Gateway ready.")
         logger.info("  Trigger Server: %s:%d", self.trigger_host, self.trigger_port)
         logger.info("  Upstream port:  %d", self.upstream_port)
@@ -561,6 +886,8 @@ class MurGateway:
         logger.info("  Status port:    %d", self.status_port)
         logger.info("  Scene Service:  %s (cache TTL %.0fs)",
                     self.scene_service_url, self.scene_cache_ttl)
+        logger.info("  Sync:           fanout %d ms, tsf_query every %.0fs (sample %d)",
+                    self.fanout_delay_ms, self.tsf_query_interval_s, self.tsf_query_devices_count)
 
         # Wait until shutdown
         stop_event = asyncio.Event()
@@ -588,6 +915,8 @@ class MurGateway:
         self._register_task.cancel()
         if self._prime_task:
             self._prime_task.cancel()
+        if self._tsf_query_task:
+            self._tsf_query_task.cancel()
         upstream_server.close()
         device_server.close()
         await runner.cleanup()
@@ -634,7 +963,8 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    gateway = MurGateway(args)
+    sync_cfg = load_sync_config()
+    gateway = MurGateway(args, sync_cfg)
 
     if sys.platform == "win32":
         # Windows needs ProactorEventLoop for subprocess support,

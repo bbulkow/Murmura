@@ -16,7 +16,17 @@ typedef struct {
     int global_volume_percent;
     track_config_entry_t tracks[MAX_TRACKS];
     char button_trigger[MAX_TRIGGER_NAME_LEN];  // trigger name that activates this scene on "On"
+    bool synchronized;  // if true, only synchronized paths may activate this scene; see SYNC_DESIGN.md
 } scene_config_t;
+
+// Source of a scene_activate request — drives the synchronized-scene gate.
+// See SYNC_DESIGN.md "Synchronized scenes".
+typedef enum {
+    SCENE_ACTIVATE_TRIGGER = 0,    // dispatched from a deferred trigger event (path 1, 2) — sync-allowed
+    SCENE_ACTIVATE_BACKSTOP = 1,   // get_scene reply from gateway (path 3) — refused for sync scenes
+    SCENE_ACTIVATE_DIRECT = 2,     // direct REST POST /api/scene activate (path 4) — refused for sync scenes
+    SCENE_ACTIVATE_BOOT = 3,       // app_main startup or post-config-reload (path 5, 6) — sync-allowed but logs ERROR
+} scene_activate_source_t;
 
 // Full scene manager state (lives in SPIRAM)
 typedef struct {
@@ -64,9 +74,14 @@ esp_err_t scene_delete(scene_manager_t *mgr, const char *name);
 /**
  * @brief Activate a scene — apply its config to the hardware.
  *        Preserves gateway settings from track_manager.
+ *
+ *        Returns ESP_ERR_INVALID_STATE if the scene is marked synchronized
+ *        and the source is BACKSTOP or DIRECT (gating per SYNC_DESIGN.md).
+ *        BOOT is allowed but logs an ERROR if the boot scene is synchronized.
  */
 esp_err_t scene_activate(scene_manager_t *mgr, const char *name,
-                         QueueHandle_t queue, track_manager_t *track_mgr);
+                         QueueHandle_t queue, track_manager_t *track_mgr,
+                         scene_activate_source_t source);
 
 /**
  * @brief Validate a patch body (pass 1 of atomic update).

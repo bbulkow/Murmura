@@ -28,6 +28,8 @@ typedef struct {
     char mur_gateway_ip[MUR_GATEWAY_IP_LEN];
     int mur_gateway_port;
     char scene_trigger_name[MAX_TRIGGER_NAME_LEN];
+    late_policy_t late_policy;  // policy for scheduled events that arrive late; see SYNC_DESIGN.md
+    int32_t playback_offset_us; // signed per-device offset (µs) applied to target_tsf_us; see SYNC_DESIGN.md
 } track_config_t;
 
 /**
@@ -105,5 +107,7 @@ const char* config_mode_to_str(track_mode_t mode);
 track_mode_t config_str_to_mode(const char *s);
 const char* config_trigger_mode_to_str(trigger_mode_t tm);
 trigger_mode_t config_str_to_trigger_mode(const char *s);
+const char* config_late_policy_to_str(late_policy_t lp);
+late_policy_t config_str_to_late_policy(const char *s);
 
 #endif // CONFIG_MANAGER_H

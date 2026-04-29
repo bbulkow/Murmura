@@ -1,15 +1,16 @@
 {
+  "port": 5002,
   "triggers": [
+    {
+      "name": "SceneChange",
+      "type": "Discrete",
+      "range": {
+        "values": ["night", "day", "show"]
+      }
+    },
     {
       "name": "TestESP32.Button",
       "type": "On/Off"
-    },
-    {
-      "name": "TestESP32.Discrete",
-      "type": "Discrete",
-      "range": {
-        "values": ["default", "day", "night"]
-      }
     },
     {
       "name": "TestESP32.Continuous",

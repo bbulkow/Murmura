@@ -23,15 +23,21 @@
 #include "freertos/task.h"
 
 #include "mur_listener.h"
+#include "mur_scheduler.h"
 #include "wifi_manager.h"
 #include "murmura.h"
+#include "config_manager.h"
 #include "unit_status_manager.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "cJSON.h"
 
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "esp_netif.h"
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
@@ -51,6 +57,12 @@ static const char *TAG = "MUR_LISTENER";
  * latency; this catches dropped events and boot/reconnect drift. */
 #define SCENE_PULL_INTERVAL_MS  5000
 
+/* If a scheduled event arrives within this many µs of its target TSF,
+ * the listener still submits it (the scheduler will fire immediately).
+ * Beyond this, the late_policy decides drop vs play-late. Matches the
+ * scheduler's DEADLINE_GRACE_US. See SYNC_DESIGN.md. */
+#define LATE_GRACE_US        10000
+
 /* Module state */
 static track_manager_t  *s_manager     = NULL;
 static scene_manager_t  *s_scene_mgr   = NULL;
@@ -59,12 +71,15 @@ static volatile bool     s_resubscribe = false;
 
 /* ---- forward declarations ----------------------------------------- */
 static void  mur_task(void *arg);
-static void  process_line(const char *line);
+static void  process_line(const char *line, int sock);
 static void  dispatch_event(const char *trigger_name, const char *value);
+static void  dispatch_or_defer(const char *trigger_name, const char *value,
+                               uint64_t target_tsf_us);
 static int   connect_to_gateway(void);
 static bool  send_announce(int sock);
 static bool  send_subscribe(int sock);
 static bool  send_get_scene(int sock);
+static bool  send_tsf_reply(int sock);
 static void  handle_scene_response(cJSON *event);
 
 /* ================================================================== */
@@ -152,22 +167,46 @@ static int connect_to_gateway(void)
 }
 
 /*
- * send_announce — send the announce message with this device's ID.
+ * send_announce — send the announce message with this device's ID and the
+ * current TSF reading. The TSF seeds the gateway's ISO↔TSF map; gateway
+ * may also pull TSF afterward via tsf_query. See SYNC_DESIGN.md.
  */
 static bool send_announce(int sock)
 {
     char device_id[MAX_UNIT_ID_LEN] = "Murmura";
     unit_status_get_id(device_id, sizeof(device_id));
 
-    char buf[128];
+    uint64_t tsf_us = esp_wifi_get_tsf_time(WIFI_IF_STA);
+
+    char buf[160];
     int len = snprintf(buf, sizeof(buf),
-        "{\"type\":\"announce\",\"id\":\"%s\"}\n", device_id);
+        "{\"type\":\"announce\",\"id\":\"%s\",\"tsf_us\":%" PRIu64 "}\n",
+        device_id, tsf_us);
 
     if (send(sock, buf, len, 0) != len) {
         ESP_LOGW(TAG, "Failed to send announce");
         return false;
     }
-    ESP_LOGI(TAG, "Announced as '%s'", device_id);
+    ESP_LOGI(TAG, "Announced as '%s' (tsf_us=%" PRIu64 ")", device_id, tsf_us);
+    return true;
+}
+
+/*
+ * send_tsf_reply — respond to a {"type":"tsf_query"} from the gateway
+ * with the current TSF reading. The gateway uses this to keep its
+ * ISO↔TSF map fresh; cadence is gateway-side config, not ours.
+ */
+static bool send_tsf_reply(int sock)
+{
+    uint64_t tsf_us = esp_wifi_get_tsf_time(WIFI_IF_STA);
+    char buf[80];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"type\":\"tsf_reply\",\"tsf_us\":%" PRIu64 "}\n", tsf_us);
+    if (send(sock, buf, len, 0) != len) {
+        ESP_LOGW(TAG, "Failed to send tsf_reply");
+        return false;
+    }
+    ESP_LOGD(TAG, "Sent tsf_reply (tsf_us=%" PRIu64 ")", tsf_us);
     return true;
 }
 
@@ -316,10 +355,15 @@ static void handle_scene_response(cJSON *event)
     }
 
     esp_err_t ret = scene_activate(s_scene_mgr, target,
-                                   s_manager->audio_control_queue, s_manager);
+                                   s_manager->audio_control_queue, s_manager,
+                                   SCENE_ACTIVATE_BACKSTOP);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Scene pull activated '%s'", target);
         mur_listener_resubscribe();
+    } else if (ret == ESP_ERR_INVALID_STATE) {
+        /* Scene is synchronized — backstop activation refused by design.
+         * The MUR will sync to it when the next SceneChange trigger fires. */
+        ESP_LOGI(TAG, "Scene pull skipped '%s' (synchronized; awaiting trigger)", target);
     } else {
         ESP_LOGW(TAG, "Scene pull failed to activate '%s': %s",
                  target, esp_err_to_name(ret));
@@ -350,7 +394,8 @@ static void dispatch_event(const char *trigger_name, const char *value)
         }
         if (target[0] != '\0') {
             esp_err_t ret = scene_activate(s_scene_mgr, target,
-                                           s_manager->audio_control_queue, s_manager);
+                                           s_manager->audio_control_queue, s_manager,
+                                           SCENE_ACTIVATE_TRIGGER);
             if (ret == ESP_OK) {
                 ESP_LOGI(TAG, "Scene trigger activated scene '%s'", target);
                 mur_listener_resubscribe();
@@ -370,7 +415,8 @@ static void dispatch_event(const char *trigger_name, const char *value)
                 && strcmp(trigger_name, sc->button_trigger) == 0) {
                 if (is_on) {
                     esp_err_t ret = scene_activate(s_scene_mgr, sc->name,
-                                                   s_manager->audio_control_queue, s_manager);
+                                                   s_manager->audio_control_queue, s_manager,
+                                                   SCENE_ACTIVATE_TRIGGER);
                     if (ret == ESP_OK) {
                         ESP_LOGI(TAG, "Button trigger '%s' activated scene '%s'",
                                  trigger_name, sc->name);
@@ -434,10 +480,116 @@ static void dispatch_event(const char *trigger_name, const char *value)
 }
 
 /*
+ * deferred_dispatch_ctx — payload for a scheduled trigger event. Owned by
+ * the scheduler entry; freed via deferred_dispatch_free after the callback
+ * fires (or if submit fails).
+ */
+typedef struct {
+    char *name;
+    char *value;  /* may be NULL */
+} deferred_dispatch_ctx_t;
+
+static void deferred_dispatch_cb(void *arg)
+{
+    deferred_dispatch_ctx_t *c = (deferred_dispatch_ctx_t *)arg;
+    if (!c) return;
+    dispatch_event(c->name, c->value);
+}
+
+static void deferred_dispatch_free(void *arg)
+{
+    deferred_dispatch_ctx_t *c = (deferred_dispatch_ctx_t *)arg;
+    if (!c) return;
+    free(c->name);
+    free(c->value);
+    free(c);
+}
+
+/*
+ * dispatch_or_defer — common entry point for trigger events. If
+ * target_tsf_us is 0 (omitted by sender), dispatches immediately like the
+ * original code path. Otherwise checks lateness and either submits to the
+ * mur_scheduler, fires immediately with a 'late' warning (LATE_POLICY_PLAY),
+ * or drops with a 'late' warning (LATE_POLICY_DROP). See SYNC_DESIGN.md.
+ */
+static void dispatch_or_defer(const char *name, const char *value,
+                              uint64_t target_tsf_us)
+{
+    if (target_tsf_us == 0) {
+        dispatch_event(name, value);
+        return;
+    }
+
+    /* Per-device playback offset: signed µs, +delays / -advances. Applied
+     * before the lateness check so policy decisions reflect the adjusted
+     * deadline. See SYNC_DESIGN.md "Per-MUR playback offset". */
+    int32_t offset_us = s_manager ? s_manager->playback_offset_us : 0;
+    if (offset_us != 0) {
+        target_tsf_us = (uint64_t)((int64_t)target_tsf_us + (int64_t)offset_us);
+    }
+
+    uint64_t now_tsf = esp_wifi_get_tsf_time(WIFI_IF_STA);
+    if (now_tsf == 0) {
+        /* WiFi not associated — TSF undefined. Fall back to immediate. */
+        ESP_LOGW(TAG, "scheduled '%s' but TSF unavailable — firing immediately",
+                 name ? name : "(null)");
+        dispatch_event(name, value);
+        return;
+    }
+
+    int64_t lateness_us = (int64_t)now_tsf - (int64_t)target_tsf_us;
+    if (lateness_us > LATE_GRACE_US) {
+        late_policy_t policy = s_manager ? s_manager->late_policy : LATE_POLICY_PLAY;
+        if (policy == LATE_POLICY_DROP) {
+            ESP_LOGW(TAG, "late event '%s' by %" PRId64 " us — dropped (late_policy=drop)",
+                     name ? name : "(null)", lateness_us);
+        } else {
+            ESP_LOGW(TAG, "late event '%s' by %" PRId64 " us — playing anyway (late_policy=play)",
+                     name ? name : "(null)", lateness_us);
+            dispatch_event(name, value);
+        }
+        return;
+    }
+
+    /* On-time (possibly slightly late within grace) — schedule for the deadline */
+    deferred_dispatch_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        ESP_LOGW(TAG, "deferred ctx alloc failed — firing '%s' immediately",
+                 name ? name : "(null)");
+        dispatch_event(name, value);
+        return;
+    }
+    ctx->name = name ? strdup(name) : NULL;
+    ctx->value = value ? strdup(value) : NULL;
+    if (name && !ctx->name) {
+        ESP_LOGW(TAG, "deferred name strdup failed — firing immediately");
+        deferred_dispatch_free(ctx);
+        dispatch_event(name, value);
+        return;
+    }
+
+    esp_err_t err = mur_scheduler_submit(target_tsf_us,
+                                          deferred_dispatch_cb,
+                                          deferred_dispatch_free,
+                                          ctx);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scheduler submit failed (%s) — firing '%s' immediately",
+                 esp_err_to_name(err), name ? name : "(null)");
+        deferred_dispatch_free(ctx);
+        dispatch_event(name, value);
+        return;
+    }
+
+    int64_t lead_us = -lateness_us;
+    ESP_LOGD(TAG, "scheduled '%s' for tsf=%" PRIu64 " (in %" PRId64 " us)",
+             name ? name : "(null)", target_tsf_us, lead_us);
+}
+
+/*
  * process_line — parse a single newline-terminated JSON event string and
  * dispatch it.  Handles both trigger events and gateway protocol messages.
  */
-static void process_line(const char *line)
+static void process_line(const char *line, int sock)
 {
     cJSON *event = cJSON_Parse(line);
     if (!event) {
@@ -454,6 +606,8 @@ static void process_line(const char *line)
                      cJSON_IsString(ver) ? ver->valuestring : "?");
         } else if (strcmp(type_j->valuestring, "scene") == 0) {
             handle_scene_response(event);
+        } else if (strcmp(type_j->valuestring, "tsf_query") == 0) {
+            send_tsf_reply(sock);
         } else {
             ESP_LOGD(TAG, "Gateway message type='%s'", type_j->valuestring);
         }
@@ -462,13 +616,24 @@ static void process_line(const char *line)
     }
 
     /* Otherwise it's a trigger event */
-    cJSON *name_j  = cJSON_GetObjectItem(event, "name");
-    cJSON *value_j = cJSON_GetObjectItem(event, "value");
+    cJSON *name_j   = cJSON_GetObjectItem(event, "name");
+    cJSON *value_j  = cJSON_GetObjectItem(event, "value");
+    cJSON *target_j = cJSON_GetObjectItem(event, "target_tsf_us");
+
+    uint64_t target_tsf_us = 0;
+    if (cJSON_IsNumber(target_j)) {
+        /* cJSON valuedouble is the canonical 64-bit-safe path; valueint
+         * is a 32-bit int in this version. */
+        if (target_j->valuedouble > 0) {
+            target_tsf_us = (uint64_t)target_j->valuedouble;
+        }
+    }
 
     if (cJSON_IsString(name_j)) {
         const char *val = cJSON_IsString(value_j) ? value_j->valuestring : NULL;
-        ESP_LOGD(TAG, "Event: name='%s' value='%s'", name_j->valuestring, val ? val : "null");
-        dispatch_event(name_j->valuestring, val);
+        ESP_LOGD(TAG, "Event: name='%s' value='%s' target_tsf_us=%" PRIu64,
+                 name_j->valuestring, val ? val : "null", target_tsf_us);
+        dispatch_or_defer(name_j->valuestring, val, target_tsf_us);
     } else {
         ESP_LOGW(TAG, "Trigger event missing 'name' field");
     }
@@ -553,7 +718,7 @@ static void mur_task(void *arg)
                 if (c == '\n') {
                     line_buf[line_pos] = '\0';
                     if (line_pos > 0) {
-                        process_line(line_buf);
+                        process_line(line_buf, sock);
                     }
                     line_pos = 0;
                 } else if (c != '\r' && line_pos < (int)sizeof(line_buf) - 1) {

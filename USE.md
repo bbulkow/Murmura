@@ -238,16 +238,16 @@ If the scene being edited is the active scene, changes take effect on the hardwa
 
 Scenes can be switched automatically via the Haven trigger system. Two mechanisms:
 
-**Discrete scene trigger** — a single trigger (Discrete type) whose value is treated as a scene name. Configure the trigger name at the device level:
+**Discrete scene trigger** — a single trigger (Discrete type) whose value is treated as a scene name. Defaults to `"SceneChange"` (matches the system-wide constant in `scene_service` and `mur_gateway`); rarely needs to be changed. Editable at the device level:
 
 ```bash
-# Set the discrete scene trigger name
+# Override the discrete scene trigger name (defaults to "SceneChange")
 curl -X POST http://<device-ip>/api/device \
   -H "Content-Type: application/json" \
-  -d '{"scene_trigger_name": "SceneSelector"}'
+  -d '{"scene_trigger_name": "SceneChange"}'
 ```
 
-When an event arrives with `name=SceneSelector` and `value=night`, the device activates scene "night". If the value doesn't match any scene, the device activates the default scene.
+When an event arrives with `name=SceneChange` and `value=night`, the device activates scene "night". If the value doesn't match any scene, the device activates the default scene.
 
 **Per-scene button trigger** — each scene can have a trigger (On/Off type) that activates it when an "On" event arrives:
 

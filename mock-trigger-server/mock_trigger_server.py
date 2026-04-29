@@ -6,20 +6,23 @@ Replaces the real Haven Trigger Server so you can test the full chain:
     mock-trigger-server -> real mur-gateway -> real device
 
 Flow:
-  1. Starts an HTTP API on port 5002 (matches real trigger server)
-  2. Mur Gateway registers via POST /api/register
-  3. This server connects back to the gateway on its upstream port (TCP_SOCKET)
-  4. You type commands to send trigger events through the full chain
+  1. Starts an HTTP API on the configured port (default 5002, matches real
+     trigger server) using config.json alongside this file.
+  2. Mur Gateway registers via POST /api/register.
+  3. This server connects back to the gateway on its upstream port (TCP_SOCKET).
+  4. You type commands at the prompt OR something else POSTs to
+     /api/trigger-event (e.g. mock-scene-server's SceneChange push).
 
-Usage:
-    python mock_trigger_server.py
-    python mock_trigger_server.py --port 5002
+All configuration lives in config.json — no CLI flags. Edit and restart.
 
-Then point your mur-gateway at this server:
-    python mur_gateway.py --trigger-host <this-pc-ip> --trigger-port 5002
+Sync note: the Discrete `SceneChange` trigger's `range.values` in config.json
+should match mock-scene-server's `scenes` list. This server does NOT pull
+that list from mock-scene-server; the two configs are kept in sync manually.
+The mismatch is harmless at dispatch time (send_event doesn't validate),
+but mur-config-server's UI uses /api/triggers to populate scene dropdowns,
+so a mismatch shows wrong names there.
 """
 
-import argparse
 import json
 import os
 import socket
@@ -27,15 +30,59 @@ import threading
 import time
 import sys
 from datetime import datetime
+from pathlib import Path
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # --- Configuration ---
 
-DEFAULT_TRIGGERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'triggers.json')
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+
+CONFIG_DEFAULTS = {
+    "port": 5002,
+    "triggers": [],
+}
 
 triggers = []
+listen_port = CONFIG_DEFAULTS["port"]
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
+    """Load port and triggers from config.json. Falls back to built-in
+    defaults for missing fields. A missing file is fatal because the trigger
+    list is the whole point of this mock."""
+    cfg = dict(CONFIG_DEFAULTS)
+    cfg["triggers"] = list(CONFIG_DEFAULTS["triggers"])
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            user_cfg = json.load(f)
+    except FileNotFoundError:
+        print(f"  [CONFIG] No {path} found — required for mock-trigger-server. Aborting.")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"  [CONFIG] Bad JSON in {path}: {e}. Aborting.")
+        sys.exit(1)
+
+    if not isinstance(user_cfg, dict):
+        print(f"  [CONFIG] {path} must be a JSON object. Aborting.")
+        sys.exit(1)
+
+    if "port" in user_cfg:
+        try:
+            cfg["port"] = int(user_cfg["port"])
+        except (TypeError, ValueError):
+            print(f"  [CONFIG] port must be an integer; using {cfg['port']}")
+
+    raw_triggers = user_cfg.get("triggers")
+    if isinstance(raw_triggers, list):
+        cfg["triggers"] = raw_triggers
+    elif raw_triggers is not None:
+        print(f"  [CONFIG] triggers must be a list; using empty list")
+        cfg["triggers"] = []
+
+    print(f"  [CONFIG] Loaded {len(cfg['triggers'])} trigger(s) from {path}")
+    return cfg
 
 # --- Service connections ---
 
@@ -109,6 +156,22 @@ def register_service():
             return jsonify({"error": f"Failed to connect: {e}"}), 500
     else:
         return jsonify({"error": f"Unsupported protocol: {protocol}"}), 400
+
+
+@app.route('/api/trigger-event', methods=['POST'])
+def post_trigger_event():
+    """Programmatic trigger injection — mirrors the real Haven Trigger
+    Gateway's /api/trigger-event. mock-scene-server's _push_scene_change
+    POSTs here so the SceneChange fan-out exercises the full real path
+    (scene_server → trigger_server → mur_gateway → MURs)."""
+    data = request.json or {}
+    name = data.get('name')
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "name must be a non-empty string"}), 400
+    value = data.get('value', '')
+    sent, eid = send_event(name.strip(), value)
+    print(f"  [HTTP_TRIGGER] {name}={value!r} → {sent} service(s) (event_id={eid})")
+    return jsonify({"event_id": eid, "sent_to_services": sent}), 200
 
 
 @app.route('/api/registrations', methods=['GET'])
@@ -273,28 +336,40 @@ def interactive_loop():
 
 # --- Main ---
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Mock Haven Trigger Server for end-to-end Murmura testing"
-    )
-    parser.add_argument("--port", type=int, default=5002,
-                        help="HTTP API port (default: 5002, matches real trigger server)")
-    parser.add_argument("--triggers-file", type=str, default=DEFAULT_TRIGGERS_FILE,
-                        help=f"JSON file with trigger definitions (default: {DEFAULT_TRIGGERS_FILE})")
-    args = parser.parse_args()
+def preflight_bind_check(port: int) -> None:
+    """Fail fast if the port is already taken.
 
-    global triggers
+    Werkzeug sets SO_REUSEADDR=1 by default, which on Windows lets a second
+    process bind the same port without an obvious error — silently masking a
+    duplicate-instance bug. We use a fresh SOCK_STREAM with the default options
+    (SO_REUSEADDR off) so the kernel reports EADDRINUSE the way it should, then
+    close and let Flask grab the port. Tiny TOCTOU race between close and
+    Flask's bind, but acceptable for a development mock.
+    """
+    test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        with open(args.triggers_file) as f:
-            data = json.load(f)
-            triggers = data.get('triggers', data) if isinstance(data, dict) else data
-            print(f"  Loaded {len(triggers)} trigger(s) from {args.triggers_file}")
-    except Exception as e:
-        print(f"  Error loading triggers file '{args.triggers_file}': {e}")
+        test.bind(('0.0.0.0', port))
+    except OSError as e:
+        print(f"\n  [FATAL] Cannot bind 0.0.0.0:{port}: {e}")
+        print(f"          Another mock-trigger-server (or other service) is already using this port.")
+        print(f"          Check with: netstat -ano | findstr :{port}    (Windows)")
+        print(f"                  or: ss -lntp 'sport = :{port}'         (Linux)")
         sys.exit(1)
+    finally:
+        test.close()
+
+
+def main():
+    global triggers, listen_port
+
+    cfg = load_config()
+    triggers = cfg["triggers"]
+    listen_port = cfg["port"]
+
+    preflight_bind_check(listen_port)
 
     print(f"\n  Mock Haven Trigger Server")
-    print(f"  HTTP API on port {args.port}")
+    print(f"  HTTP API on port {listen_port}")
     print(f"  Triggers: {len(triggers)} configured")
     for t in triggers:
         print(f"    - {t['name']} ({t['type']})")
@@ -308,7 +383,7 @@ def main():
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.WARNING)
 
-    app.run(host='0.0.0.0', port=args.port, debug=False)
+    app.run(host='0.0.0.0', port=listen_port, debug=False)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -379,7 +380,8 @@ static esp_err_t scene_action_handler(httpd_req_t *req) {
             cJSON_AddStringToObject(response, "error", "Audio system not initialized");
         } else {
             esp_err_t ret = scene_activate(g_scene_manager, name,
-                                            g_track_manager->audio_control_queue, g_track_manager);
+                                            g_track_manager->audio_control_queue, g_track_manager,
+                                            SCENE_ACTIVATE_DIRECT);
             if (ret == ESP_OK) {
                 mur_listener_resubscribe();
                 cJSON_AddBoolToObject(response, "success", true);
@@ -389,6 +391,12 @@ static esp_err_t scene_action_handler(httpd_req_t *req) {
             } else if (ret == ESP_ERR_NOT_FOUND) {
                 cJSON_AddBoolToObject(response, "success", false);
                 cJSON_AddStringToObject(response, "error", "Scene not found");
+            } else if (ret == ESP_ERR_INVALID_STATE) {
+                /* Synchronized scene refused — see SYNC_DESIGN.md. */
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error",
+                    "Scene is synchronized; activate via SceneChange trigger");
+                httpd_resp_set_status(req, "409 Conflict");
             } else {
                 cJSON_AddBoolToObject(response, "success", false);
                 cJSON_AddStringToObject(response, "error", "Failed to activate scene");
@@ -441,11 +449,17 @@ static esp_err_t device_get_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
         cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
         cJSON_AddNumberToObject(response, "device_volume", g_track_manager->device_volume_percent);
+        cJSON_AddStringToObject(response, "late_policy",
+                                config_late_policy_to_str(g_track_manager->late_policy));
+        cJSON_AddNumberToObject(response, "playback_offset_us",
+                                g_track_manager->playback_offset_us);
     } else {
         cJSON_AddStringToObject(response, "mur_gateway_ip", "");
         cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
         cJSON_AddStringToObject(response, "scene_trigger_name", "");
         cJSON_AddNumberToObject(response, "device_volume", 100);
+        cJSON_AddStringToObject(response, "late_policy", "play");
+        cJSON_AddNumberToObject(response, "playback_offset_us", 0);
     }
 
     // --- WiFi status and networks ---
@@ -562,6 +576,42 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
             mur_listener_resubscribe();
         }
 
+        // --- Late policy (play | drop) ---
+        cJSON *lp_json = cJSON_GetObjectItem(request, "late_policy");
+        if (cJSON_IsString(lp_json) && lp_json->valuestring) {
+            const char *s = lp_json->valuestring;
+            if (strcmp(s, "play") == 0 || strcmp(s, "drop") == 0) {
+                g_track_manager->late_policy = config_str_to_late_policy(s);
+                any_update = true;
+            } else {
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error",
+                                        "late_policy must be 'play' or 'drop'");
+                send_json_response(req, response);
+                cJSON_Delete(response);
+                cJSON_Delete(request);
+                return ESP_OK;
+            }
+        }
+
+        // --- Playback offset (signed µs, +delays / -advances; see SYNC_DESIGN.md) ---
+        cJSON *off_json = cJSON_GetObjectItem(request, "playback_offset_us");
+        if (cJSON_IsNumber(off_json)) {
+            /* valuedouble preserves the full int32 range; valueint is 32-bit. */
+            double d = off_json->valuedouble;
+            if (d < INT32_MIN || d > INT32_MAX) {
+                cJSON_AddBoolToObject(response, "success", false);
+                cJSON_AddStringToObject(response, "error",
+                                        "playback_offset_us out of int32 range");
+                send_json_response(req, response);
+                cJSON_Delete(response);
+                cJSON_Delete(request);
+                return ESP_OK;
+            }
+            g_track_manager->playback_offset_us = (int32_t)d;
+            any_update = true;
+        }
+
         // --- Device volume (per-device master, composes with scene global) ---
         cJSON *dv_json = cJSON_GetObjectItem(request, "device_volume");
         if (cJSON_IsNumber(dv_json)) {
@@ -609,6 +659,10 @@ static esp_err_t device_post_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(response, "mur_gateway_port", g_track_manager->mur_gateway_port);
         cJSON_AddStringToObject(response, "scene_trigger_name", g_track_manager->scene_trigger_name);
         cJSON_AddNumberToObject(response, "device_volume", g_track_manager->device_volume_percent);
+        cJSON_AddStringToObject(response, "late_policy",
+                                config_late_policy_to_str(g_track_manager->late_policy));
+        cJSON_AddNumberToObject(response, "playback_offset_us",
+                                g_track_manager->playback_offset_us);
     }
 
     esp_err_t send_ret = send_json_response(req, response);
@@ -837,10 +891,12 @@ static esp_err_t config_load_handler(httpd_req_t *req) {
         // Activate default scene
         if (g_scene_manager->default_scene[0] != '\0') {
             ret = scene_activate(g_scene_manager, g_scene_manager->default_scene,
-                                  g_track_manager->audio_control_queue, g_track_manager);
+                                  g_track_manager->audio_control_queue, g_track_manager,
+                                  SCENE_ACTIVATE_BOOT);
         } else if (g_scene_manager->scene_count > 0) {
             ret = scene_activate(g_scene_manager, g_scene_manager->scenes[0].name,
-                                  g_track_manager->audio_control_queue, g_track_manager);
+                                  g_track_manager->audio_control_queue, g_track_manager,
+                                  SCENE_ACTIVATE_BOOT);
         }
 
         if (ret == ESP_OK) {

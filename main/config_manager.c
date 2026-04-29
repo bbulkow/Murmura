@@ -41,6 +41,15 @@ trigger_mode_t config_str_to_trigger_mode(const char *s) {
     return TRIGGER_MODE_MOMENTARY;
 }
 
+const char* config_late_policy_to_str(late_policy_t lp) {
+    return (lp == LATE_POLICY_DROP) ? "drop" : "play";
+}
+
+late_policy_t config_str_to_late_policy(const char *s) {
+    if (s && strcmp(s, "drop") == 0) return LATE_POLICY_DROP;
+    return LATE_POLICY_PLAY;
+}
+
 esp_err_t config_save(const track_manager_t *manager) {
     if (!manager) {
         ESP_LOGE(TAG, "Invalid manager pointer");
@@ -55,6 +64,8 @@ esp_err_t config_save(const track_manager_t *manager) {
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
     cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
+    cJSON_AddStringToObject(root, "late_policy", config_late_policy_to_str(manager->late_policy));
+    cJSON_AddNumberToObject(root, "playback_offset_us", manager->playback_offset_us);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -215,6 +226,8 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
     track_manager->mur_gateway_port = config->mur_gateway_port;
     strncpy(track_manager->scene_trigger_name, config->scene_trigger_name,
             sizeof(track_manager->scene_trigger_name) - 1);
+    track_manager->late_policy = config->late_policy;
+    track_manager->playback_offset_us = config->playback_offset_us;
     ESP_LOGI(TAG, "Configuration applied successfully");
     return ESP_OK;
 }
@@ -298,6 +311,8 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
     cJSON_AddStringToObject(root, "mur_gateway_ip", manager->mur_gateway_ip);
     cJSON_AddNumberToObject(root, "mur_gateway_port", manager->mur_gateway_port);
     cJSON_AddStringToObject(root, "scene_trigger_name", manager->scene_trigger_name);
+    cJSON_AddStringToObject(root, "late_policy", config_late_policy_to_str(manager->late_policy));
+    cJSON_AddNumberToObject(root, "playback_offset_us", manager->playback_offset_us);
 
     cJSON *tracks_arr = cJSON_CreateArray();
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -334,6 +349,9 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     config->device_volume_percent = 100;
     config->mur_gateway_ip[0] = '\0';
     config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
+    config->late_policy = LATE_POLICY_PLAY;
+    strncpy(config->scene_trigger_name, DEFAULT_SCENE_TRIGGER_NAME,
+            sizeof(config->scene_trigger_name) - 1);
     for (int i = 0; i < MAX_TRACKS; i++) {
         config->tracks[i].mode = TRACK_MODE_LOOP;
         config->tracks[i].active = false;
@@ -374,6 +392,17 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
     if (cJSON_IsString(stn) && stn->valuestring) {
         strncpy(config->scene_trigger_name, stn->valuestring,
                 sizeof(config->scene_trigger_name) - 1);
+    }
+
+    cJSON *lp = cJSON_GetObjectItem(root, "late_policy");
+    if (cJSON_IsString(lp) && lp->valuestring) {
+        config->late_policy = config_str_to_late_policy(lp->valuestring);
+    }
+
+    cJSON *off = cJSON_GetObjectItem(root, "playback_offset_us");
+    if (cJSON_IsNumber(off)) {
+        /* valuedouble keeps full int32 range without overflow on read. */
+        config->playback_offset_us = (int32_t)off->valuedouble;
     }
 
     cJSON *tracks_arr = cJSON_GetObjectItem(root, "tracks");
@@ -440,6 +469,9 @@ esp_err_t config_get_default(track_config_t *config) {
         config->device_volume_percent = 100;
         config->mur_gateway_ip[0] = '\0';
         config->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
+        config->late_policy = LATE_POLICY_PLAY;
+        strncpy(config->scene_trigger_name, DEFAULT_SCENE_TRIGGER_NAME,
+                sizeof(config->scene_trigger_name) - 1);
         for (int i = 0; i < MAX_TRACKS; i++) {
             config->tracks[i].mode = TRACK_MODE_LOOP;
             config->tracks[i].active = (i == 0);

@@ -17,6 +17,7 @@ Each track within a scene has:
 Each scene also has:
 - **global_volume** (master volume, 0-100%) that scales all tracks via the hardware codec
 - **button_trigger** (optional): a trigger name (typically On/Off type) that activates this scene when an "On" event arrives. One button trigger per scene.
+- **synchronized** (optional, default `false`): when `true`, the scene can only be activated via cross-device-synchronized paths. Direct admin activation (`POST /api/scene` `action=activate`) returns 409, and the gateway's `get_scene` reliability poll refuses to enter the scene. Activation requires a `SceneChange` trigger event. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
 
 The device connects outbound to a Mur Gateway to receive trigger events:
 - **mur_gateway_ip**: IP address of the Mur Gateway (empty = disabled)
@@ -99,8 +100,10 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
   "uptime_seconds": 3600,
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
-  "scene_trigger_name": "SceneSelector",
+  "scene_trigger_name": "SceneChange",
   "device_volume": 100,
+  "late_policy": "play",
+  "playback_offset_us": 0,
   "wifi": {
     "connected": true,
     "ssid": "MyNetwork",
@@ -118,8 +121,10 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
 - `mac_address`, `ip_address`, `firmware_version`, `uptime_seconds`: read-only device info
 - `mur_gateway_ip`: IP of the Mur Gateway; empty string if not configured
 - `mur_gateway_port`: Mur Gateway TCP port (default 4000)
-- `scene_trigger_name`: trigger name for discrete scene changes — when an event with this name arrives, the `value` is used as the scene name to activate. If the value doesn't match any scene, the default scene is activated. Empty string disables.
+- `scene_trigger_name`: trigger name for discrete scene changes — when an event with this name arrives, the `value` is used as the scene name to activate. If the value doesn't match any scene, the default scene is activated. Default is `"SceneChange"` (matches the system-wide constant in `scene_service` and `mur_gateway`); empty string disables.
 - `device_volume`: per-device master attenuator, 0–100. Composes multiplicatively with the active scene's `global_volume` and each track's `volume` — effective output = `device_volume × scene.global_volume × track.volume`. Persisted to `/sdcard/track_config.json`, survives scene changes and reboot. Default 100.
+- `late_policy`: per-device policy for scheduled events that arrive past their TSF deadline. `"play"` (default) fires immediately with a `late` warning; `"drop"` discards with a `late` warning. Persisted to `/sdcard/track_config.json`. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
+- `playback_offset_us`: signed per-device offset in microseconds applied to every scheduled event's `target_tsf_us` before firing. Positive = fire later (e.g. compensate for a closer speaker), negative = fire earlier (compensate for a more distant one). Range int32 (~±35 min); typical values are tens of milliseconds (1 m of air path ≈ 2.9 ms). Default 0. Persisted to `/sdcard/track_config.json`. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
 - `wifi.connected`: whether WiFi is connected
 - `wifi.ssid`, `wifi.rssi`, `wifi.signal_strength`: current connection info (only present when connected)
 - `wifi.networks`: list of configured WiFi networks
@@ -136,8 +141,10 @@ Patch-style update of settable device fields. All fields are optional — only t
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
-  "scene_trigger_name": "SceneSelector",
-  "device_volume": 80
+  "scene_trigger_name": "SceneChange",
+  "device_volume": 80,
+  "late_policy": "drop",
+  "playback_offset_us": -15000
 }
 ```
 
@@ -148,12 +155,14 @@ Patch-style update of settable device fields. All fields are optional — only t
   "id": "MURMURA-STAGE-01",
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
-  "scene_trigger_name": "SceneSelector",
-  "device_volume": 80
+  "scene_trigger_name": "SceneChange",
+  "device_volume": 80,
+  "late_policy": "drop",
+  "playback_offset_us": -15000
 }
 ```
 
-A `device_volume` change returns HTTP 503 if the internal audio control queue is full.
+A `device_volume` change returns HTTP 503 if the internal audio control queue is full. A `late_policy` other than `"play"` or `"drop"` returns 400 with `"late_policy must be 'play' or 'drop'"`. A `playback_offset_us` outside int32 range returns 400 with `"playback_offset_us out of int32 range"`.
 
 **Response (error):**
 ```json
@@ -168,6 +177,8 @@ A `device_volume` change returns HTTP 503 if the internal audio control queue is
 ### Scenes
 
 All playback configuration lives inside **named scenes**. A scene contains a global volume and configuration for all 3 tracks. Device settings (wifi, gateway, device ID) are **not** part of scenes.
+
+A scene may be marked `synchronized: true` to enforce that it can only be activated via the synchronized cross-device trigger path. See [SYNC_DESIGN.md](SYNC_DESIGN.md) for the rationale, the gating rules, and the handling of each activation path.
 
 #### Get All Scenes
 
@@ -269,7 +280,7 @@ Cannot delete the active scene.
 ```json
 {"action": "activate", "name": "night"}
 ```
-Applies the scene's config to the hardware immediately.
+Applies the scene's config to the hardware immediately. Returns **HTTP 409 Conflict** if the scene has `synchronized: true` — those scenes can only be activated via the cross-device synchronized path (a `SceneChange` trigger event). See [SYNC_DESIGN.md](SYNC_DESIGN.md).
 
 **Set default boot scene:**
 ```json

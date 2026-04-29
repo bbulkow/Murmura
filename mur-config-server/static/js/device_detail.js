@@ -125,6 +125,36 @@ function attachEventListeners() {
         dvSlider.addEventListener('keyup', sendFinal);
         dvSlider.addEventListener('blur', sendFinal);
     }
+
+    // Playback offset (signed ms; wire is µs). Pushes to device RAM on
+    // slider release; persistence requires explicit Save Config.
+    const poSlider = document.getElementById('playbackOffsetSlider');
+    const poValue = document.getElementById('playbackOffsetValue');
+    const poReset = document.getElementById('playbackOffsetReset');
+    if (poSlider && poValue) {
+        const fmtMs = (ms) => {
+            const n = parseInt(ms);
+            if (n === 0) return '0 ms';
+            return (n > 0 ? '+' : '') + n + ' ms';
+        };
+        poSlider.addEventListener('input', function() {
+            poValue.textContent = fmtMs(this.value);
+            setPlaybackOffset(this.value, false);
+        });
+        const sendFinalOffset = () => setPlaybackOffset(poSlider.value, true);
+        poSlider.addEventListener('mouseup', sendFinalOffset);
+        poSlider.addEventListener('touchend', sendFinalOffset);
+        poSlider.addEventListener('keyup', sendFinalOffset);
+        poSlider.addEventListener('blur', sendFinalOffset);
+
+        if (poReset) {
+            poReset.addEventListener('click', function() {
+                poSlider.value = '0';
+                poValue.textContent = fmtMs(0);
+                setPlaybackOffset(0, true);
+            });
+        }
+    }
 }
 
 // Load device data and loops
@@ -193,6 +223,20 @@ function updateDeviceInfo(data) {
         if (dvSlider && dvValue && !keyboardHoldsSlider && !sliderBusy) {
             dvSlider.value = data.device_volume;
             dvValue.textContent = `${data.device_volume}%`;
+        }
+    }
+
+    // Update playback_offset slider. Wire is µs; slider is signed ms.
+    if (typeof data.playback_offset_us === 'number') {
+        const poSlider = document.getElementById('playbackOffsetSlider');
+        const poValue = document.getElementById('playbackOffsetValue');
+        const ae = document.activeElement;
+        const keyboardHoldsSlider = ae && ae.matches && ae.matches('input[type="range"]');
+        const sliderBusy = Date.now() < sliderInteractionBlockUntil;
+        if (poSlider && poValue && !keyboardHoldsSlider && !sliderBusy) {
+            const offsetMs = Math.round(data.playback_offset_us / 1000);
+            poSlider.value = offsetMs;
+            poValue.textContent = (offsetMs === 0 ? '0' : (offsetMs > 0 ? '+' + offsetMs : String(offsetMs))) + ' ms';
         }
     }
     
@@ -459,6 +503,22 @@ async function setDeviceVolume(volume, isFinal = false) {
         volumeInt,
         isFinal,
         'device'
+    );
+}
+
+// Push the per-device playback offset to the device's RAM. Slider value is
+// signed milliseconds; wire payload is microseconds (firmware field is
+// playback_offset_us). Persistence to SD card still requires Save Config.
+async function setPlaybackOffset(offsetMs, isFinal = false) {
+    const offsetMsInt = parseInt(offsetMs);
+    const offsetUs = offsetMsInt * 1000;
+    await sendVolumeChange(
+        'playback-offset',
+        `/api/device/${currentDevice}/device-config`,
+        () => ({ playback_offset_us: offsetUs }),
+        offsetMsInt,
+        isFinal,
+        'playback offset'
     );
 }
 
@@ -1090,6 +1150,25 @@ function renderAllScenes(scenesData) {
         html += `</div>`;
         html += `</div>`;
 
+        // Synchronized flag — when true, this scene can only be activated via
+        // the cross-device-synchronized SceneChange trigger path. Direct admin
+        // activation and the get_scene reliability poll both refuse. See
+        // SYNC_DESIGN.md.
+        // Synchronized flag — toggle pushes to device RAM immediately (same
+        // contract as the volume sliders and on/off buttons). Persistence to
+        // SD card still requires the explicit "Save Config" button. See
+        // SYNC_DESIGN.md.
+        const isSync = scene.synchronized === true;
+        html += `<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">`;
+        html += `<label style="font-size:12px;color:#666;display:flex;align-items:center;gap:6px;cursor:pointer;" title="When checked, this scene can only be activated by a SceneChange trigger event (synchronized across all subscribed MURs). Direct activation returns 409. See SYNC_DESIGN.md.">`;
+        html += `<input type="checkbox" class="scene-sync-toggle" data-scene="${sceneName}" ${isSync ? 'checked' : ''} style="cursor:pointer;">`;
+        html += `<span>Synchronized scene change</span>`;
+        html += `</label>`;
+        if (isSync) {
+            html += `<span style="font-size:11px;color:#a06;">(activate via SceneChange trigger only)</span>`;
+        }
+        html += `</div>`;
+
         html += `</div></div>`;
     });
 
@@ -1338,6 +1417,39 @@ function attachAllSceneHandlers() {
             const dl = document.getElementById('buttonTriggerDatalist');
             if (dl) {
                 dl.innerHTML = names.map(n => `<option value="${n}">`).join('');
+            }
+        });
+    });
+
+    // Per-scene "synchronized" toggle: push to device RAM on change (same
+    // contract as the volume sliders and on/off buttons — does not persist
+    // to SD card; that requires the explicit "Save Config" button).
+    document.querySelectorAll('.scene-sync-toggle').forEach(cb => {
+        cb.addEventListener('change', async function(e) {
+            e.stopPropagation();
+            const scene = this.dataset.scene;
+            const newVal = this.checked;
+            try {
+                const body = buildScenePatch({ synchronized: newVal }, scene);
+                const response = await fetch(`/api/device/${currentDevice}/scenes`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+                if (response.ok) {
+                    showMessage(
+                        `Scene '${scene}' synchronized = ${newVal ? 'ON' : 'off'}`,
+                        'success'
+                    );
+                    setTimeout(loadDeviceData, 400);
+                } else {
+                    // Roll back the visual state so the checkbox matches reality
+                    this.checked = !newVal;
+                    showMessage('Failed to update synchronized flag', 'error');
+                }
+            } catch (err) {
+                this.checked = !newVal;
+                showMessage('Error updating synchronized flag', 'error');
             }
         });
     });

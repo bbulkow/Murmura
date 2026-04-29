@@ -47,6 +47,12 @@ Build output is written to `build_output.txt` in the project root (UTF-16LE enco
 
 **HTTP_API.md** is the authoritative source for all HTTP API endpoints, request/response shapes, and behavior. Read it instead of inspecting `http_server.c` when working on HTTP-related tasks. When adding or changing endpoints, update HTTP_API.md to match.
 
+# Key docs (read before changing anything sync-related)
+
+- **MUR_PROTOCOL.md** — wire-format spec for device ↔ Mur Gateway.
+- **HTTP_API.md** — authoritative HTTP API contract.
+- **SYNC_DESIGN.md** — synchronized multi-MUR playback (TSF-based). Read this before touching `mur_scheduler.{h,c}`, the time fields on the MUR Protocol, the gateway's `TsfMap`, or the per-MUR `late_policy`.
+
 # Project architecture
 
 - **main/murmura.c** - App entry point, audio pipeline setup, audio_control_task

@@ -6,6 +6,8 @@ The Mur Protocol is a JSON-over-TCP protocol used between Murmura ESP32 devices 
 
 Devices initiate outbound TCP connections to the Mur Gateway. The connection is persistent — devices reconnect on failure.
 
+The protocol carries optional time fields used for synchronized multi-device playback. See [SYNC_DESIGN.md](SYNC_DESIGN.md) for the design rationale, prior art, and validation procedure; this document is the canonical wire-format spec.
+
 ## Connection Flow
 
 ```
@@ -36,16 +38,17 @@ Device                          Mur Gateway
 
 ### announce
 
-**Must be the first message sent after connecting.** Identifies the device.
+**Must be the first message sent after connecting.** Identifies the device and seeds the gateway's TSF map.
 
 ```json
-{"type": "announce", "id": "MURMURA-001"}
+{"type": "announce", "id": "MURMURA-001", "tsf_us": 12320420544427881}
 ```
 
-| Field  | Type   | Required | Description |
-|--------|--------|----------|-------------|
-| `type` | string | yes      | `"announce"` |
-| `id`   | string | yes      | Device identifier (e.g. unit ID from `/sdcard/unit_id.txt`) |
+| Field    | Type   | Required | Description |
+|----------|--------|----------|-------------|
+| `type`   | string | yes      | `"announce"` |
+| `id`     | string | yes      | Device identifier (e.g. unit ID from `/sdcard/unit_id.txt`) |
+| `tsf_us` | uint64 | no       | Current WiFi TSF reading in microseconds. Seeds the gateway's `TsfMap`; gateway also pulls TSF on its own cadence via `tsf_query`. See [SYNC_DESIGN.md](SYNC_DESIGN.md). |
 
 ### subscribe
 
@@ -87,6 +90,19 @@ against lost `SceneChange` trigger events.
 | Field  | Type   | Required | Description |
 |--------|--------|----------|-------------|
 | `type` | string | yes      | `"get_scene"` |
+
+### tsf_reply
+
+Sent in response to a `tsf_query` from the gateway. Carries the device's current TSF reading in microseconds. The gateway uses these samples to keep its ISO ↔ TSF map fresh. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
+
+```json
+{"type": "tsf_reply", "tsf_us": 12320420544427881}
+```
+
+| Field    | Type   | Required | Description |
+|----------|--------|----------|-------------|
+| `type`   | string | yes      | `"tsf_reply"` |
+| `tsf_us` | uint64 | yes      | Current WiFi TSF reading in microseconds. `0` if WiFi is not associated; gateway treats `0` as "no sample". |
 
 ## Messages: Gateway → Device
 
@@ -134,20 +150,35 @@ Device behavior on receipt:
 - `value` is an unknown scene name → fall back to the device's `default_scene`.
 - `value` is `null` → keep whatever scene is currently active.
 
+### tsf_query
+
+Solicits a `tsf_reply` from a device. The gateway sends this periodically (cadence is gateway-side config, see [SYNC_DESIGN.md](SYNC_DESIGN.md)).
+
+```json
+{"type": "tsf_query"}
+```
+
+| Field  | Type   | Required | Description |
+|--------|--------|----------|-------------|
+| `type` | string | yes      | `"tsf_query"` |
+
 ### Trigger Event
 
 Trigger events delivered by the gateway to subscribed devices.
 
 ```json
-{"name": "RedButton.Button_1", "value": "On", "id": 123, "timestamp": "2026-03-11T10:30:00"}
+{"name": "RedButton.Button_1", "value": "On", "id": 123, "timestamp": "2026-03-11T10:30:00", "target_tsf_us": 12320420545000000}
 ```
 
-| Field       | Type   | Description |
-|-------------|--------|-------------|
-| `name`      | string | Trigger name (e.g. `"DeviceName.TriggerName"`) |
-| `value`     | string | `"On"`, `"Off"`, `"1"`, `"0"`, or discrete/continuous value |
-| `id`        | int    | Unique event ID (for deduplication) |
-| `timestamp` | string | ISO 8601 timestamp (for debugging) |
+| Field           | Type   | Required | Description |
+|-----------------|--------|----------|-------------|
+| `name`          | string | yes      | Trigger name (e.g. `"DeviceName.TriggerName"`) |
+| `value`         | string | yes      | `"On"`, `"Off"`, `"1"`, `"0"`, or discrete/continuous value |
+| `id`            | int    | no       | Unique event ID (for deduplication) |
+| `timestamp`     | string | no       | ISO 8601 timestamp (event creation time, for debugging — **not** used for scheduling) |
+| `target_tsf_us` | uint64 | no       | Absolute TSF deadline in microseconds. If present, the device schedules the action via `mur_scheduler`. If absent, the device fires immediately. See [SYNC_DESIGN.md](SYNC_DESIGN.md). |
+
+**Outer-protocol time fields (Trigger Server → gateway only):** the upstream Trigger Server may send `delta_ms` (int) or `iso_time` (ISO 8601 string) instead of `target_tsf_us`. The gateway translates these into `target_tsf_us` before forwarding. The three time fields are mutually exclusive — events with multiple are dropped with a logged warning. Events with no time field default to "now" semantics; the gateway adds an implicit fanout delay (default 100 ms, configurable) when more than one subscriber would receive it.
 
 ## Behavior Notes
 

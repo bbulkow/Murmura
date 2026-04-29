@@ -1,4 +1,4 @@
-set(COMPONENT_SRCS "scene_manager.c" "mur_listener.c" "murmura_passthrough.c" "murmura_debug.c" "murmura.c" "unit_status_manager.c" "config_manager.c" "http_server.c" "music_files.c" "wifi_manager_async.c")
+set(COMPONENT_SRCS "mur_scheduler.c" "scene_manager.c" "mur_listener.c" "murmura_passthrough.c" "murmura_debug.c" "murmura.c" "unit_status_manager.c" "config_manager.c" "http_server.c" "music_files.c" "wifi_manager_async.c")
 set(COMPONENT_ADD_INCLUDEDIRS .)
 
 # Specify exact peripherals needed to avoid LCD compilation issues with ESP-IDF v5.4

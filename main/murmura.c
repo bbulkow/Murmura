@@ -61,6 +61,7 @@
 #include "config_manager.h"
 #include "scene_manager.h"
 #include "mur_listener.h"
+#include "mur_scheduler.h"
 #include <math.h>  // For log10f
 #include "esp_heap_caps.h"
 
@@ -520,7 +521,8 @@ void audio_control_task(void *pvParameters)
                                  ? scene_mgr->default_scene
                                  : scene_mgr->scenes[0].name;
         ESP_LOGI(TAG, "Activating boot scene: '%s'", boot_scene);
-        if (scene_activate(scene_mgr, boot_scene, control_queue, track_manager) == ESP_OK) {
+        if (scene_activate(scene_mgr, boot_scene, control_queue, track_manager,
+                            SCENE_ACTIVATE_BOOT) == ESP_OK) {
             ESP_LOGI(TAG, "Boot scene activated successfully");
         } else {
             ESP_LOGW(TAG, "Failed to activate boot scene '%s'", boot_scene);
@@ -1126,6 +1128,8 @@ void app_main(void)
         vQueueDelete(audio_control_queue);
         return;
     }
+
+    mur_scheduler_start();
 
     // Note: We no longer send START message here - the audio control task
     // will load configuration and start playing automatically on initialization

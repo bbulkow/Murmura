@@ -78,6 +78,9 @@ esp_err_t scene_manager_save(const scene_manager_t *mgr) {
         if (sc->button_trigger[0] != '\0') {
             cJSON_AddStringToObject(scene_json, "button_trigger", sc->button_trigger);
         }
+        if (sc->synchronized) {
+            cJSON_AddBoolToObject(scene_json, "synchronized", true);
+        }
         cJSON *tracks = config_tracks_to_json(sc->tracks);
         if (tracks) cJSON_AddItemToObject(scene_json, "tracks", tracks);
         cJSON_AddItemToObject(scenes_obj, sc->name, scene_json);
@@ -189,6 +192,8 @@ esp_err_t scene_manager_load(scene_manager_t *mgr) {
             if (cJSON_IsString(bt) && bt->valuestring) {
                 strncpy(sc->button_trigger, bt->valuestring, sizeof(sc->button_trigger) - 1);
             }
+            cJSON *syn = cJSON_GetObjectItem(scene_json, "synchronized");
+            sc->synchronized = (cJSON_IsBool(syn) && cJSON_IsTrue(syn));
             mgr->scene_count++;
         }
     }
@@ -323,13 +328,39 @@ esp_err_t scene_delete(scene_manager_t *mgr, const char *name) {
 // --- Activate ---
 
 esp_err_t scene_activate(scene_manager_t *mgr, const char *name,
-                         QueueHandle_t queue, track_manager_t *track_mgr) {
+                         QueueHandle_t queue, track_manager_t *track_mgr,
+                         scene_activate_source_t source) {
     if (!mgr || !name || !queue || !track_mgr) return ESP_ERR_INVALID_ARG;
 
     scene_config_t *sc = scene_find(mgr, name);
     if (!sc) {
         ESP_LOGE(TAG, "Scene '%s' not found", name);
         return ESP_ERR_NOT_FOUND;
+    }
+
+    // Synchronized-scene gate: refuse non-synchronized activation paths for
+    // scenes marked synchronized. BOOT is allowed (boot must activate something)
+    // but a synchronized default is a configuration error and we make noise.
+    // See SYNC_DESIGN.md "Synchronized scenes".
+    if (sc->synchronized) {
+        switch (source) {
+            case SCENE_ACTIVATE_BACKSTOP:
+                ESP_LOGW(TAG, "Refused: scene '%s' is synchronized; ignoring get_scene backstop activation",
+                         name);
+                return ESP_ERR_INVALID_STATE;
+            case SCENE_ACTIVATE_DIRECT:
+                ESP_LOGW(TAG, "Refused: scene '%s' is synchronized; activate via SceneChange trigger",
+                         name);
+                return ESP_ERR_INVALID_STATE;
+            case SCENE_ACTIVATE_BOOT:
+                ESP_LOGE(TAG, "Boot scene '%s' is marked synchronized — fix scenes.json default_scene",
+                         name);
+                /* fall through and activate anyway */
+                break;
+            case SCENE_ACTIVATE_TRIGGER:
+            default:
+                break;  /* allowed */
+        }
     }
 
     // Allocate in SPIRAM — track_config_t is ~1300+ bytes, too large for the
@@ -382,6 +413,16 @@ esp_err_t scene_validate_patch(scene_manager_t *mgr, cJSON *patch_body,
             if (error_msg) {
                 snprintf(error_msg, error_msg_size,
                          "Value for scene '%s' must be an object", name);
+            }
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        // Validate synchronized if present (must be a bool)
+        cJSON *syn = cJSON_GetObjectItem(scene_patch, "synchronized");
+        if (syn && !cJSON_IsBool(syn)) {
+            if (error_msg) {
+                snprintf(error_msg, error_msg_size,
+                         "Scene '%s': synchronized must be a boolean", name);
             }
             return ESP_ERR_INVALID_ARG;
         }
@@ -549,6 +590,12 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
             sc->button_trigger[sizeof(sc->button_trigger) - 1] = '\0';
         }
 
+        // Apply synchronized flag
+        cJSON *syn_apply = cJSON_GetObjectItem(scene_patch, "synchronized");
+        if (cJSON_IsBool(syn_apply)) {
+            sc->synchronized = cJSON_IsTrue(syn_apply);
+        }
+
         // Apply tracks
         cJSON *tracks_arr = cJSON_GetObjectItem(scene_patch, "tracks");
         if (cJSON_IsArray(tracks_arr)) {
@@ -701,6 +748,7 @@ cJSON* scene_build_get_response(const scene_manager_t *mgr, const track_manager_
         cJSON *scene_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(scene_json, "global_volume", sc->global_volume_percent);
         cJSON_AddStringToObject(scene_json, "button_trigger", sc->button_trigger);
+        cJSON_AddBoolToObject(scene_json, "synchronized", sc->synchronized);
 
         bool is_active = (strcmp(mgr->active_scene, sc->name) == 0);
 
