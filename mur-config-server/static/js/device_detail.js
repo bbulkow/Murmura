@@ -993,7 +993,7 @@ window.refreshSceneTriggerList = function() {
     populateButtonTriggerDatalist();
 };
 
-// Set trigger_name / trigger_mode for a track
+// Set trigger_name / trigger_type for a track
 async function setTrackTriggerConfig(track, fields, sceneName) {
     try {
         const body = buildSceneTrackPatch(track, fields, sceneName);
@@ -1074,7 +1074,7 @@ function renderAllScenes(scenesData) {
             const activeClass = track.active ? 'playing' : 'stopped';
             const filename = track.file_path ? track.file_path.split('/').pop() : 'No file';
             const triggerName = track.trigger_name || '';
-            const triggerMode = track.trigger_mode || 'momentary';
+            const triggerType = track.trigger_type || 'On/Off';
             const enableBtnLabel = track.active ? 'ON' : 'OFF';
 
             const triggerDisplayName = triggerName || '(none)';
@@ -1098,14 +1098,14 @@ function renderAllScenes(scenesData) {
                                 style="padding:2px 6px;font-size:11px;border:1px solid #aaa;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#555;"
                                 title="Refresh trigger list">&#x21bb;</button>
                     </div>
-                    <button class="trigger-mode-opt ${triggerMode === 'momentary' ? 'active' : ''}"
-                            data-scene="${sceneName}" data-track="${track.track}" data-tmode="momentary"
+                    <button class="trigger-type-opt ${triggerType === 'On/Off' ? 'active' : ''}"
+                            data-scene="${sceneName}" data-track="${track.track}" data-ttype="On/Off"
                             style="padding:3px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;
-                                   background:${triggerMode === 'momentary' ? '#2a5298' : '#eee'};color:${triggerMode === 'momentary' ? '#fff' : '#333'};">Momentary</button>
-                    <button class="trigger-mode-opt ${triggerMode === 'oneshot' ? 'active' : ''}"
-                            data-scene="${sceneName}" data-track="${track.track}" data-tmode="oneshot"
+                                   background:${triggerType === 'On/Off' ? '#2a5298' : '#eee'};color:${triggerType === 'On/Off' ? '#fff' : '#333'};">On/Off</button>
+                    <button class="trigger-type-opt ${triggerType === 'OneShot' ? 'active' : ''}"
+                            data-scene="${sceneName}" data-track="${track.track}" data-ttype="OneShot"
                             style="padding:3px 8px;font-size:12px;border:1px solid #aaa;border-radius:4px;cursor:pointer;
-                                   background:${triggerMode === 'oneshot' ? '#2a5298' : '#eee'};color:${triggerMode === 'oneshot' ? '#fff' : '#333'};">Oneshot</button>
+                                   background:${triggerType === 'OneShot' ? '#2a5298' : '#eee'};color:${triggerType === 'OneShot' ? '#fff' : '#333'};">OneShot</button>
                 </div>` : '';
 
             html += `
@@ -1258,8 +1258,10 @@ function attachAllSceneHandlers() {
                 const input = editRow.querySelector('.trigger-name-input');
                 input.value = '';  // clear so datalist shows all options (current value shown in display span)
                 input.focus();
-                // Populate datalist from gateway in background (On/Off triggers only)
-                fetchTriggerNamesByType('On/Off').then(names => {
+                // Populate datalist from gateway in background, filtered by this track's trigger_type
+                const activeTypeBtn = document.querySelector(`.trigger-type-opt.active[data-scene="${scene}"][data-track="${track}"]`);
+                const ttype = activeTypeBtn ? activeTypeBtn.dataset.ttype : 'On/Off';
+                fetchTriggerNamesByType(ttype).then(names => {
                     const datalist = document.getElementById(`triggerList-${scene}-${track}`);
                     if (datalist && names.length > 0) {
                         datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -1307,12 +1309,14 @@ function attachAllSceneHandlers() {
         });
     });
 
-    // Trigger list refresh button (On/Off triggers only for track triggers)
+    // Trigger list refresh button (filters by this track's trigger_type)
     document.querySelectorAll('.trigger-list-refresh-btn').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             const {track, scene} = this.dataset;
-            const names = await fetchTriggerNamesByType('On/Off', true);
+            const activeTypeBtn = document.querySelector(`.trigger-type-opt.active[data-scene="${scene}"][data-track="${track}"]`);
+            const ttype = activeTypeBtn ? activeTypeBtn.dataset.ttype : 'On/Off';
+            const names = await fetchTriggerNamesByType(ttype, true);
             const datalist = document.getElementById(`triggerList-${scene}-${track}`);
             if (datalist) {
                 datalist.innerHTML = names.map(n => `<option value="${n}">`).join('');
@@ -1320,12 +1324,15 @@ function attachAllSceneHandlers() {
         });
     });
 
-    // Trigger mode buttons
-    document.querySelectorAll('.trigger-mode-opt').forEach(btn => {
+    // Trigger type buttons — switching type clears the bound trigger_name so
+    // the user must re-pick from the correctly-typed dropdown.
+    document.querySelectorAll('.trigger-type-opt').forEach(btn => {
         btn.addEventListener('click', async function(e) {
             e.stopPropagation();
             if (this.classList.contains('active')) return;
-            await setTrackTriggerConfig(parseInt(this.dataset.track), { trigger_mode: this.dataset.tmode }, this.dataset.scene);
+            await setTrackTriggerConfig(parseInt(this.dataset.track),
+                { trigger_type: this.dataset.ttype, trigger_name: '' },
+                this.dataset.scene);
             setTimeout(loadDeviceData, 400);
         });
     });

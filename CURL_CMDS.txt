@@ -17,7 +17,7 @@ curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -
 curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "active": false}'
 
 # Set track 1 as a oneshot trigger
-curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "mode": "trigger", "file": "sting.wav", "trigger_name": "RedButton.Button_1", "trigger_mode": "oneshot"}'
+curl -X POST http://192.168.5.74/api/track -H "Content-Type: application/json" -d '{"track": 1, "mode": "trigger", "file": "sting.wav", "trigger_name": "RedButton.Button_1", "trigger_type": "OneShot"}'
 
 # Set Mur Gateway IP and port (via /api/device)
 curl -X POST http://192.168.5.74/api/device -H "Content-Type: application/json" -d '{"mur_gateway_ip": "192.168.5.10", "mur_gateway_port": 4000}'

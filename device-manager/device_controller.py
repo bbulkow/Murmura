@@ -214,7 +214,7 @@ class DeviceController:
                 marker_str = f" [{', '.join(markers)}]" if markers else ""
                 print(f"\n  Scene: {scene_name}{marker_str}")
                 print(f"  Global Volume: {scene_data.get('global_volume', 'N/A')}%")
-                print(f"  {'Trk':<5} {'Mode':<8} {'Active':<8} {'Vol':<5} {'TrigMode':<10} {'TrigName':<24} File")
+                print(f"  {'Trk':<5} {'Mode':<8} {'Active':<8} {'Vol':<5} {'TrigType':<10} {'TrigName':<24} File")
                 print("  " + "-" * 86)
 
                 for track in scene_data.get('tracks', []):
@@ -222,9 +222,9 @@ class DeviceController:
                     file_name = track.get('file', '')
                     file_name = file_name.split('/')[-1] if file_name else '(none)'
                     trig_name = track.get('trigger_name', '') or '-'
-                    trig_mode = track.get('trigger_mode', '-') if track.get('trigger_name') else '-'
+                    trig_type = track.get('trigger_type', '-') if track.get('trigger_name') else '-'
                     print(f"    {track.get('track', '?'):<3} {track.get('mode','loop'):<8} {active:<8} "
-                          f"{track.get('volume',0):<5} {trig_mode:<10} {trig_name:<24} {file_name}")
+                          f"{track.get('volume',0):<5} {trig_type:<10} {trig_name:<24} {file_name}")
 
             print()
         else:
@@ -234,7 +234,7 @@ class DeviceController:
                         active: Optional[bool], filename: Optional[str],
                         volume: Optional[int], global_volume: Optional[int],
                         trigger_name: Optional[str] = None,
-                        trigger_mode: Optional[str] = None) -> None:
+                        trigger_type: Optional[str] = None) -> None:
         """Patch a scene via POST /api/scenes."""
         scene_body: Dict[str, Any] = {}
 
@@ -251,8 +251,8 @@ class DeviceController:
                 track_entry['volume'] = volume
             if trigger_name is not None:
                 track_entry['trigger_name'] = trigger_name
-            if trigger_mode is not None:
-                track_entry['trigger_mode'] = trigger_mode
+            if trigger_type is not None:
+                track_entry['trigger_type'] = trigger_type
             scene_body['tracks'] = [track_entry]
 
         if global_volume is not None:
@@ -516,9 +516,9 @@ Examples:
                               metavar='NAME',
                               help='Trigger event name to bind (e.g. RedButton.Button_1); empty string clears')
 
-    track_group.add_argument('--trigger-mode',
-                              choices=['momentary', 'oneshot'],
-                              help='momentary: play while held; oneshot: play once on press')
+    track_group.add_argument('--trigger-type',
+                              choices=['On/Off', 'OneShot'],
+                              help='On/Off: play while held; OneShot: play once on press')
 
     # Mur Gateway control
     trig_group = parser.add_argument_group('mur gateway control (for set-mur-gateway)')
@@ -597,7 +597,7 @@ Examples:
                 volume=args.volume,
                 global_volume=args.global_volume,
                 trigger_name=args.trigger_name,
-                trigger_mode=args.trigger_mode
+                trigger_type=args.trigger_type
             ))
 
         elif args.command in ('create-scene', 'delete-scene', 'activate-scene', 'set-default-scene'):

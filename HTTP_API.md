@@ -12,7 +12,7 @@ Each track within a scene has:
 - **file_path**: the audio file assigned to the track
 - **volume**: per-track volume (0-100%)
 - **trigger_name**: name of the trigger event to listen for (empty string = no trigger)
-- **trigger_mode**: `"momentary"` (start on keyDown "On", stop on keyUp "Off") or `"oneshot"` (start on keyDown, plays to completion, ignore keyUp)
+- **trigger_type**: `"On/Off"` (start on "On", stop on "Off") or `"OneShot"` (start on event, plays to completion, ignore subsequent). Mirrors upstream Haven Trigger Server type names.
 
 Each scene also has:
 - **global_volume** (master volume, 0-100%) that scales all tracks via the hardware codec
@@ -196,17 +196,17 @@ Returns all scene configurations plus metadata.
       "global_volume": 75,
       "button_trigger": "ButtonA",
       "tracks": [
-        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/birds.wav", "volume": 80, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
-        {"track": 1, "mode": "loop", "active": true, "file_path": "/sdcard/wind.wav", "volume": 60, "trigger_name": "", "trigger_mode": "momentary", "playing": true},
-        {"track": 2, "mode": "trigger", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"}
+        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/birds.wav", "volume": 80, "trigger_name": "", "trigger_type": "On/Off", "playing": true},
+        {"track": 1, "mode": "loop", "active": true, "file_path": "/sdcard/wind.wav", "volume": 60, "trigger_name": "", "trigger_type": "On/Off", "playing": true},
+        {"track": 2, "mode": "trigger", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_type": "On/Off"}
       ]
     },
     "night": {
       "global_volume": 40,
       "tracks": [
-        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/crickets.wav", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"},
-        {"track": 1, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"},
-        {"track": 2, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_mode": "momentary"}
+        {"track": 0, "mode": "loop", "active": true, "file_path": "/sdcard/crickets.wav", "volume": 100, "trigger_name": "", "trigger_type": "On/Off"},
+        {"track": 1, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_type": "On/Off"},
+        {"track": 2, "mode": "loop", "active": false, "file_path": "", "volume": 100, "trigger_name": "", "trigger_type": "On/Off"}
       ]
     }
   }
@@ -216,7 +216,7 @@ Returns all scene configurations plus metadata.
 - `default_scene`: the scene activated on boot (empty string = none)
 - `active_scene`: the scene currently applied to the hardware
 - `playing`: only present on the active scene's tracks (runtime state)
-- Per-track fields: same as before (`mode`, `active`, `file_path`, `volume`, `trigger_name`, `trigger_mode`)
+- Per-track fields: same as before (`mode`, `active`, `file_path`, `volume`, `trigger_name`, `trigger_type`)
 
 #### Update Scene Configuration
 

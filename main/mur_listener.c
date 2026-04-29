@@ -14,9 +14,9 @@
  *   {"type":"welcome","gateway":"mur-gateway","version":"1.0"}\n
  *   {"name":"Button_1","value":"On","id":123,"timestamp":"..."}\n
  *
- * Trigger modes:
- *   TRIGGER_MODE_MOMENTARY  – START_TRACK on "On", STOP_TRACK on "Off"
- *   TRIGGER_MODE_ONESHOT    – START_TRACK on "On", nothing on "Off"
+ * Trigger types (mirrors upstream Haven Trigger Server):
+ *   TRIGGER_TYPE_ONOFF    – START_TRACK on "On", STOP_TRACK on "Off"
+ *   TRIGGER_TYPE_ONESHOT  – START_TRACK on "On", nothing on "Off"
  */
 
 #include "freertos/FreeRTOS.h"
@@ -452,28 +452,33 @@ static void dispatch_event(const char *trigger_name, const char *value)
 
         audio_control_msg_t msg = { .data = {} };
 
-        if (is_on) {
+        // OneShot triggers from upstream are valueless by design — fire on any
+        // event. On/Off triggers fire START on "On" and STOP on "Off".
+        bool should_start = (t->trigger_type == TRIGGER_TYPE_ONESHOT) ? !is_off : is_on;
+        bool should_stop  = (t->trigger_type == TRIGGER_TYPE_ONOFF) && is_off;
+
+        if (should_start) {
             if (audio_control_send_start_track(s_manager->audio_control_queue, i,
                     t->file_path, pdMS_TO_TICKS(100)) != pdPASS) {
                 ESP_LOGW(TAG, "Queue full or alloc failed — START_TRACK for track %d dropped", i);
             } else {
                 ESP_LOGI(TAG, "Trigger '%s' matched track %d (%s) — starting",
                          trigger_name, i,
-                         t->trigger_mode == TRIGGER_MODE_ONESHOT ? "oneshot" : "momentary");
+                         t->trigger_type == TRIGGER_TYPE_ONESHOT ? "OneShot" : "On/Off");
             }
-        } else if (is_off && t->trigger_mode == TRIGGER_MODE_MOMENTARY) {
+        } else if (should_stop) {
             msg.type = AUDIO_ACTION_STOP_TRACK;
             msg.data.stop_track.track_index = i;
             if (xQueueSend(s_manager->audio_control_queue, &msg, pdMS_TO_TICKS(100)) != pdPASS) {
                 ESP_LOGW(TAG, "Queue full — STOP_TRACK for track %d dropped", i);
             } else {
-                ESP_LOGI(TAG, "Trigger '%s' matched track %d (momentary) — stopping",
+                ESP_LOGI(TAG, "Trigger '%s' matched track %d (On/Off) — stopping",
                          trigger_name, i);
             }
         } else {
             ESP_LOGI(TAG, "Trigger '%s' matched track %d (%s) — no action for value='%s'",
                      trigger_name, i,
-                     t->trigger_mode == TRIGGER_MODE_ONESHOT ? "oneshot" : "momentary",
+                     t->trigger_type == TRIGGER_TYPE_ONESHOT ? "OneShot" : "On/Off",
                      value ? value : "(null)");
         }
     }

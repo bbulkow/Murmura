@@ -394,7 +394,7 @@ class BatchController:
                         active: Optional[bool] = None, filename: Optional[str] = None,
                         volume: Optional[int] = None, global_volume: Optional[int] = None,
                         trigger_name: Optional[str] = None,
-                        trigger_mode: Optional[str] = None) -> None:
+                        trigger_type: Optional[str] = None) -> None:
         """Patch a named scene across all devices — any subset of scene/track fields."""
         scene_body: Dict[str, Any] = {}
 
@@ -405,7 +405,7 @@ class BatchController:
             if filename is not None: entry['file'] = filename
             if volume is not None: entry['volume'] = volume
             if trigger_name is not None: entry['trigger_name'] = trigger_name
-            if trigger_mode is not None: entry['trigger_mode'] = trigger_mode
+            if trigger_type is not None: entry['trigger_type'] = trigger_type
             scene_body['tracks'] = [entry]
 
         if global_volume is not None:
@@ -585,9 +585,9 @@ Commands:
                              metavar='NAME',
                              help='Trigger event name to bind (for set-scene --track); empty string clears')
 
-    scene_group.add_argument('--trigger-mode',
-                             choices=['momentary', 'oneshot'],
-                             help='Trigger sub-mode (for set-scene --track)')
+    scene_group.add_argument('--trigger-type',
+                             choices=['On/Off', 'OneShot'],
+                             help='Trigger type (for set-scene --track)')
 
     scene_group.add_argument('--global-volume',
                              type=int,
@@ -690,7 +690,7 @@ Commands:
                 volume=args.volume,
                 global_volume=args.global_volume,
                 trigger_name=args.trigger_name,
-                trigger_mode=args.trigger_mode,
+                trigger_type=args.trigger_type,
             ))
 
         elif args.command == 'set-device-volume':

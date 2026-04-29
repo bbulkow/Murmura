@@ -830,7 +830,7 @@ def group9_trigger_basic(base, device_ip, trigger_tests):
 
         sock.close()
 
-        pause("Change track 2 trigger_action to 'momentary' via the web UI or API, then press Enter")
+        pause("Change track 2 trigger_type to 'On/Off' via the web UI or API, then press Enter")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(4)
@@ -838,13 +838,13 @@ def group9_trigger_basic(base, device_ip, trigger_tests):
 
         sock.sendall(event_on.encode())
         time.sleep(1)
-        passed = user_confirm("Track 2 started playing (momentary test)?")
-        record(passed, "8b.3 Trigger On starts track 2 in momentary mode")
+        passed = user_confirm("Track 2 started playing (On/Off test)?")
+        record(passed, "8b.3 Trigger On starts track 2 in On/Off mode")
 
         sock.sendall(event_off.encode())
         time.sleep(1)
-        passed = user_confirm("Did track 2 STOP on Off? (momentary — should stop)")
-        record(passed, "8b.4 Trigger Off stops track in momentary mode")
+        passed = user_confirm("Did track 2 STOP on Off? (On/Off — should stop)")
+        record(passed, "8b.4 Trigger Off stops track in On/Off mode")
 
         sock.close()
 

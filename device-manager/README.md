@@ -173,7 +173,7 @@ python id_manager.py -c auto-assign -p STAGE -s 100
 
 The device controller performs operations on a single device by its ID.
 
-Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `trigger`), an **active** flag, a **file**, a **volume**, a **trigger_name**, and a **trigger_mode**. All of these are configured with a single `set-track` command; only the fields you provide are changed.
+Each device has three tracks (0, 1, 2). Each track has a **mode** (`loop` or `trigger`), an **active** flag, a **file**, a **volume**, a **trigger_name**, and a **trigger_type**. All of these are configured with a single `set-track` command; only the fields you provide are changed.
 
 #### Basic Use
 
@@ -194,10 +194,10 @@ python device_controller.py --id MURMURA-001 --command set-track --track 0 --act
 python device_controller.py --id MURMURA-001 --command set-track --track 1 --volume 50
 
 # Set track 2 as a one-shot trigger bound to a specific trigger name
-python device_controller.py --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --trigger-name "RedButton.Button_1" --trigger-mode oneshot
+python device_controller.py --id MURMURA-001 --command set-track --track 2 --mode trigger --file sting.wav --trigger-name "RedButton.Button_1" --trigger-type OneShot
 
-# Set track 1 as a momentary trigger (plays while held)
-python device_controller.py --id MURMURA-001 --command set-track --track 1 --mode trigger --file bass.wav --trigger-name "Dial.Pedal" --trigger-mode momentary
+# Set track 1 as an On/Off trigger (plays while held)
+python device_controller.py --id MURMURA-001 --command set-track --track 1 --mode trigger --file bass.wav --trigger-name "Dial.Pedal" --trigger-type On/Off
 
 # Get/set Mur Gateway configuration
 python device_controller.py --id MURMURA-001 --command get-mur-gateway
@@ -242,8 +242,8 @@ Track control (for set-track):
   --file FILENAME                Audio filename, e.g. ambient.wav
   --volume LEVEL, -v LEVEL       Per-track volume (0-100)
   --trigger-name NAME            Trigger event name to bind (e.g. RedButton.Button_1)
-  --trigger-mode {momentary,oneshot}
-                                 momentary: play while held; oneshot: play once on press
+  --trigger-type {On/Off,OneShot}
+                                 On/Off: play while held; OneShot: play once on press
 
 Mur Gateway control (for set-mur-gateway):
   --trigger-ip IP                IP address of the Mur Gateway
@@ -256,19 +256,19 @@ Device ID control:
   --new-id ID, -n ID             New device ID for set-id command
 ```
 
-#### Track Modes and Trigger Modes
+#### Track Modes and Trigger Types
 
 | Mode | Behaviour |
 |------|-----------|
 | `loop` | File plays continuously in a loop while the track is enabled (`active=true`) |
 | `trigger` | Track is armed when `active=true`; audio plays in response to trigger events from the Mur Gateway |
 
-When `mode=trigger`, set `trigger_name` to the gateway event name and `trigger_mode` to control playback behaviour:
+When `mode=trigger`, set `trigger_name` to the gateway event name and `trigger_type` to control playback behaviour. Type names mirror the upstream Haven Trigger Server:
 
-| Trigger Mode | Behaviour |
+| Trigger Type | Behaviour |
 |---|---|
-| `momentary` | Plays on keyDown ("On" event), stops on keyUp ("Off" event) |
-| `oneshot` | Plays once on keyDown; keyUp is ignored; track plays to natural end |
+| `On/Off` | Plays on "On" event, stops on "Off" event |
+| `OneShot` | Plays once on event; subsequent events are ignored; track plays to natural end |
 
 #### Shortcut Examples
 

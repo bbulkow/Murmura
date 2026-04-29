@@ -27,11 +27,12 @@ typedef enum {
     TRACK_MODE_TRIGGER = 1  // Play when triggered
 } track_mode_t;
 
-// Trigger sub-mode (only relevant when track_mode == TRACK_MODE_TRIGGER)
+// Trigger type (mirrors upstream Haven Trigger Server type names)
+// Only relevant when track_mode == TRACK_MODE_TRIGGER.
 typedef enum {
-    TRIGGER_MODE_MOMENTARY = 0, // Play on keyDown ("On"), stop on keyUp ("Off")
-    TRIGGER_MODE_ONESHOT   = 1  // Play once on keyDown; ignore keyUp (plays to end)
-} trigger_mode_t;
+    TRIGGER_TYPE_ONOFF   = 0, // "On/Off": play on "On", stop on "Off"
+    TRIGGER_TYPE_ONESHOT = 1  // "OneShot": play on event; ignore subsequent (plays to end)
+} trigger_type_t;
 
 // Per-MUR policy when a scheduled event arrives already past its deadline.
 // See SYNC_DESIGN.md for the why.
@@ -48,7 +49,7 @@ typedef struct {
     char file_path[MAX_FILE_PATH_LEN];
     int volume_percent;        // 0-100%
     char trigger_name[MAX_TRIGGER_NAME_LEN]; // trigger name to match; empty = none
-    trigger_mode_t trigger_mode;             // momentary or oneshot
+    trigger_type_t trigger_type;             // On/Off or OneShot
 } track_status_t;
 
 // Global track manager

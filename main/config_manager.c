@@ -32,13 +32,13 @@ track_mode_t config_str_to_mode(const char *s) {
     return TRACK_MODE_LOOP;
 }
 
-const char* config_trigger_mode_to_str(trigger_mode_t tm) {
-    return (tm == TRIGGER_MODE_ONESHOT) ? "oneshot" : "momentary";
+const char* config_trigger_type_to_str(trigger_type_t tt) {
+    return (tt == TRIGGER_TYPE_ONESHOT) ? "OneShot" : "On/Off";
 }
 
-trigger_mode_t config_str_to_trigger_mode(const char *s) {
-    if (s && strcmp(s, "oneshot") == 0) return TRIGGER_MODE_ONESHOT;
-    return TRIGGER_MODE_MOMENTARY;
+trigger_type_t config_str_to_trigger_type(const char *s) {
+    if (s && strcmp(s, "OneShot") == 0) return TRIGGER_TYPE_ONESHOT;
+    return TRIGGER_TYPE_ONOFF;
 }
 
 const char* config_late_policy_to_str(late_policy_t lp) {
@@ -76,7 +76,7 @@ esp_err_t config_save(const track_manager_t *manager) {
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
         cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
-        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(manager->tracks[i].trigger_mode));
+        cJSON_AddStringToObject(t, "trigger_type", config_trigger_type_to_str(manager->tracks[i].trigger_type));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -193,7 +193,7 @@ esp_err_t config_apply(const track_config_t *config, QueueHandle_t audio_control
                 sizeof(track_manager->tracks[i].file_path) - 1);
         strncpy(track_manager->tracks[i].trigger_name, config->tracks[i].trigger_name,
                 sizeof(track_manager->tracks[i].trigger_name) - 1);
-        track_manager->tracks[i].trigger_mode = config->tracks[i].trigger_mode;
+        track_manager->tracks[i].trigger_type = config->tracks[i].trigger_type;
 
         // Enable/disable and start/stop based on active flag
         if (config->tracks[i].active) {
@@ -323,7 +323,7 @@ esp_err_t config_to_json_string(const track_manager_t *manager, char **json_str)
         cJSON_AddStringToObject(t, "file_path", manager->tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", manager->tracks[i].volume_percent);
         cJSON_AddStringToObject(t, "trigger_name", manager->tracks[i].trigger_name);
-        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(manager->tracks[i].trigger_mode));
+        cJSON_AddStringToObject(t, "trigger_type", config_trigger_type_to_str(manager->tracks[i].trigger_type));
         cJSON_AddItemToArray(tracks_arr, t);
     }
     cJSON_AddItemToObject(root, "tracks", tracks_arr);
@@ -358,7 +358,7 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
         config->tracks[i].volume_percent = 100;
         config->tracks[i].file_path[0] = '\0';
         config->tracks[i].trigger_name[0] = '\0';
-        config->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+        config->tracks[i].trigger_type = TRIGGER_TYPE_ONOFF;
     }
 
     cJSON *global_vol = cJSON_GetObjectItem(root, "global_volume");
@@ -443,9 +443,9 @@ esp_err_t config_from_json_string(const char *json_str, track_config_t *config) 
                         sizeof(config->tracks[idx].trigger_name) - 1);
             }
 
-            cJSON *trig_mode = cJSON_GetObjectItem(t, "trigger_mode");
-            if (cJSON_IsString(trig_mode)) {
-                config->tracks[idx].trigger_mode = config_str_to_trigger_mode(trig_mode->valuestring);
+            cJSON *trig_type = cJSON_GetObjectItem(t, "trigger_type");
+            if (cJSON_IsString(trig_type)) {
+                config->tracks[idx].trigger_type = config_str_to_trigger_type(trig_type->valuestring);
             }
         }
     }
@@ -477,7 +477,7 @@ esp_err_t config_get_default(track_config_t *config) {
             config->tracks[i].active = (i == 0);
             config->tracks[i].volume_percent = 100;
             config->tracks[i].trigger_name[0] = '\0';
-            config->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+            config->tracks[i].trigger_type = TRIGGER_TYPE_ONOFF;
             strncpy(config->tracks[i].file_path, default_files[i],
                     sizeof(config->tracks[i].file_path) - 1);
         }
@@ -512,7 +512,7 @@ esp_err_t config_parse_scene_from_json(cJSON *root, int *global_volume,
         tracks[i].volume_percent = 100;
         tracks[i].file_path[0] = '\0';
         tracks[i].trigger_name[0] = '\0';
-        tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+        tracks[i].trigger_type = TRIGGER_TYPE_ONOFF;
     }
 
     cJSON *gv = cJSON_GetObjectItem(root, "global_volume");
@@ -558,9 +558,9 @@ esp_err_t config_parse_scene_from_json(cJSON *root, int *global_volume,
                         sizeof(tracks[idx].trigger_name) - 1);
             }
 
-            cJSON *trig_mode = cJSON_GetObjectItem(t, "trigger_mode");
-            if (cJSON_IsString(trig_mode)) {
-                tracks[idx].trigger_mode = config_str_to_trigger_mode(trig_mode->valuestring);
+            cJSON *trig_type = cJSON_GetObjectItem(t, "trigger_type");
+            if (cJSON_IsString(trig_type)) {
+                tracks[idx].trigger_type = config_str_to_trigger_type(trig_type->valuestring);
             }
         }
     }
@@ -580,7 +580,7 @@ cJSON* config_tracks_to_json(const track_config_entry_t tracks[MAX_TRACKS]) {
         cJSON_AddStringToObject(t, "file_path", tracks[i].file_path);
         cJSON_AddNumberToObject(t, "volume", tracks[i].volume_percent);
         cJSON_AddStringToObject(t, "trigger_name", tracks[i].trigger_name);
-        cJSON_AddStringToObject(t, "trigger_mode", config_trigger_mode_to_str(tracks[i].trigger_mode));
+        cJSON_AddStringToObject(t, "trigger_type", config_trigger_type_to_str(tracks[i].trigger_type));
         cJSON_AddItemToArray(arr, t);
     }
 

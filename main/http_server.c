@@ -1762,7 +1762,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "        h += '<div class=\"track-header\"><span class=\"track-title\">Track ' + (t.track + 1) + ' (' + t.mode + ')</span>';"
         "        h += '<span class=\"' + badgeClass + '\">' + badgeText + '</span></div>';"
         "        h += '<div class=\"track-info\"><div>File: ' + f + '</div><div>Volume: ' + t.volume + '%</div>';"
-        "        if (t.trigger_name) h += '<div>Trigger: ' + t.trigger_name + ' (' + t.trigger_mode + ')</div>';"
+        "        if (t.trigger_name) h += '<div>Trigger: ' + t.trigger_name + ' (' + t.trigger_type + ')</div>';"
         "        h += '</div>';"
         "        h += '<div class=\"volume-bar\"><div class=\"volume-fill\" style=\"width:' + t.volume + '%\"></div></div>';"
         "        h += '</div>';"

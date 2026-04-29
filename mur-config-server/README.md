@@ -209,6 +209,28 @@ The server maintains a persistent registry of discovered devices in `device_regi
 - First and last seen timestamps
 - Device configuration
 
+## Known Bugs
+
+### Stale device cards / duplicate entries after device ID changes
+
+`DeviceRegistry.load_registry()` in [network_wrapper.py](network_wrapper.py)
+does not clear `self.devices` before reloading from `device_map.json`. If a
+device's reported ID changes during a session (for example: SD card briefly
+ejected so the device falls back to its default ID, then put back so it
+re-announces with its real ID), the in-memory dict accumulates an entry under
+each ID it has ever seen — even after `device_map.json` is rewritten with only
+the current ID.
+
+The dashboard then shows duplicate cards for the same physical device (same
+IP, same scene, same tracks) and/or stale cards for IDs that no longer exist
+in the file.
+
+**Workaround**: restart the config server, or click "Delete All" and rescan.
+Both flush the in-memory dict.
+
+**Fix when there's time**: clear `self.devices = {}` at the top of
+`load_registry()` so in-memory state always matches the file.
+
 ## Troubleshooting
 
 ### Devices Not Discovered

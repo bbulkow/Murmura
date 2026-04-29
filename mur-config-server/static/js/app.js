@@ -319,7 +319,7 @@ function createDeviceCard(device) {
             const modeLabel = track.mode === 'trigger' ? '⚡' : '🔁';
             const filename = track.filename || 'No file';
             const triggerLine = (track.mode === 'trigger' && track.trigger_name)
-                ? `<div class="loop-trigger-info"><span class="loop-trigger-name">${track.trigger_name}</span> <span class="loop-trigger-mode">(${track.trigger_mode || 'momentary'})</span></div>`
+                ? `<div class="loop-trigger-info"><span class="loop-trigger-name">${track.trigger_name}</span> <span class="loop-trigger-mode">(${track.trigger_type || 'On/Off'})</span></div>`
                 : '';
             loopInfo += `
                 <div class="loop-item ${activeClass}">

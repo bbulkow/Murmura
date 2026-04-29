@@ -262,7 +262,7 @@ def _probe_one_device(device, probe_timeout):
                         'file': fp,
                         'filename': fp.split('/')[-1] if fp else 'No file',
                         'trigger_name': track.get('trigger_name', ''),
-                        'trigger_mode': track.get('trigger_mode', 'momentary'),
+                        'trigger_type': track.get('trigger_type', 'On/Off'),
                     }
                     loops.append(loop_info)
                     if loop_info['active']:

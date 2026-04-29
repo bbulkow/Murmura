@@ -579,6 +579,18 @@ class MurGateway:
         elif msg_type == "subscribe":
             triggers = msg.get("triggers", [])
             if isinstance(triggers, list):
+                # Treat subscribe as the authoritative set for this device.
+                # The device sends its complete current trigger list on every
+                # config change; if we accumulated, names dropped by the
+                # device would leak forever and force a reboot to clear.
+                for old_name in list(device.triggers):
+                    subs = self.subscriptions.get(old_name)
+                    if subs is not None:
+                        subs.discard(conn_id)
+                        if not subs:
+                            del self.subscriptions[old_name]
+                device.triggers.clear()
+
                 for t in triggers:
                     device.triggers.add(t)
                     if t not in self.subscriptions:

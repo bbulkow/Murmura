@@ -13,7 +13,7 @@
  *   - Sends an "announce" message with this device's ID
  *   - Sends a "subscribe" message with all configured trigger names
  *   - Reads newline-delimited JSON trigger events and dispatches them to the
- *     audio control queue based on per-track trigger_name / trigger_mode config
+ *     audio control queue based on per-track trigger_name / trigger_type config
  *   - Reconnects on disconnect
  *
  * Call after http_server_set_track_manager() so the manager pointer is valid.

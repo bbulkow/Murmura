@@ -17,7 +17,7 @@ typedef struct {
     char file_path[MAX_FILE_PATH_LEN];
     int volume_percent;
     char trigger_name[MAX_TRIGGER_NAME_LEN];
-    trigger_mode_t trigger_mode;
+    trigger_type_t trigger_type;
 } track_config_entry_t;
 
 // Full persisted configuration
@@ -105,8 +105,8 @@ cJSON* config_tracks_to_json(const track_config_entry_t tracks[MAX_TRACKS]);
 // String conversion helpers
 const char* config_mode_to_str(track_mode_t mode);
 track_mode_t config_str_to_mode(const char *s);
-const char* config_trigger_mode_to_str(trigger_mode_t tm);
-trigger_mode_t config_str_to_trigger_mode(const char *s);
+const char* config_trigger_type_to_str(trigger_type_t tt);
+trigger_type_t config_str_to_trigger_type(const char *s);
 const char* config_late_policy_to_str(late_policy_t lp);
 late_policy_t config_str_to_late_policy(const char *s);
 

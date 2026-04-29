@@ -52,7 +52,9 @@ Device                          Mur Gateway
 
 ### subscribe
 
-Registers the device to receive trigger events matching the listed names. Can be sent at any time after `announce`. Sending multiple `subscribe` messages is additive — triggers accumulate.
+Registers the device to receive trigger events matching the listed names. Can be sent at any time after `announce`.
+
+**Authoritative replacement:** Each `subscribe` message is treated as the device's complete current set of trigger subscriptions. The gateway clears any prior subscriptions for the connection, then installs the new list. Devices should always send their full current list — to remove a trigger, omit it from the next `subscribe`. (`unsubscribe` remains supported for explicit removals but is not required when the device's config changes.)
 
 ```json
 {"type": "subscribe", "triggers": ["RedButton.Button_1", "Dial.Number"]}

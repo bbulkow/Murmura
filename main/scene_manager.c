@@ -36,7 +36,7 @@ void scene_config_init_default(scene_config_t *scene) {
         scene->tracks[i].volume_percent = 100;
         scene->tracks[i].file_path[0] = '\0';
         scene->tracks[i].trigger_name[0] = '\0';
-        scene->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+        scene->tracks[i].trigger_type = TRIGGER_TYPE_ONOFF;
     }
 }
 
@@ -249,7 +249,7 @@ esp_err_t scene_manager_init(scene_manager_t **mgr_out) {
             strncpy(sc->tracks[i].file_path, default_files[i],
                     sizeof(sc->tracks[i].file_path) - 1);
             sc->tracks[i].trigger_name[0] = '\0';
-            sc->tracks[i].trigger_mode = TRIGGER_MODE_MOMENTARY;
+            sc->tracks[i].trigger_type = TRIGGER_TYPE_ONOFF;
         }
         mgr->scene_count = 1;
         strncpy(mgr->default_scene, "default", MAX_SCENE_NAME_LEN - 1);
@@ -502,15 +502,15 @@ esp_err_t scene_validate_patch(scene_manager_t *mgr, cJSON *patch_body,
                     return ESP_ERR_INVALID_ARG;
                 }
 
-                // trigger_mode
-                cJSON *tm = cJSON_GetObjectItem(t, "trigger_mode");
-                if (tm) {
-                    if (!cJSON_IsString(tm) ||
-                        (strcmp(tm->valuestring, "momentary") != 0 &&
-                         strcmp(tm->valuestring, "oneshot") != 0)) {
+                // trigger_type
+                cJSON *tt = cJSON_GetObjectItem(t, "trigger_type");
+                if (tt) {
+                    if (!cJSON_IsString(tt) ||
+                        (strcmp(tt->valuestring, "On/Off") != 0 &&
+                         strcmp(tt->valuestring, "OneShot") != 0)) {
                         if (error_msg) {
                             snprintf(error_msg, error_msg_size,
-                                     "Scene '%s' track %d: trigger_mode must be 'momentary' or 'oneshot'",
+                                     "Scene '%s' track %d: trigger_type must be 'On/Off' or 'OneShot'",
                                      name, tidx->valueint);
                         }
                         return ESP_ERR_INVALID_ARG;
@@ -630,12 +630,12 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                     }
                 }
 
-                // trigger_mode
-                cJSON *tm = cJSON_GetObjectItem(t, "trigger_mode");
-                if (cJSON_IsString(tm)) {
-                    entry->trigger_mode = config_str_to_trigger_mode(tm->valuestring);
+                // trigger_type
+                cJSON *tt = cJSON_GetObjectItem(t, "trigger_type");
+                if (cJSON_IsString(tt)) {
+                    entry->trigger_type = config_str_to_trigger_type(tt->valuestring);
                     if (is_active && track_mgr) {
-                        track_mgr->tracks[track].trigger_mode = entry->trigger_mode;
+                        track_mgr->tracks[track].trigger_type = entry->trigger_type;
                     }
                 }
 
@@ -691,7 +691,7 @@ esp_err_t scene_apply_patch(scene_manager_t *mgr, cJSON *patch_body,
                             sizeof(track_mgr->tracks[track].file_path) - 1);
                     strncpy(track_mgr->tracks[track].trigger_name, entry->trigger_name,
                             sizeof(track_mgr->tracks[track].trigger_name) - 1);
-                    track_mgr->tracks[track].trigger_mode = entry->trigger_mode;
+                    track_mgr->tracks[track].trigger_type = entry->trigger_type;
 
                     // Handle active state changes
                     if (cJSON_IsBool(active_json)) {
@@ -761,8 +761,8 @@ cJSON* scene_build_get_response(const scene_manager_t *mgr, const track_manager_
             cJSON_AddStringToObject(t, "file_path", sc->tracks[j].file_path);
             cJSON_AddNumberToObject(t, "volume", sc->tracks[j].volume_percent);
             cJSON_AddStringToObject(t, "trigger_name", sc->tracks[j].trigger_name);
-            cJSON_AddStringToObject(t, "trigger_mode",
-                                    config_trigger_mode_to_str(sc->tracks[j].trigger_mode));
+            cJSON_AddStringToObject(t, "trigger_type",
+                                    config_trigger_type_to_str(sc->tracks[j].trigger_type));
 
             // Add playing state for active scene only
             if (is_active && track_mgr) {
