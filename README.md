@@ -24,24 +24,17 @@ For instructions on operating deployed devices — WiFi setup, file management, 
 
 When switching scenes (via trigger or API), volume briefly jumps to 100% before the new scene's volume takes effect. The scene activation pipeline sends track enable/start messages before the global volume message is applied, causing a momentary full-volume burst.
 
-## Future
+## Synchronized Multi-Device Playback
 
-Three current problems exist.
+Murmura supports **sub-millisecond synchronized playback across multiple devices** using the WiFi MAC's TSF (Timing Synchronization Function) clock — a microsecond-precision timer that the WiFi stack already locks to the AP via beacon timestamps. Every STA on the same AP sees the same TSF, so it works as a free, zero-overhead shared clock with no central time server, no NTP, no PTP, and no extra packets on the wire.
 
-### hardware update
+This is the same architectural pattern used by **Sonos** for multi-room audio and standardized as **Wi-Fi TimeSync** (Wi-Fi Alliance, 2017) on top of **IEEE 802.11mc**. Murmura's implementation is a parallel one in the ESP-IDF / ESP-ADF stack.
 
-The AI Thinker Audiokit board appears to have vanished from all availability, including at Alibaba.
+Measured on production WiFi: cross-device alignment is bounded sub-millisecond, drift-free, and stable across hours of continuous operation. Each MUR also exposes a per-device `playback_offset_us` knob (settable via the fleet UI) so installers can compensate for the difference in air path between speakers — about 2.9 ms per metre — and tune the perceived simultaneity by ear at the listening position.
 
-### Interaction
+A `synchronized: true` flag on a scene enforces that the scene can only be entered through the cross-device-synchronized trigger path; the device refuses sideband activation paths (admin REST, periodic-poll backstop) for synchronized scenes, so a partial trigger drop leaves devices on the previous scene rather than half-converted to the new one.
 
-It is desired to press a button and have some sound.
-
-### Synchronization
-
-It would be great to have multiple controllers act close enough in sync that a multi-speaker effect can be created, but wirelessly.
-
-It is believed that using the timing information in Wifi beacon packets, even without any form of central time server, tight
-synchronization could be attained.
+See [SYNC_DESIGN.md](SYNC_DESIGN.md) for the full design — prior art, the validation procedure, the measurement results, the on-device scheduler, AP-reboot handling, and the end-to-end protocol.
 
 ## How It Works
 
@@ -60,6 +53,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **HTTP API** for full remote control (playback, volume, files, configuration, WiFi, device identity, reboot)
 - **Scenes** -- named playback configurations ("day", "night", "show") with instant switching, default boot scene, full config per scene
 - **Trigger-based scene switching** -- discrete triggers (value = scene name) and per-scene button triggers for hands-free scene changes via the Haven trigger system
+- **Sub-millisecond synchronized playback** across multiple devices, using the WiFi MAC's TSF clock — same architectural pattern as Sonos / Wi-Fi TimeSync (802.11mc), implemented natively on the ESP-ADF stack with no central time server. Includes per-device speaker-placement offset tuning and `synchronized` scene flag for atomic fleet-wide scene changes. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
 - **Configuration persistence** -- scene configs saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
@@ -76,9 +70,9 @@ The current hardware platform is the **AI Thinker ESP32 Audio Kit (Rev B)**:
 - 3.5mm headphone/line output
 - Onboard buttons and LEDs
 
-**Note:** The AI Thinker board is no longer available through any channel. It appears to be discontinued -- possibly due to difficulty of use and its large form factor. This codebase is built exclusively for it, and the project currently relies on approximately 40 units in stock. A new hardware platform will be needed for future deployments.
+The AI Thinker boards are still available on Amazon and are expected to settle back near $10 each as tariffs decrease.
 
-### Potential Replacement Boards
+### Alternative Boards
 
 - **Espressif LyraT Mini** -- in stock and produced by Espressif, ~$20 on Digi-Key
 - **Waveshare ESP32-S3-Audio** -- ~$15, very similar form factor to the AI Thinker
@@ -163,9 +157,6 @@ Murmura provides robust fleet management, through two components.
 There are a set of python commands which can be used without UI to identify boards and name them, and also to do
 the commands in the fleet management web server. They were built before, and will be preferred in some cases.
 
-However, given that hardware is no longer available, and the initial 40 are already in cases appropriately labeled,
-it's unlikely that they should be used again.
-
 ### Running the fleet management server
 
 The mur-config-server provides a web dashboard for managing all Murmura devices on the network. It is designed to run on a Raspberry Pi deployed alongside the installation.
@@ -220,9 +211,17 @@ Each device exposes a JSON API on port 80. Key endpoints:
 
 See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response examples.
 
+## Future
+
+- **Audio ducking** — pull back the volume on other tracks while a triggered sample plays, so the cued sound cuts through cleanly. Closer to a near-term TODO than speculation; the per-track and global volume infrastructure is already in place.
+- **Direct hardware interaction** — wired buttons or capacitive touch on the Mur itself for local triggers that don't depend on WiFi or the trigger-server pathway. Useful as both a primary interaction model for installations without networked control and a fallback when the network is degraded.
+- **Human sensing (PIR)** — onboard passive-infrared motion detection so a Mur can react to viewer presence without an external sensor network. Closes the loop for installations that don't have a separate sensor fleet.
+- **Alternative hardware platforms** — smaller boards (LyraT Mini, Sonatino) for tight enclosures and higher-amplifier-power boards for larger spaces. The current AI Thinker board is one form factor and one amplifier class; the deployment envelope wants more.
+
 ## Documentation
 
 - [HTTP_API.md](HTTP_API.md) -- complete HTTP API reference
+- [SYNC_DESIGN.md](SYNC_DESIGN.md) -- sub-millisecond multi-device synchronization (TSF, prior art, measurement, validation procedure)
 - [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
 - [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions
 - [mur-config-server/README.md](mur-config-server/README.md) -- fleet management server documentation
