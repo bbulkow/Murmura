@@ -17,7 +17,6 @@
       <div class="row">
         <button id="btn-add-trigger" class="btn primary">+ Add abstract trigger</button>
         <button id="btn-reload" class="btn">Reload from disk</button>
-        <span id="save-status" class="save-status"></span>
       </div>
     </section>
 
@@ -37,7 +36,6 @@
     <div class="trigger-card">
       <div class="trigger-header">
         <input class="trigger-name" type="text" placeholder="AbstractTriggerName" />
-        <button class="btn-icon delete-card" title="Delete this abstract trigger">&times;</button>
       </div>
       <div class="trigger-meta">
         <label>
@@ -47,6 +45,11 @@
       </div>
       <div class="mappings"></div>
       <button class="btn add-mapping">+ Add mapping</button>
+      <div class="card-footer">
+        <span class="card-feedback"></span>
+        <button class="btn save-card" disabled>Save</button>
+        <button class="btn destructive delete-card">Delete</button>
+      </div>
     </div>
   </template>
 

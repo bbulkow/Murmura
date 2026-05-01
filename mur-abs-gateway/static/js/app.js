@@ -1,9 +1,10 @@
 "use strict";
 
-// State held in-memory while editing. Saving converts back to the server's
-// JSON shape and POSTs the whole config in one call.
+// Each card holds {name, associated_device_id, mappings: [{upstream, file_path}]}
+// plus a hidden _snapshot string. _snapshot === null marks an unsaved (new)
+// card; otherwise it's the JSON.stringify of the data fields at last save.
+// A card is "dirty" when its current data doesn't match _snapshot.
 const state = {
-  // [{name, associated_device_id, mappings: [{upstream, file_path}]}]
   cards: [],
   upstreamTriggers: [],   // [{name, type}]
   devices: [],            // [{id, peer_ip, ...}]
@@ -13,23 +14,29 @@ const state = {
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-function setSaveStatus(text, kind) {
-  const el = $("#save-status");
-  el.textContent = text || "";
-  el.className = "save-status" + (kind ? " " + kind : "");
+function cardData(c) {
+  return JSON.stringify({
+    name: c.name,
+    associated_device_id: c.associated_device_id,
+    mappings: c.mappings,
+  });
+}
+function isDirty(c) {
+  return c._snapshot !== cardData(c);
 }
 
 async function fetchJson(url, opts) {
   const resp = await fetch(url, opts);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    let msg = text;
+    try { msg = (JSON.parse(text).error) || text; } catch {}
+    throw new Error(`${resp.status}: ${msg}`);
   }
   return resp.json();
 }
 
 async function loadAll() {
-  setSaveStatus("Loading...");
   try {
     const [cfg, devicesResp, triggersResp] = await Promise.all([
       fetchJson("/api/abstract-triggers"),
@@ -39,27 +46,29 @@ async function loadAll() {
     state.devices = devicesResp.devices || [];
     state.upstreamTriggers = triggersResp.triggers || [];
     state.cards = Object.entries(cfg.abstract_triggers || {})
-      .map(([name, c]) => ({
-        name,
-        associated_device_id: c.associated_device_id || "",
-        mappings: (c.mappings || []).map(m => ({
-          upstream: m.upstream,
-          file_path: m.file_path,
-        })),
-      }))
+      .map(([name, c]) => {
+        const card = {
+          name,
+          associated_device_id: c.associated_device_id || "",
+          mappings: (c.mappings || []).map(m => ({
+            upstream: m.upstream,
+            file_path: m.file_path,
+          })),
+        };
+        card._snapshot = cardData(card);
+        return card;
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Pre-fetch files for any associated devices we'll render.
+    // Pre-fetch files for any associated devices so file dropdowns have options.
     const deviceIds = Array.from(new Set(state.cards
       .map(c => c.associated_device_id)
       .filter(Boolean)));
     await Promise.all(deviceIds.map(id => loadFilesForDevice(id).catch(() => {})));
 
     renderCards();
-    setSaveStatus(`Loaded ${state.cards.length} abstract trigger(s)`, "ok");
-    setTimeout(() => setSaveStatus(""), 2000);
   } catch (e) {
-    setSaveStatus(`Load failed: ${e.message}`, "err");
+    console.error("loadAll failed", e);
   }
 }
 
@@ -78,7 +87,6 @@ async function loadFilesForDevice(deviceId) {
 function renderCards() {
   const grid = $("#trigger-cards");
   const hint = $("#empty-hint");
-  // Wipe everything except the empty hint placeholder.
   $$(".trigger-card", grid).forEach(c => c.remove());
 
   if (state.cards.length === 0) {
@@ -87,27 +95,21 @@ function renderCards() {
   }
   hint.style.display = "none";
 
-  state.cards.forEach((card, idx) => {
-    const node = renderCard(card, idx);
+  state.cards.forEach((card) => {
+    const node = renderCard(card);
     grid.appendChild(node);
   });
 }
 
-function renderCard(card, idx) {
+function renderCard(card) {
   const tpl = $("#card-template").content.cloneNode(true);
   const root = tpl.querySelector(".trigger-card");
-  root.dataset.idx = String(idx);
 
   const nameInput = $(".trigger-name", root);
   nameInput.value = card.name;
-  nameInput.addEventListener("change", () => {
+  nameInput.addEventListener("input", () => {
     card.name = nameInput.value.trim();
-  });
-
-  $(".delete-card", root).addEventListener("click", () => {
-    if (!confirm(`Delete abstract trigger "${card.name}"?`)) return;
-    state.cards.splice(idx, 1);
-    renderCards();
+    refreshSaveButton(root, card);
   });
 
   const deviceSel = $(".associated-device", root);
@@ -116,38 +118,51 @@ function renderCard(card, idx) {
     card.associated_device_id = deviceSel.value;
     await loadFilesForDevice(card.associated_device_id).catch(() => {});
     refreshFileSelects(root, card);
+    refreshSaveButton(root, card);
   });
 
   const mappingsEl = $(".mappings", root);
-  card.mappings.forEach((m, mi) => {
-    mappingsEl.appendChild(renderMapping(card, m, mi));
+  card.mappings.forEach((m) => {
+    mappingsEl.appendChild(renderMapping(root, card, m));
   });
 
   $(".add-mapping", root).addEventListener("click", () => {
-    card.mappings.push({ upstream: "", file_path: "" });
-    mappingsEl.appendChild(renderMapping(card, card.mappings[card.mappings.length - 1], card.mappings.length - 1));
+    const m = { upstream: "", file_path: "" };
+    card.mappings.push(m);
+    mappingsEl.appendChild(renderMapping(root, card, m));
+    refreshSaveButton(root, card);
   });
 
+  $(".save-card", root).addEventListener("click", () => saveCard(root, card));
+  $(".delete-card", root).addEventListener("click", () => deleteCard(root, card));
+
+  refreshSaveButton(root, card);
   return root;
 }
 
-function renderMapping(card, mapping, mi) {
+function renderMapping(cardEl, card, mapping) {
   const tpl = $("#mapping-template").content.cloneNode(true);
   const row = tpl.querySelector(".mapping-row");
-  row.dataset.mi = String(mi);
 
   const upSel = $(".upstream-select", row);
   populateUpstreamSelect(upSel, mapping.upstream);
-  upSel.addEventListener("change", () => { mapping.upstream = upSel.value; });
+  upSel.addEventListener("change", () => {
+    mapping.upstream = upSel.value;
+    refreshSaveButton(cardEl, card);
+  });
 
   const fileSel = $(".file-select", row);
   populateFileSelect(fileSel, card.associated_device_id, mapping.file_path);
-  fileSel.addEventListener("change", () => { mapping.file_path = fileSel.value; });
+  fileSel.addEventListener("change", () => {
+    mapping.file_path = fileSel.value;
+    refreshSaveButton(cardEl, card);
+  });
 
   $(".delete-mapping", row).addEventListener("click", () => {
     const idx = card.mappings.indexOf(mapping);
     if (idx >= 0) card.mappings.splice(idx, 1);
     row.remove();
+    refreshSaveButton(cardEl, card);
   });
 
   return row;
@@ -167,7 +182,6 @@ function populateDeviceSelect(sel, currentId) {
     opt.textContent = `${d.id}  (${d.peer_ip || "?"})`;
     sel.appendChild(opt);
   });
-  // Preserve a previously-saved id even if device is offline.
   if (currentId && !known.has(currentId)) {
     const opt = document.createElement("option");
     opt.value = currentId;
@@ -235,66 +249,114 @@ function refreshFileSelects(cardEl, card) {
   });
 }
 
-async function saveAll() {
-  // Validate names: non-empty, unique.
-  const names = state.cards.map(c => c.name.trim()).filter(Boolean);
-  if (names.length !== state.cards.length) {
-    setSaveStatus("All abstract triggers need a name", "err");
-    return;
+function refreshSaveButton(cardEl, card) {
+  const btn = $(".save-card", cardEl);
+  if (!btn) return;
+  if (isDirty(card)) {
+    btn.disabled = false;
+    btn.classList.add("primary");
+  } else {
+    btn.disabled = true;
+    btn.classList.remove("primary");
   }
-  if (new Set(names).size !== names.length) {
-    setSaveStatus("Abstract trigger names must be unique", "err");
-    return;
-  }
-  // Validate mappings: each must have non-empty upstream and file_path,
-  // upstream names unique within the card.
+}
+
+function showFeedback(cardEl, text, kind) {
+  const fb = $(".card-feedback", cardEl);
+  fb.textContent = text || "";
+  fb.className = "card-feedback" + (kind ? " " + kind : "");
+}
+
+function validateConfig() {
+  const names = state.cards.map(c => c.name.trim());
+  if (names.some(n => !n)) return "All abstract triggers need a name";
+  if (new Set(names).size !== names.length) return "Abstract trigger names must be unique";
   for (const c of state.cards) {
     const upstreams = c.mappings.map(m => m.upstream.trim());
-    if (upstreams.some(u => !u)) {
-      setSaveStatus(`'${c.name}': all mappings need an upstream trigger`, "err");
-      return;
-    }
-    if (c.mappings.some(m => !m.file_path)) {
-      setSaveStatus(`'${c.name}': all mappings need a file`, "err");
-      return;
-    }
-    if (new Set(upstreams).size !== upstreams.length) {
-      setSaveStatus(`'${c.name}': duplicate upstream trigger`, "err");
-      return;
-    }
+    if (upstreams.some(u => !u)) return `'${c.name}': all mappings need an upstream trigger`;
+    if (c.mappings.some(m => !m.file_path)) return `'${c.name}': all mappings need a file`;
+    if (new Set(upstreams).size !== upstreams.length) return `'${c.name}': duplicate upstream trigger`;
   }
+  return null;
+}
 
-  const body = {
-    version: 1,
-    abstract_triggers: {},
-  };
+async function postConfig() {
+  const body = { version: 1, abstract_triggers: {} };
   for (const c of state.cards) {
     body.abstract_triggers[c.name] = {
       associated_device_id: c.associated_device_id || null,
       mappings: c.mappings.map(m => ({ upstream: m.upstream, file_path: m.file_path })),
     };
   }
+  await fetchJson("/api/abstract-triggers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
 
-  setSaveStatus("Saving...");
+function refreshAllSaveButtons() {
+  const cardEls = $$(".trigger-card");
+  state.cards.forEach((c, i) => {
+    if (cardEls[i]) refreshSaveButton(cardEls[i], c);
+  });
+}
+
+async function saveCard(cardEl, card) {
+  const err = validateConfig();
+  if (err) {
+    showFeedback(cardEl, err, "err");
+    return;
+  }
+  showFeedback(cardEl, "Saving...");
   try {
-    await fetchJson("/api/abstract-triggers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    setSaveStatus("Saved", "ok");
-    setTimeout(() => setSaveStatus(""), 1500);
+    await postConfig();
+    state.cards.forEach(c => { c._snapshot = cardData(c); });
+    refreshAllSaveButtons();
+    showFeedback(cardEl, "Saved ✓", "ok");
+    setTimeout(() => {
+      // Only clear our own message if no newer message replaced it.
+      const fb = $(".card-feedback", cardEl);
+      if (fb && fb.textContent === "Saved ✓") showFeedback(cardEl, "");
+    }, 2000);
   } catch (e) {
-    setSaveStatus(`Save failed: ${e.message}`, "err");
+    showFeedback(cardEl, `Save failed: ${e.message}`, "err");
+  }
+}
+
+async function deleteCard(cardEl, card) {
+  const idx = state.cards.indexOf(card);
+  if (idx < 0) return;
+
+  // New, never-saved cards just disappear locally — no POST needed.
+  if (card._snapshot === null) {
+    state.cards.splice(idx, 1);
+    cardEl.remove();
+    if (state.cards.length === 0) $("#empty-hint").style.display = "";
+    return;
+  }
+
+  // Saved cards: remove and POST the rest.
+  state.cards.splice(idx, 1);
+  showFeedback(cardEl, "Deleting...");
+  try {
+    await postConfig();
+    cardEl.remove();
+    if (state.cards.length === 0) $("#empty-hint").style.display = "";
+  } catch (e) {
+    state.cards.splice(idx, 0, card);
+    showFeedback(cardEl, `Delete failed: ${e.message}`, "err");
   }
 }
 
 function addNewCard() {
-  state.cards.unshift({
+  const card = {
     name: "",
     associated_device_id: "",
     mappings: [],
-  });
+    _snapshot: null,   // null = unsaved/new
+  };
+  state.cards.unshift(card);
   renderCards();
 }
 
@@ -319,8 +381,6 @@ function renderLogEntry(entry) {
   row.appendChild(text);
 
   log.prepend(row);
-
-  // Cap displayed entries — keep last ~50.
   while (log.childElementCount > 50) {
     log.lastElementChild.remove();
   }
@@ -336,7 +396,6 @@ function formatEntry(entry) {
   if (entry.kind === "subscribe") {
     return `${entry.device_id} (${entry.peer_ip}) → [${(entry.triggers || []).join(", ")}]`;
   }
-  // fire
   const upstream = entry.upstream || "?";
   const abstract = entry.abstract ? `→ ${entry.abstract}` : "(passthrough)";
   const file = entry.file_path ? ` file=${entry.file_path}` : "";
@@ -359,7 +418,6 @@ function startLogStream() {
     };
     es.onerror = () => {
       es.close();
-      // Reconnect after a short delay.
       setTimeout(open, 2500);
     };
   }
@@ -369,18 +427,5 @@ function startLogStream() {
 document.addEventListener("DOMContentLoaded", () => {
   $("#btn-add-trigger").addEventListener("click", addNewCard);
   $("#btn-reload").addEventListener("click", loadAll);
-  // Save on Cmd/Ctrl-S.
-  document.addEventListener("keydown", (ev) => {
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
-      ev.preventDefault();
-      saveAll();
-    }
-  });
-  // Auto-save when leaving an input/select after edits.
-  document.addEventListener("change", (ev) => {
-    if (ev.target.matches(".trigger-name, .associated-device, .upstream-select, .file-select")) {
-      saveAll();
-    }
-  });
   loadAll().then(startLogStream);
 });
