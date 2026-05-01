@@ -397,16 +397,19 @@ function renderLogEntry(entry) {
 
 function classifyEntry(entry) {
   if (entry.kind === "subscribe") return "subscribe";
-  // file_change ok or skipped_cache → informational; failures → bad
   if (entry.kind === "file_change") {
     if (entry.status === "ok" || entry.status === "skipped_cache") return "fire-info";
     return "fire-bad";
   }
   if (entry.status === "ok") return "fire-ok";
-  // "no_subscribers" and "dropped_off" are informational, not errors —
-  // they mean we received the upstream event and there was simply nothing
-  // for us to forward. Use the neutral colour.
-  if (entry.status === "no_subscribers" || entry.status === "dropped_off") return "fire-info";
+  // Informational, not errors — we received the upstream event but had
+  // nothing to forward, by design.
+  //   unmapped       — no abstract mapping AND no device subscribed
+  //   no_subscribers — an abstract trigger fired but no device subscribed
+  //   dropped_off    — Off event dropped by On/Off → OneShot conversion
+  if (entry.status === "unmapped" ||
+      entry.status === "no_subscribers" ||
+      entry.status === "dropped_off") return "fire-info";
   return "fire-bad";
 }
 
@@ -425,11 +428,19 @@ function formatEntry(entry) {
   // fire
   const upstream = entry.upstream || "?";
   const value = (entry.value !== undefined && entry.value !== null) ? `=${entry.value}` : "";
-  const abstract = entry.abstract ? ` → ${entry.abstract}` : " (passthrough)";
+  // Only call out "passthrough" when something actually passed through;
+  // an unmapped or dropped event didn't pass anywhere, so don't pretend
+  // it did.
+  let routing = "";
+  if (entry.abstract) {
+    routing = ` → ${entry.abstract}`;
+  } else if (entry.devices && entry.devices.length) {
+    routing = " (passthrough)";
+  }
   const scene = entry.scene ? ` scene=${entry.scene}` : "";
   const file = entry.file_path ? ` file=${entry.file_path}` : "";
   const devices = (entry.devices && entry.devices.length) ? `  devices=[${entry.devices.join(",")}]` : "";
-  return `${upstream}${value}${abstract}${scene}${file}${devices}  ${entry.status}`;
+  return `${upstream}${value}${routing}${scene}${file}${devices}  ${entry.status}`;
 }
 
 function formatTs(ts) {

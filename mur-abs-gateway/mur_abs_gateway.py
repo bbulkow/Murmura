@@ -668,10 +668,13 @@ class MurAbsGateway:
         conn_ids = self.subscriptions.get(trigger_name, set())
         if not conn_ids:
             if not abstract_names:
-                logger.info("No subscribers for trigger '%s'", trigger_name)
-                # Surface unmapped/no-subscriber events to the UI log too —
-                # operators want to see every upstream event, not just the
-                # ones we forwarded.
+                # The trigger is genuinely unrecognized — no abstract mapping
+                # and no device subscribed to the raw name. Status "unmapped"
+                # distinguishes this from the abstract-with-no-subs case
+                # below (which is "no_subscribers" — abstract is configured
+                # but nobody's listening to it yet).
+                logger.info("Unmapped trigger '%s' (no abstract, no direct subscribers)",
+                            trigger_name)
                 self._log_event({
                     "ts": time.time(),
                     "kind": "fire",
@@ -679,7 +682,7 @@ class MurAbsGateway:
                     "abstract": None,
                     "file_path": None,
                     "devices": [],
-                    "status": "no_subscribers",
+                    "status": "unmapped",
                     "value": log_value,
                 })
             return
