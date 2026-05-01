@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mur Abs Gateway</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Mur Abs Gateway</h1>
+      <p class="subtitle">Abstract trigger configuration &amp; live event log</p>
+    </header>
+
+    <section class="controls">
+      <div class="row">
+        <button id="btn-add-trigger" class="btn primary">+ Add abstract trigger</button>
+        <button id="btn-reload" class="btn">Reload from disk</button>
+        <span id="save-status" class="save-status"></span>
+      </div>
+    </section>
+
+    <main>
+      <div id="trigger-cards" class="card-grid">
+        <p class="empty-hint" id="empty-hint">No abstract triggers defined yet. Click <em>+ Add abstract trigger</em> to create one.</p>
+      </div>
+    </main>
+
+    <section class="log-panel">
+      <h2>Recent events</h2>
+      <div id="event-log" class="event-log"></div>
+    </section>
+  </div>
+
+  <template id="card-template">
+    <div class="trigger-card">
+      <div class="trigger-header">
+        <input class="trigger-name" type="text" placeholder="AbstractTriggerName" />
+        <button class="btn-icon delete-card" title="Delete this abstract trigger">&times;</button>
+      </div>
+      <div class="trigger-meta">
+        <label>
+          <span>Associated device</span>
+          <select class="associated-device"></select>
+        </label>
+      </div>
+      <div class="mappings"></div>
+      <button class="btn add-mapping">+ Add mapping</button>
+    </div>
+  </template>
+
+  <template id="mapping-template">
+    <div class="mapping-row">
+      <select class="upstream-select"></select>
+      <select class="file-select"></select>
+      <button class="btn-icon delete-mapping" title="Remove mapping">&times;</button>
+    </div>
+  </template>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

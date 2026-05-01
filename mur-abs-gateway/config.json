@@ -1,0 +1,10 @@
+{
+  "fanout_delay_ms": 2500,
+  "tsf_query_interval_s": 5,
+  "tsf_query_devices_count": 3,
+  "tsf_jitter_warn_us": 1000,
+  "tsf_map_max_age_s": 120,
+  "abstract_track_index": 2,
+  "ui_port": 5101,
+  "file_cache_ttl_s": 600
+}
