@@ -309,8 +309,38 @@ header h1 {
     box-shadow: 0 8px 12px rgba(0, 0, 0, 0.15);
 }
 
+.device-card.stale {
+    /* No fade — yellow border alone carries the warning. The card stays
+       fully readable so users don't mistake stale-but-fine for offline. */
+    border-left: 3px solid #ffc107;
+}
+
 .device-card.offline {
-    opacity: 0.6;
+    opacity: 0.55;
+    border-left: 3px solid #dc3545;
+}
+
+.device-card.unknown {
+    opacity: 0.7;
+    border-left: 3px solid #6c757d;
+}
+
+.device-status.stale {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.device-status.unknown {
+    background: #e2e3e5;
+    color: #383d41;
+}
+
+.card-age {
+    font-size: 11px;
+    color: #888;
+    margin-left: 6px;
+    font-weight: normal;
+    white-space: nowrap;
 }
 
 .device-card .device-header {

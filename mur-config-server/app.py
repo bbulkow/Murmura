@@ -7,7 +7,8 @@ import json
 import time
 import threading
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
@@ -41,20 +42,83 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 network_config = NetworkConfig()
 registry = DeviceRegistry()
 
-# Probe grace window state (in-memory, ephemeral across server restarts).
-# Keyed by the same device_id the registry uses (id || ip_address). A single
-# missed probe does not flip the UI to offline if the device answered
-# successfully within GRACE_WINDOW_SEC and we have fewer than
-# GRACE_MAX_FAILURES misses in a row. Hides single-probe blips on a marginal
-# Wi-Fi link without delaying real outage detection.
-_probe_state = {}
-_probe_state_lock = threading.Lock()
-GRACE_WINDOW_SEC = 30
-GRACE_MAX_FAILURES = 2
+# ---------------------------------------------------------------------------
+# Per-device serialization
+#
+# The ESP32 has a tiny resource budget; opening a second TCP connection to a
+# device while another is in flight causes drops and contention. Every code
+# path that talks to device X must hold _device_locks[X]. Background probe
+# uses non-blocking acquire (skip the slot if busy); user-initiated paths
+# block briefly with a timeout.
+# ---------------------------------------------------------------------------
+_device_locks_meta_lock = threading.Lock()
+_device_locks = {}
+
+class DeviceBusy(Exception):
+    pass
+
+def _ensure_device_lock(device_id):
+    lock = _device_locks.get(device_id)
+    if lock is None:
+        with _device_locks_meta_lock:
+            lock = _device_locks.get(device_id)
+            if lock is None:
+                lock = threading.Lock()
+                _device_locks[device_id] = lock
+    return lock
+
+@contextmanager
+def device_lock(device_id, *, blocking=True, timeout=3.0):
+    lock = _ensure_device_lock(device_id)
+    if blocking:
+        acquired = lock.acquire(timeout=timeout)
+    else:
+        acquired = lock.acquire(blocking=False)
+    if not acquired:
+        raise DeviceBusy(device_id)
+    try:
+        yield
+    finally:
+        lock.release()
+
+# ---------------------------------------------------------------------------
+# Device cache
+#
+# Last-known UI dict for each device plus freshness/health metadata. The cache
+# is the single source of truth for GET /api/devices — failed probes never
+# zero out card content, only freshness. Detail-page proxies and write
+# actions also feed the cache on success so it stays current without extra
+# probes.
+# _device_cache[device_id] = {
+#   'formatted': dict | None,         # last good UI dict (preserved across failures)
+#   'last_ok_at': float (epoch),
+#   'last_attempt_at': float (epoch),
+#   'consecutive_failures': int,
+#   'metadata_age_cycles': int,       # cycles since last /api/device fetch
+# }
+# ---------------------------------------------------------------------------
+_device_cache_lock = threading.Lock()
+_device_cache = {}
+
+# Sliding window of recent probe outcomes for adaptive global cycle stretch.
+_probe_outcomes = deque(maxlen=30)
+_probe_outcomes_lock = threading.Lock()
+_global_stretch_factor = 1
+_global_stretch_low_streak = 0
+
+# Tunables (some loaded from network_config; these are floors / behaviour).
+OFFLINE_FAILURES_THRESHOLD = 5
+DEVICE_BACKOFF_THRESHOLD = 3
+DEVICE_BACKOFF_MAX_SEC = 60
 
 # Background scanning thread
 scan_thread = None
 scan_active = False
+
+# Probe loop
+_probe_loop_thread = None
+_probe_loop_active = False
+_rr_index = 0
 
 def background_scan():
     """Background thread for continuous scanning."""
@@ -159,185 +223,415 @@ def network_configuration():
             network_config.config['mur_gateway_ip'] = data['mur_gateway_ip']
         if 'mur_gateway_port' in data:
             network_config.config['mur_gateway_port'] = data['mur_gateway_port']
+        if 'cycle_target_sec' in data:
+            network_config.config['cycle_target_sec'] = float(data['cycle_target_sec'])
+        if 'metadata_refetch_every' in data:
+            network_config.config['metadata_refetch_every'] = max(1, int(data['metadata_refetch_every']))
+        if 'stale_window_sec' in data:
+            network_config.config['stale_window_sec'] = float(data['stale_window_sec'])
 
         network_config.save_config()
-        
+
         return jsonify({'status': 'success', 'config': network_config.config})
 
-def _probe_one_device(device, probe_timeout):
-    """Probe a single device's /api/device and (if reachable) /api/scenes.
-
-    Returns (formatted, device, is_actually_online) where formatted is the
-    UI dict, device is the (possibly mutated) registry record, and
-    is_actually_online is the raw network outcome before any grace window.
-    """
-    formatted = {
-        'id': device.get('id', device.get('ip_address', 'unknown')),
-        'ip': device.get('ip_address', 'unknown'),
-        'status': 'online' if device.get('online', False) else 'offline',
-        'playing': False,
-        'volume': 0,
-        'ssid': device.get('wifi_ssid', 'Unknown'),
-        'mac_address': device.get('mac_address', 'Unknown'),
-        'firmware_version': device.get('firmware_version', 'Unknown'),
-        'last_seen': device.get('last_seen', ''),
-        'loops': [],
-        'global_volume': 0,
-        'active_loops': 0,
-    }
-
-    ip_address = device.get('ip_address')
-    is_actually_online = False
-
-    logger.info(f"[PROBE START] Device: {formatted['id']} | IP: {ip_address} | Timeout: {probe_timeout}s")
-    probe_start_time = time.time()
-
+def _fetch_scene(ip_address, probe_timeout):
+    """GET /api/scenes. Returns the parsed JSON dict on success, None on failure."""
     try:
-        status_response = requests.get(f"http://{ip_address}/api/device", timeout=probe_timeout)
-        probe_elapsed = time.time() - probe_start_time
+        response = requests.get(f"http://{ip_address}/api/scenes", timeout=probe_timeout)
+        if response.status_code == 200:
+            return response.json()
+    except requests.RequestException:
+        pass
+    return None
 
-        if status_response.status_code == 200:
-            is_actually_online = True
-            status_data = status_response.json()
 
-            mac_address = status_data.get('mac_address')
-            if mac_address:
-                device['mac_address'] = mac_address
-                formatted['mac_address'] = mac_address
-                logger.debug(f"MAC Address confirmed: {mac_address}")
+def _fetch_metadata(ip_address, probe_timeout):
+    """GET /api/device. Returns the parsed JSON dict on success, None on failure."""
+    try:
+        response = requests.get(f"http://{ip_address}/api/device", timeout=probe_timeout)
+        if response.status_code == 200:
+            return response.json()
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _build_formatted(device, scene_data=None, metadata=None, prior=None):
+    """Build the UI 'formatted' dict from whatever fresh data we have, falling
+    back to `prior` (the previously cached formatted dict) for fields we
+    didn't fetch this cycle. This is what preserves card detail through
+    failed probes."""
+    if prior is not None:
+        base = dict(prior)
+    else:
+        base = {
+            'id': device.get('id') or device.get('ip_address') or 'unknown',
+            'ip': device.get('ip_address', 'unknown'),
+            'status': 'online',
+            'playing': False,
+            'volume': 0,
+            'ssid': device.get('wifi_ssid', 'Unknown'),
+            'mac_address': device.get('mac_address', 'Unknown'),
+            'firmware_version': device.get('firmware_version', 'Unknown'),
+            'last_seen': device.get('last_seen', ''),
+            'loops': [],
+            'global_volume': 0,
+            'active_loops': 0,
+            'active_scene': '',
+            'scenes': {},
+            'mur_gateway_ip': '',
+            'mur_gateway_port': 4000,
+        }
+
+    # Always keep the IP fresh from the registry (it can change after DHCP).
+    base['ip'] = device.get('ip_address', base.get('ip', 'unknown'))
+
+    if metadata is not None:
+        base['firmware_version'] = metadata.get('firmware_version', base['firmware_version'])
+        base['ssid'] = metadata.get('wifi_ssid', base.get('ssid', 'Unknown'))
+        base['mur_gateway_ip'] = metadata.get('mur_gateway_ip', base.get('mur_gateway_ip', ''))
+        base['mur_gateway_port'] = metadata.get('mur_gateway_port', base.get('mur_gateway_port', 4000))
+        if metadata.get('mac_address'):
+            base['mac_address'] = metadata['mac_address']
+        if metadata.get('id'):
+            base['id'] = metadata['id']
+
+    if scene_data is not None:
+        active_scene = scene_data.get('active_scene', '')
+        scene = scene_data.get('scenes', {}).get(active_scene, {})
+        base['active_scene'] = active_scene
+        base['scenes'] = scene_data.get('scenes', {})
+        base['global_volume'] = scene.get('global_volume', 0)
+        base['volume'] = base['global_volume']
+
+        loops = []
+        active_count = 0
+        for track in scene.get('tracks', []):
+            fp = track.get('file_path', '') or track.get('file', '')
+            loop_info = {
+                'track': track.get('track', 0),
+                'active': track.get('active', False),
+                'mode': track.get('mode', 'loop'),
+                'playing': track.get('playing', False),
+                'volume': track.get('volume', 0),
+                'file': fp,
+                'filename': fp.split('/')[-1] if fp else 'No file',
+                'trigger_name': track.get('trigger_name', ''),
+                'trigger_type': track.get('trigger_type', 'On/Off'),
+            }
+            loops.append(loop_info)
+            if loop_info['active']:
+                active_count += 1
+        base['loops'] = loops
+        base['active_loops'] = active_count
+        base['playing'] = active_count > 0
+
+    return base
+
+
+def _feed_cache(device_id, *, scene_data=None, metadata=None):
+    """Update the device cache from a successful response on any code path.
+    Called from the probe loop AND from detail-page proxies, batch ops, etc.
+    so the cache stays fresh without burning extra probe slots."""
+    device = registry.get_device(device_id)
+    if not device:
+        return
+    with _device_cache_lock:
+        entry = _device_cache.setdefault(device_id, {
+            'formatted': None,
+            'last_ok_at': 0.0,
+            'last_attempt_at': 0.0,
+            'consecutive_failures': 0,
+            'metadata_age_cycles': 9999,
+        })
+        prior = entry.get('formatted')
+        formatted = _build_formatted(device, scene_data=scene_data, metadata=metadata, prior=prior)
+        entry['formatted'] = formatted
+        entry['last_ok_at'] = time.time()
+        entry['last_attempt_at'] = time.time()
+        entry['consecutive_failures'] = 0
+        if metadata is not None:
+            entry['metadata_age_cycles'] = 0
+
+
+def _record_cache_failure(device_id):
+    """Bump consecutive_failures without zeroing cached card content."""
+    with _device_cache_lock:
+        entry = _device_cache.setdefault(device_id, {
+            'formatted': None,
+            'last_ok_at': 0.0,
+            'last_attempt_at': 0.0,
+            'consecutive_failures': 0,
+            'metadata_age_cycles': 9999,
+        })
+        entry['last_attempt_at'] = time.time()
+        entry['consecutive_failures'] += 1
+
+
+def _record_probe_outcome(success):
+    """Sliding-window failure rate drives the global cycle stretch.
+    Doubles the effective cycle period when the AP is congested, halves it
+    back as conditions recover."""
+    global _global_stretch_factor, _global_stretch_low_streak
+    with _probe_outcomes_lock:
+        _probe_outcomes.append(1 if success else 0)
+        if len(_probe_outcomes) >= 10:
+            failure_rate = 1.0 - (sum(_probe_outcomes) / len(_probe_outcomes))
+            if failure_rate >= 0.5 and _global_stretch_factor < 4:
+                _global_stretch_factor *= 2
+                _global_stretch_low_streak = 0
+                logger.warning(
+                    f"[CYCLE STRETCH] Failure rate {failure_rate:.0%}, "
+                    f"stretching cycle x{_global_stretch_factor}"
+                )
+            elif failure_rate < 0.2:
+                _global_stretch_low_streak += 1
+                if _global_stretch_low_streak >= 2 and _global_stretch_factor > 1:
+                    _global_stretch_factor //= 2
+                    _global_stretch_low_streak = 0
+                    logger.info(
+                        f"[CYCLE STRETCH] Recovering, x{_global_stretch_factor}"
+                    )
             else:
-                logger.error(f"WARNING: No MAC address returned from {ip_address}/api/device!")
+                _global_stretch_low_streak = 0
 
-            new_id = status_data.get('id')
-            if new_id and new_id != device.get('id'):
-                logger.warning(f"[ID CHANGE] Device ID changed from {device.get('id')} to {new_id} at IP {ip_address} (MAC: {mac_address})")
-                device['id'] = new_id
-                formatted['id'] = new_id
-            else:
-                formatted['id'] = status_data.get('id', formatted['id'])
 
-            formatted['firmware_version'] = status_data.get('firmware_version', formatted['firmware_version'])
-            formatted['ssid'] = status_data.get('wifi_ssid', device.get('wifi_ssid', 'Unknown'))
-            formatted['mur_gateway_ip'] = status_data.get('mur_gateway_ip', '')
-            formatted['mur_gateway_port'] = status_data.get('mur_gateway_port', 4000)
+def _sleep_remaining(slot_start, slot):
+    """Sleep so the next slot begins exactly `slot` seconds after this one
+    started, regardless of how long the probe actually took. This is what
+    spreads probes evenly across radio time."""
+    elapsed = time.monotonic() - slot_start
+    remaining = slot - elapsed
+    if remaining > 0:
+        time.sleep(remaining)
 
-            logger.info(f"[PROBE SUCCESS] Device: {formatted['id']} | MAC: {mac_address} | Response time: {probe_elapsed:.2f}s | Status: ONLINE")
-        else:
-            logger.warning(f"[PROBE FAILED] Device: {formatted['id']} | HTTP {status_response.status_code} | Response time: {probe_elapsed:.2f}s")
-    except requests.Timeout:
-        probe_elapsed = time.time() - probe_start_time
-        logger.warning(f"[PROBE TIMEOUT] Device: {formatted['id']} | Timeout after {probe_elapsed:.2f}s | Status: OFFLINE")
-    except requests.ConnectionError as e:
-        probe_elapsed = time.time() - probe_start_time
-        logger.warning(f"[PROBE CONNECTION ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
-    except requests.RequestException as e:
-        probe_elapsed = time.time() - probe_start_time
-        logger.error(f"[PROBE ERROR] Device: {formatted['id']} | Error: {str(e)[:100]} | Time: {probe_elapsed:.2f}s | Status: OFFLINE")
 
-    if is_actually_online:
+def _probe_loop():
+    """Background thread: walks the registry round-robin with fixed-slot
+    timing. One probe at a time, evenly spaced. See plan
+    `hi-claude-look-around-imperative-lampson.md` for rationale."""
+    global _rr_index
+    logger.info("[PROBE LOOP] started")
+    while _probe_loop_active:
         try:
-            response = requests.get(f"http://{ip_address}/api/scenes", timeout=probe_timeout)
+            registry.load_registry()
+            device_list = sorted(
+                registry.get_device_list(),
+                key=lambda d: d.get('id') or d.get('ip_address') or ''
+            )
+            n = len(device_list)
+            if n == 0:
+                time.sleep(2.0)
+                continue
 
-            if response.status_code == 200:
-                scenes_data = response.json()
+            cycle_target = float(network_config.config.get('cycle_target_sec', 30))
+            slot = (cycle_target * _global_stretch_factor) / n
+            probe_timeout = float(network_config.config.get('probe_timeout', 5))
+            # Cap so a hung probe can't eat the next slot.
+            effective_probe_timeout = max(0.5, min(probe_timeout, slot - 0.5))
+            metadata_every = max(1, int(network_config.config.get('metadata_refetch_every', 10)))
 
-                active_scene = scenes_data.get('active_scene', '')
-                scene_data = scenes_data.get('scenes', {}).get(active_scene, {})
+            slot_start = time.monotonic()
 
-                formatted['global_volume'] = scene_data.get('global_volume', 0)
-                formatted['volume'] = formatted['global_volume']
-                formatted['active_scene'] = active_scene
-                formatted['scenes'] = scenes_data.get('scenes', {})
+            _rr_index = _rr_index % n
+            device = device_list[_rr_index]
+            _rr_index += 1
+            device_id = device.get('id') or device.get('ip_address') or 'unknown'
+            ip_address = device.get('ip_address')
 
-                loops = []
-                active_count = 0
-                for track in scene_data.get('tracks', []):
-                    fp = track.get('file_path', '') or track.get('file', '')
-                    loop_info = {
-                        'track': track.get('track', 0),
-                        'active': track.get('active', False),
-                        'mode': track.get('mode', 'loop'),
-                        'playing': track.get('playing', False),
-                        'volume': track.get('volume', 0),
-                        'file': fp,
-                        'filename': fp.split('/')[-1] if fp else 'No file',
-                        'trigger_name': track.get('trigger_name', ''),
-                        'trigger_type': track.get('trigger_type', 'On/Off'),
-                    }
-                    loops.append(loop_info)
-                    if loop_info['active']:
-                        active_count += 1
+            with _device_cache_lock:
+                cache_entry = _device_cache.setdefault(device_id, {
+                    'formatted': None,
+                    'last_ok_at': 0.0,
+                    'last_attempt_at': 0.0,
+                    'consecutive_failures': 0,
+                    'metadata_age_cycles': 9999,  # force first metadata fetch
+                })
+                cf = cache_entry['consecutive_failures']
+                last_attempt_at = cache_entry['last_attempt_at']
+                metadata_age = cache_entry['metadata_age_cycles']
 
-                formatted['loops'] = loops
-                formatted['active_loops'] = active_count
-                formatted['playing'] = active_count > 0
+            # Per-device backoff: a sick device's slot becomes radio-quiet.
+            if cf >= DEVICE_BACKOFF_THRESHOLD:
+                backoff = min(DEVICE_BACKOFF_MAX_SEC, 2 ** cf)
+                if time.time() - last_attempt_at < backoff:
+                    logger.info(
+                        f"[SKIP backoff] {device_id} | failures={cf} | backoff={backoff}s"
+                    )
+                    _sleep_remaining(slot_start, slot)
+                    continue
 
-                logger.debug(f"Device {formatted['id']}: active_scene={active_scene}, {active_count} active tracks, global vol: {formatted['global_volume']}")
+            if not ip_address:
+                logger.debug(f"[SKIP no-ip] {device_id}")
+                _sleep_remaining(slot_start, slot)
+                continue
 
-        except requests.RequestException as e:
-            logger.debug(f"Could not get scene status for {formatted['id']}: {e}")
+            # Strict per-device serialization. If something else is talking to
+            # this device right now, skip our slot — we don't queue, we don't
+            # delay the cycle.
+            try:
+                with device_lock(device_id, blocking=False):
+                    fetch_metadata = metadata_age >= metadata_every
+                    t0 = time.time()
+                    logger.info(
+                        f"[PROBE START] {device_id} @ {ip_address} | "
+                        f"slot={slot:.2f}s | timeout={effective_probe_timeout:.2f}s | "
+                        f"{'+meta' if fetch_metadata else 'scene-only'}"
+                    )
 
-    return formatted, device, is_actually_online
+                    scene_data = _fetch_scene(ip_address, effective_probe_timeout)
+                    metadata = None
+                    if scene_data is not None and fetch_metadata:
+                        metadata = _fetch_metadata(ip_address, effective_probe_timeout)
+
+                    elapsed = time.time() - t0
+
+                    if scene_data is not None:
+                        prior = cache_entry.get('formatted')
+                        formatted = _build_formatted(
+                            device, scene_data=scene_data, metadata=metadata, prior=prior
+                        )
+                        with _device_cache_lock:
+                            cache_entry['formatted'] = formatted
+                            cache_entry['last_ok_at'] = time.time()
+                            cache_entry['last_attempt_at'] = time.time()
+                            cache_entry['consecutive_failures'] = 0
+                            if fetch_metadata and metadata is not None:
+                                cache_entry['metadata_age_cycles'] = 0
+                            else:
+                                cache_entry['metadata_age_cycles'] += 1
+                        # Persist mac/id changes to registry record.
+                        if metadata:
+                            if metadata.get('mac_address'):
+                                device['mac_address'] = metadata['mac_address']
+                            new_id = metadata.get('id')
+                            if new_id and new_id != device.get('id'):
+                                logger.warning(
+                                    f"[ID CHANGE] {device.get('id')} -> {new_id} "
+                                    f"@ {ip_address}"
+                                )
+                                device['id'] = new_id
+                        device['online'] = True
+                        registry.update_device(device)
+                        logger.info(
+                            f"[PROBE OK] {device_id} | {elapsed:.2f}s"
+                        )
+                        _record_probe_outcome(True)
+                    else:
+                        with _device_cache_lock:
+                            cache_entry['last_attempt_at'] = time.time()
+                            cache_entry['consecutive_failures'] += 1
+                        device['online'] = False
+                        registry.update_device(device)
+                        logger.warning(
+                            f"[PROBE FAIL] {device_id} | {elapsed:.2f}s | "
+                            f"failures={cache_entry['consecutive_failures']}"
+                        )
+                        _record_probe_outcome(False)
+            except DeviceBusy:
+                logger.info(f"[SKIP busy] {device_id}")
+
+            _sleep_remaining(slot_start, slot)
+        except Exception:
+            logger.exception("[PROBE LOOP] iteration crashed")
+            time.sleep(1.0)
+    logger.info("[PROBE LOOP] stopped")
+
+
+def _start_probe_loop():
+    global _probe_loop_thread, _probe_loop_active
+    if _probe_loop_active:
+        return
+    _probe_loop_active = True
+    _probe_loop_thread = threading.Thread(target=_probe_loop, name="probe_loop", daemon=True)
+    _probe_loop_thread.start()
 
 
 @app.route('/api/devices')
 def get_devices():
-    """Get all registered devices with detailed loop information."""
+    """Get all registered devices with detailed loop information.
+
+    Reads ONLY from the in-memory cache populated by the background probe
+    loop. No live HTTP fan-out per request — the response is instant. Failed
+    probes never zero out card content; they only age the cache and adjust
+    the status field. See plan
+    `hi-claude-look-around-imperative-lampson.md` for rationale.
+    """
     registry.load_registry()
     devices = registry.get_device_list()
-    probe_timeout = network_config.config.get('probe_timeout', 3)
 
-    # Probe devices in parallel; each worker does /api/device + /api/scenes.
-    # Bounded pool so the request doesn't fan out unboundedly as registry grows.
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe") as pool:
-        results = list(pool.map(lambda d: _probe_one_device(d, probe_timeout), devices))
+    stale_window = float(network_config.config.get('stale_window_sec', 60))
+    cycle_target = float(network_config.config.get('cycle_target_sec', 30))
+    n = max(len(devices), 1)
+    slot = (cycle_target * _global_stretch_factor) / n
+    # "Online" means we got a fresh probe within roughly the last full cycle
+    # (with 1.5x headroom so a single slow/skipped probe doesn't immediately
+    # demote a healthy device to "stale"). Tied to the cycle, NOT the slot,
+    # so the answer doesn't change as you add devices.
+    online_threshold = max(1.5 * cycle_target * _global_stretch_factor, 30.0)
 
+    now = time.time()
     formatted_devices = []
     online_count = 0
-    now = time.time()
+    stale_count = 0
 
-    for formatted, device, is_actually_online in results:
-        device_id = formatted['id']
+    with _device_cache_lock:
+        for device in devices:
+            device_id = device.get('id') or device.get('ip_address') or 'unknown'
+            cache_entry = _device_cache.get(device_id)
 
-        with _probe_state_lock:
-            state = _probe_state.setdefault(device_id, {'last_ok_at': 0.0, 'consecutive_failures': 0})
-            if is_actually_online:
-                state['last_ok_at'] = now
-                state['consecutive_failures'] = 0
-                display_online = True
-                grace = False
-                age = 0.0
-                failures = 0
+            if cache_entry is None or cache_entry.get('formatted') is None:
+                # No probe has succeeded yet — return what we know from the
+                # registry plus an explicit 'unknown' status.
+                formatted = {
+                    'id': device_id,
+                    'ip': device.get('ip_address', 'unknown'),
+                    'status': 'unknown',
+                    'mac_address': device.get('mac_address', 'Unknown'),
+                    'firmware_version': device.get('firmware_version', 'Unknown'),
+                    'ssid': device.get('wifi_ssid', 'Unknown'),
+                    'last_seen': device.get('last_seen', ''),
+                    'loops': [],
+                    'global_volume': 0,
+                    'active_loops': 0,
+                    'playing': False,
+                    'data_age_sec': None,
+                    'consecutive_failures': cache_entry['consecutive_failures'] if cache_entry else 0,
+                    'source': 'registry',
+                }
+                formatted_devices.append(formatted)
+                continue
+
+            formatted = dict(cache_entry['formatted'])
+            age = now - cache_entry['last_ok_at']
+            cf = cache_entry['consecutive_failures']
+
+            if age < online_threshold and cf == 0:
+                formatted['status'] = 'online'
+                formatted['source'] = 'fresh'
+                online_count += 1
+            elif age < stale_window and cf < OFFLINE_FAILURES_THRESHOLD:
+                formatted['status'] = 'stale'
+                formatted['source'] = 'cached'
+                stale_count += 1
             else:
-                state['consecutive_failures'] += 1
-                age = now - state['last_ok_at']
-                failures = state['consecutive_failures']
-                display_online = age < GRACE_WINDOW_SEC and failures < GRACE_MAX_FAILURES
-                grace = display_online
+                formatted['status'] = 'offline'
+                formatted['source'] = 'cached'
 
-        if grace:
-            logger.info(f"[GRACE] Device: {device_id} | Last OK: {age:.1f}s ago | Failures: {failures} | Status: ONLINE (grace)")
-
-        formatted['status'] = 'online' if display_online else 'offline'
-        formatted['source'] = 'scanned' if is_actually_online else 'registry'
-
-        if not is_actually_online:
-            device['online'] = False
-        registry.update_device(device)
-
-        if display_online:
-            online_count += 1
-
-        formatted_devices.append(formatted)
-
-    registry_only = len(formatted_devices) - online_count
-    logger.info(f"Returning {len(formatted_devices)} devices ({online_count} online, {registry_only} from registry only)")
+            formatted['data_age_sec'] = round(age, 1)
+            formatted['consecutive_failures'] = cf
+            formatted_devices.append(formatted)
 
     return jsonify({
         'devices': formatted_devices,
         'count': len(formatted_devices),
-        'online': online_count,
-        'registry_only': registry_only
+        'online': online_count + stale_count,  # cards still show as "up" if stale
+        'fresh': online_count,
+        'stale': stale_count,
+        'registry_only': len(formatted_devices) - online_count - stale_count,
+        'cycle_target_sec': cycle_target,
+        'global_stretch_factor': _global_stretch_factor,
+        'effective_slot_sec': round(slot, 2),
     })
 
 @app.route('/api/scan', methods=['POST'])
@@ -431,83 +725,97 @@ def clear_all_devices():
             'message': str(e)
         }), 500
 
+def _format_uptime_seconds(uptime_seconds):
+    if not uptime_seconds or uptime_seconds <= 0:
+        return 'Just started'
+    days = uptime_seconds // 86400
+    hours = (uptime_seconds % 86400) // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _status_from_cache(device_id):
+    """Return ('online' | 'stale' | 'offline' | 'unknown', age_sec) from cache."""
+    entry = _device_cache.get(device_id)
+    if entry is None or entry.get('last_ok_at', 0.0) == 0.0:
+        return 'unknown', None
+    age = time.time() - entry['last_ok_at']
+    cf = entry['consecutive_failures']
+    stale_window = float(network_config.config.get('stale_window_sec', 60))
+    if age < stale_window and cf < OFFLINE_FAILURES_THRESHOLD:
+        return ('online' if cf == 0 else 'stale'), age
+    return 'offline', age
+
+
 @app.route('/api/device/<device_id>')
 def get_device(device_id):
-    """Get information about a specific device."""
+    """Get information about a specific device.
+
+    Live-fetches /api/device under the per-device lock and feeds the cache.
+    Falls back to cached status when the device is busy (probe in flight) or
+    the live fetch fails — never returns a hard error to the detail page.
+    """
     device = registry.get_device(device_id)
-    if device:
-        uptime_str = 'Unknown'
-        ssid = device.get('wifi_ssid', 'Unknown')  # Default from registry
-        probe_timeout = network_config.config.get('probe_timeout', 3)
-        is_actually_online = False
-
-        try:
-            logger.info(f"Getting status for device {device_id} at {device.get('ip_address')}")
-            response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=probe_timeout)
-            if response.status_code == 200:
-                is_actually_online = True
-                data = response.json()
-                device.update(data)
-                device['online'] = True
-
-                logger.debug(f"[DEVICE STATUS] Device {device_id} status: {data}")
-
-                uptime_seconds = data.get('uptime_seconds', 0)
-                if uptime_seconds > 0:
-                    days = uptime_seconds // 86400
-                    hours = (uptime_seconds % 86400) // 3600
-                    minutes = (uptime_seconds % 3600) // 60
-
-                    if days > 0:
-                        uptime_str = f"{days}d {hours}h {minutes}m"
-                    elif hours > 0:
-                        uptime_str = f"{hours}h {minutes}m"
-                    else:
-                        uptime_str = f"{minutes}m"
-                else:
-                    uptime_str = 'Just started'
-
-                registry.update_device(device)
-        except requests.RequestException as e:
-            logger.warning(f"Failed to get status for {device_id}: {e}")
-            device['online'] = False
-            uptime_str = 'N/A'
-
-        # Apply the same grace window used by /api/devices so a single missed
-        # probe during a detail-page refresh doesn't flip a healthy device
-        # to offline. Uses the live device id (which may have been refreshed
-        # from the probe response) for consistency with get_devices().
-        live_device_id = device.get('id', device_id)
-        now = time.time()
-        with _probe_state_lock:
-            state = _probe_state.setdefault(live_device_id, {'last_ok_at': 0.0, 'consecutive_failures': 0})
-            if is_actually_online:
-                state['last_ok_at'] = now
-                state['consecutive_failures'] = 0
-                display_online = True
-            else:
-                state['consecutive_failures'] += 1
-                age = now - state['last_ok_at']
-                failures = state['consecutive_failures']
-                display_online = age < GRACE_WINDOW_SEC and failures < GRACE_MAX_FAILURES
-                if display_online:
-                    logger.info(f"[GRACE] Device: {live_device_id} | Last OK: {age:.1f}s ago | Failures: {failures} | Status: ONLINE (grace)")
-
-        formatted = {
-            'id': live_device_id,
-            'ip': device.get('ip_address', 'unknown'),
-            'status': 'online' if display_online else 'offline',
-            'playing': device.get('playing', False),
-            'volume': device.get('volume', 0),
-            'mac_address': device.get('mac_address', 'Unknown'),
-            'firmware_version': device.get('firmware_version', 'Unknown'),
-            'last_seen': device.get('last_seen', ''),
-            'uptime': uptime_str
-        }
-
-        return jsonify(formatted)
-    else:
+    if not device:
         return jsonify({'error': 'Device not found'}), 404
+
+    ip_address = device.get('ip_address')
+    probe_timeout = float(network_config.config.get('probe_timeout', 5))
+    metadata = None
+    from_cache = False
+
+    try:
+        with device_lock(device_id, blocking=True, timeout=3.0):
+            if ip_address:
+                logger.info(f"[detail] get_device {device_id} @ {ip_address}")
+                metadata = _fetch_metadata(ip_address, probe_timeout)
+                if metadata is not None:
+                    if metadata.get('mac_address'):
+                        device['mac_address'] = metadata['mac_address']
+                    new_id = metadata.get('id')
+                    if new_id and new_id != device.get('id'):
+                        logger.warning(f"[ID CHANGE] {device.get('id')} -> {new_id} @ {ip_address}")
+                        device['id'] = new_id
+                    device.update({k: v for k, v in metadata.items() if k != 'id'})
+                    device['online'] = True
+                    registry.update_device(device)
+                    _feed_cache(device.get('id', device_id), metadata=metadata)
+                else:
+                    _record_cache_failure(device.get('id', device_id))
+                    device['online'] = False
+                    registry.update_device(device)
+    except DeviceBusy:
+        from_cache = True
+        logger.info(f"[BUSY] get_device {device_id} -> cache")
+
+    live_device_id = device.get('id', device_id)
+    if metadata is not None:
+        status = 'online'
+        uptime_str = _format_uptime_seconds(metadata.get('uptime_seconds', 0))
+    else:
+        cache_status, _age = _status_from_cache(live_device_id)
+        if cache_status == 'unknown':
+            cache_status, _age = _status_from_cache(device_id)
+        status = cache_status if cache_status != 'unknown' else 'offline'
+        uptime_str = 'N/A'
+
+    return jsonify({
+        'id': live_device_id,
+        'ip': ip_address or 'unknown',
+        'status': status,
+        'playing': device.get('playing', False),
+        'volume': device.get('volume', 0),
+        'mac_address': device.get('mac_address', 'Unknown'),
+        'firmware_version': device.get('firmware_version', 'Unknown'),
+        'last_seen': device.get('last_seen', ''),
+        'uptime': uptime_str,
+        'from_cache': from_cache,
+    })
+
 
 @app.route('/api/device/<device_id>/volume', methods=['POST'])
 def set_device_volume(device_id):
@@ -516,32 +824,38 @@ def set_device_volume(device_id):
     if not device:
         return jsonify({'error': 'Device not found'}), 404
 
-    data = request.json
-    volume = data.get('volume', 50)
+    volume = (request.json or {}).get('volume', 50)
+    ip_address = device.get('ip_address')
 
     try:
-        logger.info(f"Setting volume to {volume} for device {device_id} via /api/scenes")
-        # First get the active scene name
-        scenes_resp = requests.get(f"http://{device.get('ip_address')}/api/scenes", timeout=2)
-        if scenes_resp.status_code != 200:
-            return jsonify({'error': 'Failed to get scenes'}), 500
-        active_scene = scenes_resp.json().get('active_scene', 'default')
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            logger.info(f"Setting volume to {volume} for device {device_id} via /api/scenes")
+            scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=3)
+            if scenes_resp.status_code != 200:
+                return jsonify({'error': 'Failed to get scenes'}), 500
+            active_scene = scenes_resp.json().get('active_scene', 'default')
 
-        # Patch the active scene with new global_volume
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/scenes",
-            json={active_scene: {'global_volume': volume}},
-            timeout=2
-        )
-        if response.status_code == 200:
+            response = requests.post(
+                f"http://{ip_address}/api/scenes",
+                json={active_scene: {'global_volume': volume}},
+                timeout=3
+            )
+            if response.status_code != 200:
+                return jsonify({'error': 'Failed to set volume'}), 500
+
             device['volume'] = volume
             registry.update_device(device)
+            # Re-fetch scenes once so the cache reflects the new volume.
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', device_id), scene_data=fresh)
             return jsonify({'status': 'success', 'volume': volume})
-        else:
-            return jsonify({'error': 'Failed to set volume'}), 500
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         logger.error(f"Failed to set volume for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/device/<device_id>/play', methods=['POST'])
 def control_playback(device_id):
@@ -550,42 +864,40 @@ def control_playback(device_id):
     if not device:
         return jsonify({'error': 'Device not found'}), 404
 
-    data = request.json
-    action = data.get('action', 'toggle')
+    action = (request.json or {}).get('action', 'toggle')
+    ip_address = device.get('ip_address')
+    active = (action == 'play')
 
     try:
-        ip_address = device.get('ip_address')
-        active = (action == 'play')
-        logger.info(f"Sending {action} (active={active}) to all tracks on device {device_id} at {ip_address}")
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            logger.info(f"Sending {action} (active={active}) to all tracks on {device_id} @ {ip_address}")
+            scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=3)
+            if scenes_resp.status_code != 200:
+                return jsonify({'error': 'Failed to get scenes'}), 500
+            scenes_data = scenes_resp.json()
+            active_scene = scenes_data.get('active_scene', 'default')
+            scene = scenes_data.get('scenes', {}).get(active_scene, {})
+            tracks = scene.get('tracks', [])
 
-        # Get the active scene name
-        scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
-        if scenes_resp.status_code != 200:
-            return jsonify({'error': 'Failed to get scenes'}), 500
-        scenes_data = scenes_resp.json()
-        active_scene = scenes_data.get('active_scene', 'default')
-        scene = scenes_data.get('scenes', {}).get(active_scene, {})
-        tracks = scene.get('tracks', [])
+            track_list = [{'track': t.get('track', 0), 'active': active} for t in tracks]
+            response = requests.post(
+                f"http://{ip_address}/api/scenes",
+                json={active_scene: {'tracks': track_list}},
+                timeout=3
+            )
+            if response.status_code != 200:
+                return jsonify({'error': f'Failed to {action} tracks'}), 500
 
-        # Build a patch for the active scene setting all tracks active/inactive
-        track_list = []
-        for track in tracks:
-            track_list.append({'track': track.get('track', 0), 'active': active})
-
-        # Patch scene via POST /api/scenes
-        response = requests.post(
-            f"http://{ip_address}/api/scenes",
-            json={active_scene: {'tracks': track_list}},
-            timeout=2
-        )
-
-        if response.status_code == 200:
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', device_id), scene_data=fresh)
             return jsonify({'status': 'success', 'action': action})
-        else:
-            return jsonify({'error': f'Failed to {action} tracks'}), 500
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         logger.error(f"Failed to control playback for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/device/<device_id>/files')
 def get_device_files(device_id):
@@ -593,53 +905,65 @@ def get_device_files(device_id):
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
-    
+
     try:
-        response = requests.get(f"http://{device.get('ip_address')}/api/files", timeout=5)
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.get(f"http://{device.get('ip_address')}/api/files", timeout=5)
+            if response.status_code == 200:
+                return jsonify(response.json())
             return jsonify({'error': 'Failed to get files'}), 500
+    except DeviceBusy:
+        return jsonify({'error': 'device busy', 'files': []}), 503
     except requests.RequestException as e:
         logger.error(f"Failed to get files for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/api/device/<device_id>/scenes')
 def get_device_scenes(device_id):
-    """Get scenes configuration for a device."""
+    """Get scenes configuration for a device.
+
+    Tries a live fetch under the per-device lock; on busy or failure, returns
+    the cached scenes payload so the detail page never goes blank.
+    """
     device = registry.get_device(device_id)
     if not device:
         logger.error(f"Device not found in registry: {device_id}")
-        return jsonify({
-            'active_scene': '',
-            'scenes': {}
-        })
+        return jsonify({'active_scene': '', 'scenes': {}, 'from_cache': True})
 
     ip_address = device.get('ip_address')
     if not ip_address:
         logger.error(f"Device {device_id} has no IP address")
-        return jsonify({
-            'active_scene': '',
-            'scenes': {}
-        })
+        return jsonify({'active_scene': '', 'scenes': {}, 'from_cache': True})
 
     try:
-        logger.debug(f"Getting scenes for {device_id} at {ip_address}")
-        response = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
+        with device_lock(device_id, blocking=True, timeout=3.0):
+            response = requests.get(f"http://{ip_address}/api/scenes", timeout=3)
+            if response.status_code == 200:
+                scene_data = response.json()
+                _feed_cache(device.get('id', device_id), scene_data=scene_data)
+                payload = dict(scene_data)
+                payload['from_cache'] = False
+                return jsonify(payload)
             logger.warning(f"Failed to get scenes from {device_id}: HTTP {response.status_code}")
-            return jsonify({
-                'active_scene': '',
-                'scenes': {}
-            })
+    except DeviceBusy:
+        logger.info(f"[BUSY] get_device_scenes {device_id} -> cache")
     except requests.RequestException as e:
         logger.error(f"Failed to get scenes for {device_id}: {e}")
+        _record_cache_failure(device.get('id', device_id))
+
+    # Fallback to cached scenes.
+    live_id = device.get('id', device_id)
+    entry = _device_cache.get(live_id) or _device_cache.get(device_id)
+    if entry and entry.get('formatted'):
+        formatted = entry['formatted']
         return jsonify({
-            'active_scene': '',
-            'scenes': {}
+            'active_scene': formatted.get('active_scene', ''),
+            'scenes': formatted.get('scenes', {}),
+            'from_cache': True,
         })
+    return jsonify({'active_scene': '', 'scenes': {}, 'from_cache': True})
+
 
 @app.route('/api/device/<device_id>/scenes', methods=['POST'])
 def set_device_scenes(device_id):
@@ -649,20 +973,25 @@ def set_device_scenes(device_id):
         return jsonify({'error': 'Device not found'}), 404
 
     data = request.json
+    ip_address = device.get('ip_address')
 
     try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/scenes",
-            json=data,
-            timeout=2
-        )
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
-            return jsonify({'error': 'Failed to update scenes'}), response.status_code
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.post(f"http://{ip_address}/api/scenes", json=data, timeout=5)
+            if response.status_code != 200:
+                return jsonify({'error': 'Failed to update scenes'}), response.status_code
+            body = response.json()
+            # Refresh the cache from the post-write state.
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', device_id), scene_data=fresh)
+            return jsonify(body)
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         logger.error(f"Failed to update scenes for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/device/<device_id>/scene', methods=['POST'])
 def device_scene_action(device_id):
@@ -672,20 +1001,43 @@ def device_scene_action(device_id):
         return jsonify({'error': 'Device not found'}), 404
 
     data = request.json
+    ip_address = device.get('ip_address')
 
     try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/scene",
-            json=data,
-            timeout=2
-        )
-        if response.status_code == 200:
-            return jsonify(response.json())
-        else:
-            return jsonify({'error': 'Scene action failed'}), response.status_code
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.post(f"http://{ip_address}/api/scene", json=data, timeout=5)
+            if response.status_code != 200:
+                return jsonify({'error': 'Scene action failed'}), response.status_code
+            body = response.json()
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', device_id), scene_data=fresh)
+            return jsonify(body)
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         logger.error(f"Failed scene action for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
+
+def _batch_per_device(device_id, op):
+    """Run `op(device, ip_address)` under the per-device lock for one batch item.
+    `op` returns a dict to merge into the result. On lock contention or device
+    not found, returns a sensible status dict."""
+    device = registry.get_device(device_id)
+    if not device:
+        return {'device_id': device_id, 'status': 'not_found'}
+    try:
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            try:
+                result = op(device, device.get('ip_address'))
+                result.setdefault('device_id', device_id)
+                return result
+            except requests.RequestException as e:
+                logger.error(f"Batch op error on {device_id}: {e}")
+                return {'device_id': device_id, 'status': 'error'}
+    except DeviceBusy:
+        return {'device_id': device_id, 'status': 'busy'}
+
 
 @app.route('/api/batch/volume', methods=['POST'])
 def batch_set_volume():
@@ -693,44 +1045,30 @@ def batch_set_volume():
     data = request.json
     device_ids = data.get('device_ids', [])
     volume = data.get('volume', 50)
-
     logger.info(f"Batch setting global volume to {volume} for {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                ip_address = device.get('ip_address')
-                # Get active scene name
-                scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
-                if scenes_resp.status_code != 200:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    continue
-                active_scene = scenes_resp.json().get('active_scene', 'default')
+    def op(device, ip_address):
+        scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=3)
+        if scenes_resp.status_code != 200:
+            return {'status': 'failed'}
+        active_scene = scenes_resp.json().get('active_scene', 'default')
+        response = requests.post(
+            f"http://{ip_address}/api/scenes",
+            json={active_scene: {'global_volume': volume}},
+            timeout=3
+        )
+        if response.status_code == 200:
+            device['global_volume'] = volume
+            device['volume'] = volume
+            registry.update_device(device)
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', device.get('ip_address')), scene_data=fresh)
+            return {'status': 'success'}
+        return {'status': 'failed'}
 
-                # Patch active scene with new global_volume
-                response = requests.post(
-                    f"http://{ip_address}/api/scenes",
-                    json={active_scene: {'global_volume': volume}},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    device['global_volume'] = volume
-                    device['volume'] = volume  # For compatibility
-                    registry.update_device(device)
-                    results.append({'device_id': device_id, 'status': 'success'})
-                    logger.debug(f"Set global volume on {device_id} to {volume}%")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to set volume on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error setting volume on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
 
-    return jsonify({'results': results})
 
 @app.route('/api/batch/scene/activate', methods=['POST'])
 def batch_activate_scene():
@@ -738,40 +1076,28 @@ def batch_activate_scene():
     data = request.json
     device_ids = data.get('device_ids', [])
     scene_name = data.get('scene')
-
     if not scene_name:
         return jsonify({'error': 'Missing required field: scene'}), 400
-
     logger.info(f"Batch activating scene '{scene_name}' on {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/scene",
-                    json={'action': 'activate', 'name': scene_name},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    if resp_data.get('success'):
-                        results.append({'device_id': device_id, 'status': 'success'})
-                        logger.debug(f"Activated scene '{scene_name}' on {device_id}")
-                    else:
-                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
-                        logger.warning(f"Failed to activate scene on {device_id}: {resp_data.get('error')}")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to activate scene on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error activating scene on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    def op(device, ip_address):
+        response = requests.post(
+            f"http://{ip_address}/api/scene",
+            json={'action': 'activate', 'name': scene_name},
+            timeout=3
+        )
+        if response.status_code == 200:
+            resp_data = response.json()
+            if resp_data.get('success'):
+                fresh = _fetch_scene(ip_address, 3)
+                if fresh is not None:
+                    _feed_cache(device.get('id', device.get('ip_address')), scene_data=fresh)
+                return {'status': 'success'}
+            return {'status': 'failed', 'error': resp_data.get('error')}
+        return {'status': 'failed'}
 
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 @app.route('/api/batch/scene/create', methods=['POST'])
 def batch_create_scene():
@@ -779,41 +1105,25 @@ def batch_create_scene():
     data = request.json
     device_ids = data.get('device_ids', [])
     scene_name = data.get('scene')
-
     if not scene_name:
         return jsonify({'error': 'Missing required field: scene'}), 400
-
     logger.info(f"Batch creating scene '{scene_name}' on {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/scene",
-                    json={'action': 'create', 'name': scene_name},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    # Treat "already exists" as success (idempotent)
-                    if resp_data.get('success') or resp_data.get('error') == 'Scene already exists':
-                        results.append({'device_id': device_id, 'status': 'success'})
-                        logger.debug(f"Created scene '{scene_name}' on {device_id}")
-                    else:
-                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
-                        logger.warning(f"Failed to create scene on {device_id}: {resp_data.get('error')}")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to create scene on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error creating scene on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    def op(device, ip_address):
+        response = requests.post(
+            f"http://{ip_address}/api/scene",
+            json={'action': 'create', 'name': scene_name},
+            timeout=3
+        )
+        if response.status_code == 200:
+            resp_data = response.json()
+            if resp_data.get('success') or resp_data.get('error') == 'Scene already exists':
+                return {'status': 'success'}
+            return {'status': 'failed', 'error': resp_data.get('error')}
+        return {'status': 'failed'}
 
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 @app.route('/api/batch/scene-trigger', methods=['POST'])
 def batch_set_scene_trigger():
@@ -821,100 +1131,61 @@ def batch_set_scene_trigger():
     data = request.json
     device_ids = data.get('device_ids', [])
     scene_trigger_name = data.get('scene_trigger_name', '')
-
     logger.info(f"Batch setting scene trigger '{scene_trigger_name}' on {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/device",
-                    json={'scene_trigger_name': scene_trigger_name},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    if resp_data.get('success'):
-                        results.append({'device_id': device_id, 'status': 'success'})
-                    else:
-                        results.append({'device_id': device_id, 'status': 'failed', 'error': resp_data.get('error')})
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error setting scene trigger on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    def op(device, ip_address):
+        response = requests.post(
+            f"http://{ip_address}/api/device",
+            json={'scene_trigger_name': scene_trigger_name},
+            timeout=3
+        )
+        if response.status_code == 200:
+            resp_data = response.json()
+            if resp_data.get('success'):
+                return {'status': 'success'}
+            return {'status': 'failed', 'error': resp_data.get('error')}
+        return {'status': 'failed'}
 
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 @app.route('/api/batch/save-config', methods=['POST'])
 def batch_save_config():
     """Save configuration on multiple devices."""
     data = request.json
     device_ids = data.get('device_ids', [])
-    
     logger.info(f"Batch saving configuration for {len(device_ids)} devices")
-    results = []
-    
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                # Call /api/config/save to persist current configuration
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/config/save",
-                    timeout=5  # Longer timeout for save operation
-                )
-                if response.status_code == 200:
-                    results.append({'device_id': device_id, 'status': 'success'})
-                    logger.info(f"Configuration saved on {device_id}")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to save config on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error saving config on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
-    
-    return jsonify({'results': results})
+
+    def op(device, ip_address):
+        response = requests.post(f"http://{ip_address}/api/config/save", timeout=5)
+        if response.status_code == 200:
+            logger.info(f"Configuration saved on {device.get('id', ip_address)}")
+            return {'status': 'success'}
+        return {'status': 'failed'}
+
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 @app.route('/api/batch/reboot', methods=['POST'])
 def batch_reboot():
     """Reboot multiple devices."""
     data = request.json
     device_ids = data.get('device_ids', [])
-    delay_ms = data.get('delay_ms', 1000)  # Default 1 second delay before reboot
-    
+    delay_ms = data.get('delay_ms', 1000)
     logger.info(f"Batch rebooting {len(device_ids)} devices with {delay_ms}ms delay")
-    results = []
-    
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                # Call /api/system/reboot to reboot the device
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/system/reboot",
-                    json={'delay_ms': delay_ms},
-                    timeout=3  # Short timeout since device will reboot
-                )
-                if response.status_code == 200:
-                    results.append({'device_id': device_id, 'status': 'success'})
-                    logger.info(f"Reboot initiated on {device_id}")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to reboot {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error rebooting {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
-    
-    return jsonify({'results': results})
+
+    def op(device, ip_address):
+        response = requests.post(
+            f"http://{ip_address}/api/system/reboot",
+            json={'delay_ms': delay_ms},
+            timeout=3
+        )
+        if response.status_code == 200:
+            logger.info(f"Reboot initiated on {device.get('id', ip_address)}")
+            return {'status': 'success'}
+        return {'status': 'failed'}
+
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
 
 # NOTE: /api/device/<id>/track/control and /api/device/<id>/track/volume
 # have been removed. Use POST /api/device/<id>/scenes to patch track
@@ -922,22 +1193,44 @@ def batch_reboot():
 
 @app.route('/api/device/<device_id>/mur-gateway', methods=['GET'])
 def get_device_mur_gateway(device_id):
-    """Get Mur Gateway config for a device (via consolidated /api/device)."""
+    """Get Mur Gateway config for a device (via consolidated /api/device).
+
+    Falls back to cached metadata when the device is busy or unreachable.
+    """
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
+    ip_address = device.get('ip_address')
+
     try:
-        response = requests.get(f"http://{device.get('ip_address')}/api/device", timeout=2)
-        if response.status_code == 200:
-            data = response.json()
-            return jsonify({
-                'mur_gateway_ip': data.get('mur_gateway_ip', ''),
-                'mur_gateway_port': data.get('mur_gateway_port', 4000),
-                'scene_trigger_name': data.get('scene_trigger_name', '')
-            })
-        return jsonify({'error': f'HTTP {response.status_code}'}), 500
+        with device_lock(device_id, blocking=True, timeout=3.0):
+            response = requests.get(f"http://{ip_address}/api/device", timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                _feed_cache(device.get('id', device_id), metadata=data)
+                return jsonify({
+                    'mur_gateway_ip': data.get('mur_gateway_ip', ''),
+                    'mur_gateway_port': data.get('mur_gateway_port', 4000),
+                    'scene_trigger_name': data.get('scene_trigger_name', ''),
+                    'from_cache': False,
+                })
+    except DeviceBusy:
+        logger.info(f"[BUSY] get_device_mur_gateway {device_id} -> cache")
     except requests.RequestException as e:
-        return jsonify({'error': str(e)}), 500
+        logger.warning(f"Failed to fetch mur-gateway for {device_id}: {e}")
+
+    live_id = device.get('id', device_id)
+    entry = _device_cache.get(live_id) or _device_cache.get(device_id)
+    if entry and entry.get('formatted'):
+        formatted = entry['formatted']
+        return jsonify({
+            'mur_gateway_ip': formatted.get('mur_gateway_ip', ''),
+            'mur_gateway_port': formatted.get('mur_gateway_port', 4000),
+            'scene_trigger_name': '',
+            'from_cache': True,
+        })
+    return jsonify({'error': 'no data'}), 503
+
 
 @app.route('/api/device/<device_id>/mur-gateway', methods=['POST'])
 def set_device_mur_gateway(device_id):
@@ -945,20 +1238,29 @@ def set_device_mur_gateway(device_id):
     device = registry.get_device(device_id)
     if not device:
         return jsonify({'error': 'Device not found'}), 404
-    data = request.json
+    data = request.json or {}
     payload = {'mur_gateway_ip': data.get('mur_gateway_ip', '')}
     if data.get('mur_gateway_port'):
         payload['mur_gateway_port'] = int(data['mur_gateway_port'])
+
     try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/device",
-            json=payload, timeout=2
-        )
-        if response.status_code == 200:
-            return jsonify({'status': 'success'})
-        return jsonify({'error': f'HTTP {response.status_code}'}), 500
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.post(
+                f"http://{device.get('ip_address')}/api/device",
+                json=payload, timeout=3
+            )
+            if response.status_code == 200:
+                # Refresh metadata so the cache reflects the new gateway.
+                fresh = _fetch_metadata(device.get('ip_address'), 3)
+                if fresh is not None:
+                    _feed_cache(device.get('id', device_id), metadata=fresh)
+                return jsonify({'status': 'success'})
+            return jsonify({'error': f'HTTP {response.status_code}'}), 500
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/device/<device_id>/device-config', methods=['POST'])
 def set_device_config(device_id):
@@ -967,11 +1269,19 @@ def set_device_config(device_id):
     if not device:
         return jsonify({'error': 'Device not found'}), 404
     try:
-        response = requests.post(
-            f"http://{device.get('ip_address')}/api/device",
-            json=request.json, timeout=2
-        )
-        return jsonify(response.json()), response.status_code
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.post(
+                f"http://{device.get('ip_address')}/api/device",
+                json=request.json, timeout=3
+            )
+            body = response.json() if response.content else {}
+            if response.status_code == 200:
+                fresh = _fetch_metadata(device.get('ip_address'), 3)
+                if fresh is not None:
+                    _feed_cache(device.get('id', device_id), metadata=fresh)
+            return jsonify(body), response.status_code
+    except DeviceBusy:
+        return jsonify({'error': 'device busy'}), 503
     except requests.RequestException as e:
         logger.error(f"Failed to set device config for {device_id}: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1008,28 +1318,22 @@ def batch_set_mur_gateway():
     mur_gateway_ip = data.get('mur_gateway_ip', '')
     mur_gateway_port = data.get('mur_gateway_port')
 
+    payload = {'mur_gateway_ip': mur_gateway_ip}
+    if mur_gateway_port:
+        payload['mur_gateway_port'] = int(mur_gateway_port)
     logger.info(f"Batch setting mur gateway to {mur_gateway_ip} for {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            payload = {'mur_gateway_ip': mur_gateway_ip}
-            if mur_gateway_port:
-                payload['mur_gateway_port'] = int(mur_gateway_port)
-            try:
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/device",
-                    json=payload, timeout=2
-                )
-                results.append({'device_id': device_id,
-                                 'status': 'success' if response.status_code == 200 else 'failed'})
-            except requests.RequestException:
-                results.append({'device_id': device_id, 'status': 'error'})
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    def op(device, ip_address):
+        response = requests.post(f"http://{ip_address}/api/device", json=payload, timeout=3)
+        if response.status_code == 200:
+            fresh = _fetch_metadata(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', ip_address), metadata=fresh)
+            return {'status': 'success'}
+        return {'status': 'failed'}
 
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 # NOTE: /api/device/<id>/track/trigger and /api/device/<id>/track/file
 # have been removed. Use POST /api/device/<id>/scenes to patch track
@@ -1052,32 +1356,21 @@ def batch_set_device_volume():
         return jsonify({'error': 'device_volume must be between 0 and 100'}), 400
 
     logger.info(f"Batch setting device_volume to {device_volume} for {len(device_ids)} devices")
-    results = []
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            try:
-                response = requests.post(
-                    f"http://{device.get('ip_address')}/api/device",
-                    json={'device_volume': device_volume},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    device['device_volume'] = device_volume
-                    registry.update_device(device)
-                    results.append({'device_id': device_id, 'status': 'success'})
-                    logger.debug(f"Set device_volume on {device_id} to {device_volume}%")
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to set device_volume on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                results.append({'device_id': device_id, 'status': 'error'})
-                logger.error(f"Error setting device_volume on {device_id}: {e}")
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
+    def op(device, ip_address):
+        response = requests.post(
+            f"http://{ip_address}/api/device",
+            json={'device_volume': device_volume},
+            timeout=3
+        )
+        if response.status_code == 200:
+            device['device_volume'] = device_volume
+            registry.update_device(device)
+            return {'status': 'success'}
+        return {'status': 'failed'}
 
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
+
 
 @app.route('/api/batch/play', methods=['POST'])
 def batch_control_playback():
@@ -1085,49 +1378,30 @@ def batch_control_playback():
     data = request.json
     device_ids = data.get('device_ids', [])
     action = data.get('action', 'play')
-
-    logger.info(f"Batch {action} for {len(device_ids)} devices")
-    results = []
-
     active = (action in ('play', 'start'))
+    logger.info(f"Batch {action} for {len(device_ids)} devices")
 
-    for device_id in device_ids:
-        device = registry.get_device(device_id)
-        if device:
-            ip_address = device.get('ip_address')
-            try:
-                # Get active scene to know which tracks to update
-                scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=2)
-                if scenes_resp.status_code != 200:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    continue
-                scenes_data = scenes_resp.json()
-                active_scene = scenes_data.get('active_scene', 'default')
-                scene = scenes_data.get('scenes', {}).get(active_scene, {})
-                tracks = scene.get('tracks', [])
+    def op(device, ip_address):
+        scenes_resp = requests.get(f"http://{ip_address}/api/scenes", timeout=3)
+        if scenes_resp.status_code != 200:
+            return {'status': 'failed'}
+        scenes_data = scenes_resp.json()
+        active_scene = scenes_data.get('active_scene', 'default')
+        scene = scenes_data.get('scenes', {}).get(active_scene, {})
+        track_list = [{'track': t.get('track', 0), 'active': active} for t in scene.get('tracks', [])]
+        response = requests.post(
+            f"http://{ip_address}/api/scenes",
+            json={active_scene: {'tracks': track_list}},
+            timeout=3
+        )
+        if response.status_code == 200:
+            fresh = _fetch_scene(ip_address, 3)
+            if fresh is not None:
+                _feed_cache(device.get('id', ip_address), scene_data=fresh)
+            return {'status': 'success'}
+        return {'status': 'failed'}
 
-                # Build a patch for all tracks
-                track_list = []
-                for track in tracks:
-                    track_list.append({'track': track.get('track', 0), 'active': active})
-
-                response = requests.post(
-                    f"http://{ip_address}/api/scenes",
-                    json={active_scene: {'tracks': track_list}},
-                    timeout=2
-                )
-                if response.status_code == 200:
-                    results.append({'device_id': device_id, 'status': 'success'})
-                else:
-                    results.append({'device_id': device_id, 'status': 'failed'})
-                    logger.warning(f"Failed to set playback on {device_id}: HTTP {response.status_code}")
-            except requests.RequestException as e:
-                logger.error(f"Error setting playback on {device_id}: {e}")
-                results.append({'device_id': device_id, 'status': 'error'})
-        else:
-            results.append({'device_id': device_id, 'status': 'not_found'})
-
-    return jsonify({'results': results})
+    return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
 
 @socketio.on('connect')
 def handle_connect():
@@ -1183,5 +1457,11 @@ if __name__ == '__main__':
     logger.info(f"Access the web interface at: http://localhost:{SERVER_PORT}")
     logger.info(f"Or from network: http://<your-ip>:{SERVER_PORT}")
     logger.info("=" * 60)
+
+    # Start the probe loop only once, even with the Werkzeug reloader running
+    # in debug mode (which would otherwise spawn two threads talking to the
+    # same devices in parallel — exactly the bug we're trying to avoid).
+    if not debug_mode or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        _start_probe_loop()
 
     socketio.run(app, host='0.0.0.0', port=SERVER_PORT, debug=debug_mode, allow_unsafe_werkzeug=True)

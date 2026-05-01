@@ -274,19 +274,20 @@ function updateDeviceList(deviceList) {
         return;
     }
 
-    // Auto-select newly-online devices, deselect offline ones
-    const previousOnlineIds = new Set(
-        devices.filter(d => d.status === 'online').map(d => d.id || d.ip)
+    // Auto-select newly-up devices, drop hard-offline ones from the selection.
+    // 'stale' counts as still-up — it just means we haven't heard back this
+    // cycle. Hard 'offline' / 'unknown' come out of the selection.
+    const upStatuses = new Set(['online', 'stale']);
+    const previousUpIds = new Set(
+        devices.filter(d => upStatuses.has(d.status)).map(d => d.id || d.ip)
     );
     deviceList.forEach(device => {
         const deviceId = device.id || device.ip;
-        if (device.status === 'online') {
-            // Auto-select if newly online (first load, or was offline/unknown before)
-            if (!previousOnlineIds.has(deviceId)) {
+        if (upStatuses.has(device.status)) {
+            if (!previousUpIds.has(deviceId)) {
                 selectedDevices.add(deviceId);
             }
         } else {
-            // Remove offline devices from selection
             selectedDevices.delete(deviceId);
         }
     });
@@ -302,13 +303,26 @@ function updateDeviceList(deviceList) {
     updateSelectedCount();
 }
 
+// Format a freshness age (seconds since last successful probe).
+function formatAge(ageSec) {
+    if (ageSec === null || ageSec === undefined) return '';
+    if (ageSec < 60) return `⟳ ${Math.round(ageSec)}s`;
+    const m = Math.floor(ageSec / 60);
+    const s = Math.round(ageSec % 60);
+    if (m < 10) return `⟳ ${m}m${s}s`;
+    return `⟳ ${m}m`;
+}
+
 // Create device card element
 function createDeviceCard(device) {
     const card = document.createElement('div');
-    card.className = `device-card ${device.status === 'offline' ? 'offline' : ''}`;
-    
+    // Apply class for online/stale/offline/unknown — drives the fade + border.
+    const statusClass = device.status || 'unknown';
+    card.className = `device-card ${statusClass}`;
+
     const deviceId = device.id || device.ip;
-    
+    const ageBadge = formatAge(device.data_age_sec);
+
     // Build track summary display
     let loopInfo = '';
     if (device.loops && device.loops.length > 0) {
@@ -334,14 +348,14 @@ function createDeviceCard(device) {
         });
         loopInfo += '</div>';
     }
-    
+
     card.innerHTML = `
         <div class="device-select">
             <input type="checkbox" id="select-${deviceId}" data-device-id="${deviceId}">
         </div>
         <div class="device-header">
             <div class="device-id">${deviceId}</div>
-            <div class="device-status ${device.status}">${device.status.toUpperCase()}${device.source === 'registry' ? ' <span style="font-size:10px;color:#999;">(stale)</span>' : ''}</div>
+            <div class="device-status ${statusClass}">${statusClass.toUpperCase()}${ageBadge ? `<span class="card-age">${ageBadge}</span>` : ''}</div>
         </div>
         <div class="device-info-grid">
             <div class="device-info-item">

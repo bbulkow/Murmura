@@ -64,6 +64,67 @@
             border-radius: 10px;
             text-align: center;
         }
+
+        /* Phone / narrow tablet layout. Most desktop styles live inline on
+           the elements; this block is the override surface. Goals:
+           1) Collapse the 2-column header grid to 1 column.
+           2) Stop fixed-width sliders/inputs from forcing horizontal scroll.
+           3) Shrink info-label width so values fit on the same line. */
+        @media (max-width: 700px) {
+            .device-detail-container {
+                margin: 8px auto;
+                padding: 8px;
+            }
+            .device-detail-header,
+            .device-detail-content {
+                padding: 14px;
+            }
+            /* Header info grid → single column */
+            .device-info {
+                grid-template-columns: 1fr !important;
+            }
+            /* Labels — narrower so values have room */
+            .info-label {
+                width: 100px !important;
+                font-size: 13px;
+            }
+            /* Any range slider in the page should grow/shrink with the row */
+            input[type="range"] {
+                flex: 1 1 140px;
+                min-width: 100px;
+                max-width: 100%;
+                width: auto !important;
+            }
+            /* Text/number inputs that were fixed-width inline */
+            #murGatewayIpInput,
+            #murGatewayPortInput,
+            #sceneTriggerInput,
+            #newSceneName {
+                flex: 1 1 140px;
+                min-width: 120px;
+                max-width: 100%;
+                width: auto !important;
+            }
+            /* Per-track trigger input — rendered by JS in device_detail.js,
+               so we override by class. Same flex pattern. */
+            .trigger-name-input,
+            .btn-trigger-input {
+                flex: 1 1 140px;
+                min-width: 120px;
+                max-width: 100%;
+                width: auto !important;
+            }
+            /* Slightly larger tap targets on small buttons */
+            .btn,
+            .trigger-name-edit-btn,
+            .trigger-name-ok-btn,
+            .trigger-name-cancel-btn,
+            .btn-trigger-edit-btn,
+            .btn-trigger-ok-btn,
+            .btn-trigger-cancel-btn {
+                min-height: 32px;
+            }
+        }
     </style>
 </head>
 <body>

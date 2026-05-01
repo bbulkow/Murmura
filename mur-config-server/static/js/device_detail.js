@@ -162,17 +162,25 @@ async function loadDeviceData() {
     if (!currentDevice) return;
     
     try {
-        // Get device status
+        // Get device status. The server may return cached data with
+        // from_cache:true when the per-device lock is busy (a probe or write
+        // is in flight). That's expected — we just log it for diagnosis.
         const statusResponse = await fetch(`/api/device/${currentDevice}`);
         if (statusResponse.ok) {
             const deviceData = await statusResponse.json();
+            if (deviceData.from_cache) {
+                console.debug('[DEVICE-DETAIL] device status from cache (server busy)');
+            }
             updateDeviceInfo(deviceData);
         }
-        
+
         // Get scenes (skip re-render if user is editing a trigger name)
         const scenesResponse = await fetch(`/api/device/${currentDevice}/scenes`);
         if (scenesResponse.ok) {
             const scenesData = await scenesResponse.json();
+            if (scenesData.from_cache) {
+                console.debug('[DEVICE-DETAIL] scenes from cache (server busy)');
+            }
             lastScenesData = scenesData;
             activeSceneName = scenesData.active_scene || 'default';
             const editOpen = document.querySelector('.trigger-name-edit-row[style*="flex"]');

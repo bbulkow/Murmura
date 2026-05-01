@@ -54,8 +54,11 @@ class NetworkConfig:
             'scan_all': True,
             'timeout': 2,
             'concurrent_limit': 50,
-            'probe_timeout': 0.5,  # Timeout for device status probes (should be short)
-            'refresh_interval': 10  # Seconds between auto-refresh cycles
+            'probe_timeout': 5,         # Per-HTTP-call timeout to a device
+            'refresh_interval': 5,      # Browser auto-refresh cadence (cache-only, cheap)
+            'cycle_target_sec': 30,     # Full pass through all devices in N seconds
+            'metadata_refetch_every': 10,  # Refetch /api/device every N cycles
+            'stale_window_sec': 90      # Card flips to OFFLINE styling after this (~3 cycles)
         }
     
     def save_config(self):
