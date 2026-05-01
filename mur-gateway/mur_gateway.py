@@ -434,6 +434,21 @@ class MurGateway:
             self.cached_scene_at = time.monotonic()
             logger.info("Scene cache updated from trigger: %s", new_scene)
 
+        # On/Off → OneShot conversion: drop Off events, strip On values so the
+        # forwarded event is shaped like a real OneShot. Discrete/Continuous
+        # values (scene names, floats) don't match either bucket and pass
+        # through unchanged. See the "Trigger type translation" section of
+        # MUR_PROTOCOL.md for the rationale.
+        raw_value = event.get("value")
+        v_norm = raw_value.strip().lower() if isinstance(raw_value, str) else raw_value
+        if v_norm in ("off", "0", 0, False):
+            logger.info("Dropping Off-event for '%s' (gateway converts On/Off to OneShot)",
+                        trigger_name)
+            return
+        if v_norm in ("on", "1", 1, True):
+            event.pop("value", None)
+            logger.debug("Converted On-event for '%s' to OneShot dispatch", trigger_name)
+
         # Find all device connections subscribed to this trigger
         conn_ids = self.subscriptions.get(trigger_name, set())
         if not conn_ids:
@@ -815,7 +830,13 @@ class MurGateway:
         return web.json_response(body)
 
     async def _handle_triggers(self, request: web.Request) -> web.Response:
-        """GET /triggers — proxy trigger list from upstream Trigger Server."""
+        """GET /triggers — proxy trigger list from upstream Trigger Server.
+
+        Upstream On/Off triggers are relabeled as OneShot (the original On/Off
+        type is hidden from clients). Real OneShot, Discrete, and Continuous
+        triggers pass through unchanged. The OneShot listing returned to clients
+        is therefore the merge of upstream-OneShot and upstream-On/Off triggers.
+        """
         url = f"http://{self.trigger_host}:{self.trigger_port}/api/triggers"
         try:
             async with aiohttp.ClientSession() as session:
@@ -824,13 +845,20 @@ class MurGateway:
                         data = await resp.json()
                         triggers = data.get("triggers", [])
                         names = sorted(t.get("name", "") for t in triggers if t.get("name"))
-                        # Include type info for filtering (e.g. Discrete-only for scene triggers)
-                        typed = sorted(
-                            [{"name": t["name"], "type": t.get("type", ""),
-                              **({"range": t["range"]} if "range" in t else {})}
-                             for t in triggers if t.get("name")],
-                            key=lambda x: x["name"],
-                        )
+                        typed = []
+                        for t in triggers:
+                            name = t.get("name")
+                            if not name:
+                                continue
+                            ttype = t.get("type", "")
+                            if ttype == "On/Off":
+                                typed.append({"name": name, "type": "OneShot"})
+                            else:
+                                entry = {"name": name, "type": ttype}
+                                if "range" in t:
+                                    entry["range"] = t["range"]
+                                typed.append(entry)
+                        typed.sort(key=lambda x: x["name"])
                         return web.json_response({"trigger_names": names, "triggers": typed})
                     else:
                         return web.json_response(

@@ -187,10 +187,31 @@ Trigger events delivered by the gateway to subscribed devices.
 - **Connection ownership:** The device initiates the TCP connection. The gateway never connects to devices.
 - **Reconnection:** If the connection drops, the device should reconnect with exponential backoff (e.g. 1s, 2s, 4s, capped at 30s). On reconnect, the device must re-send `announce` and `subscribe`.
 - **Subscription scope:** The gateway only forwards events whose `name` field exactly matches a subscribed trigger name.
-- **No filtering by value:** The gateway forwards all values for a subscribed trigger (On, Off, discrete values, etc.). The device decides what to act on.
+- **Value filtering for On/Off → OneShot conversion:** The gateway drops events with falsy values (`Off`, `off`, `0`, `false`) and strips truthy values (`On`, `on`, `1`, `true`) from forwarded events so the dispatch is shaped like a real OneShot. Discrete and Continuous values (scene names, integers, floats) pass through unchanged. See "Trigger type translation" below.
 - **Graceful disconnect:** Either side may close the TCP connection at any time. The gateway cleans up subscriptions on disconnect.
 - **Multiple subscriptions:** If multiple devices subscribe to the same trigger, all receive the event.
 - **Encoding:** UTF-8. Messages are newline-delimited (`\n`). Carriage returns (`\r`) are ignored.
+
+## Trigger Type Translation
+
+Upstream triggers (Haven Trigger Server) come in four types: `On/Off`, `OneShot`, `Discrete`, `Continuous`. Mur device firmware supports two: `On/Off` (momentary play-while-On) and `OneShot` (fire-and-play-to-end).
+
+For the current deployment, the gateway hides `On/Off` from clients and presents those triggers as `OneShot` instead. This affects two surfaces:
+
+1. **Trigger listing** (`GET /triggers` on the gateway's status port): every upstream `On/Off` trigger is returned with `type: "OneShot"`. No `type: "On/Off"` entries appear in the response. Real upstream OneShot, Discrete, and Continuous triggers pass through unchanged. Filtering the result by `On/Off` therefore returns nothing; filtering by `OneShot` returns the merge of real-OneShot and relabeled-from-On/Off triggers.
+
+2. **Trigger event dispatch**: at fan-out time the gateway looks at the event's `value` field:
+   - Falsy (`Off`, `off`, `0`, `false`) → drop. The event is not forwarded to any subscriber.
+   - Truthy (`On`, `on`, `1`, `true`) → strip the `value` field, forward. The event arrives at devices shaped like a real OneShot (no `value`).
+   - Anything else (scene names, integers, floats) → pass through unchanged.
+
+The `subscribe` message is unaffected and remains a list of names only.
+
+> **Future improvement (firmware change required, not field-deployable today):**
+> The Murmura device philosophy is that the firmware should support `On/Off` triggers correctly and additionally allow the user to opt a given trigger into "treat the `On` event as a OneShot" behavior — so the choice belongs on the device, per track, not in the gateway. The current deployment can't accept firmware updates, so as a workaround the gateway hides `On/Off` from clients and converts events on the wire. When firmware can next be updated, the right shape is:
+> - Firmware exposes both `On/Off` and `OneShot` trigger types to mur-config-server.
+> - Per-track config gains an `on_as_oneshot` boolean (or equivalent) so users can pick momentary vs. fire-and-forget per track.
+> - Gateway returns to pure passthrough; the relabeling and value filtering described above can be removed.
 
 ## Default Ports
 

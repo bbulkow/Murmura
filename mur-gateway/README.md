@@ -83,6 +83,15 @@ See [MUR_PROTOCOL.md](MUR_PROTOCOL.md) for the full protocol specification.
 
 **Summary:** Devices connect via TCP, send newline-delimited JSON messages to announce their ID and subscribe to trigger names. The gateway forwards matching trigger events (also newline-delimited JSON, same format as Haven protocol).
 
+## Trigger type handling
+
+The gateway converts upstream `On/Off` triggers to `OneShot` for Mur devices:
+
+- **Listing** (`GET /triggers`): upstream `On/Off` entries are relabeled `OneShot`. The original `On/Off` type is hidden — the OneShot list returned to clients merges real-OneShot triggers and relabeled-from-On/Off triggers.
+- **Dispatch**: the gateway drops events with falsy values (`Off`/`off`/`0`/`false`) and strips truthy values (`On`/`on`/`1`/`true`) from forwarded events. Discrete/Continuous values pass through unchanged.
+
+**Why this lives in the gateway:** firmware on the deployed devices can't currently choose to treat an On/Off trigger as a OneShot. Until firmware can be updated in the field, the gateway compensates so users can use upstream On/Off triggers for full-clip playback. When firmware can be updated, this conversion should move back into the device per-track config (see "Future improvement" in [MUR_PROTOCOL.md](../MUR_PROTOCOL.md#trigger-type-translation)).
+
 ## Requirements
 
 - Python 3.10+

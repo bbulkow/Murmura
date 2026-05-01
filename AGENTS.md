@@ -75,7 +75,7 @@ Concrete rules:
 - **mur-gateway scene cache** - Gateway caches the current scene (primed from Scene Service at startup, refreshed on SceneChange events, lazy HTTP refresh on TTL expiry). Answers device `get_scene` queries from cache.
 - **main/unit_status_manager.h/c** - Device identity and network status
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
-- **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices)
+- **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices). Also converts upstream `On/Off` triggers to `OneShot` (relabels in `/triggers` listing, drops `Off` events at dispatch, strips `On` value to shape events like real OneShots) — see MUR_PROTOCOL.md "Trigger type translation". This is a deployment workaround pending a firmware update.
 - **mur-config-server/** - Flask web UI for managing multiple Murmura devices
 - **mock-mur-gateway/** - Mock Mur Gateway for device-level testing (devices connect directly, bypasses real gateway)
 - **mock-trigger-server/** - Mock Haven Trigger Server for end-to-end testing (real mur-gateway connects to it)
