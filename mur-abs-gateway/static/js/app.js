@@ -69,6 +69,10 @@ async function loadAll() {
     renderCards();
   } catch (e) {
     console.error("loadAll failed", e);
+    const hint = $("#empty-hint");
+    hint.style.display = "";
+    hint.classList.add("err");
+    hint.textContent = `Could not load configuration: ${e.message}`;
   }
 }
 
@@ -91,6 +95,8 @@ function renderCards() {
 
   if (state.cards.length === 0) {
     hint.style.display = "";
+    hint.classList.remove("err");
+    hint.innerHTML = 'No abstract triggers defined yet. Click <em>+ Add abstract trigger</em> to create one.';
     return;
   }
   hint.style.display = "none";
@@ -389,6 +395,10 @@ function renderLogEntry(entry) {
 function classifyEntry(entry) {
   if (entry.kind === "subscribe") return "subscribe";
   if (entry.status === "ok") return "fire-ok";
+  // "no_subscribers" and "dropped_off" are informational, not errors —
+  // they mean we received the upstream event and there was simply nothing
+  // for us to forward. Use the neutral colour.
+  if (entry.status === "no_subscribers" || entry.status === "dropped_off") return "fire-info";
   return "fire-bad";
 }
 
@@ -397,10 +407,11 @@ function formatEntry(entry) {
     return `${entry.device_id} (${entry.peer_ip}) → [${(entry.triggers || []).join(", ")}]`;
   }
   const upstream = entry.upstream || "?";
-  const abstract = entry.abstract ? `→ ${entry.abstract}` : "(passthrough)";
+  const value = (entry.value !== undefined && entry.value !== null) ? `=${entry.value}` : "";
+  const abstract = entry.abstract ? ` → ${entry.abstract}` : " (passthrough)";
   const file = entry.file_path ? ` file=${entry.file_path}` : "";
-  const devices = (entry.devices || []).join(",") || "—";
-  return `${upstream} ${abstract}${file}  devices=[${devices}]  ${entry.status}`;
+  const devices = (entry.devices && entry.devices.length) ? `  devices=[${entry.devices.join(",")}]` : "";
+  return `${upstream}${value}${abstract}${file}${devices}  ${entry.status}`;
 }
 
 function formatTs(ts) {

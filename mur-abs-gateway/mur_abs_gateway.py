@@ -621,7 +621,12 @@ class MurAbsGateway:
             logger.warning("Trigger event missing 'name': %.100s", line)
             return
 
-        trigger_value = event.get("value", "?")
+        # Capture the raw upstream value once for log entries; later conversion
+        # may strip it from `event` before any per-path logging runs.
+        raw_value = event.get("value")
+        log_value = raw_value if raw_value is not None else None
+
+        trigger_value = raw_value if raw_value is not None else "?"
         logger.info("Trigger event: %s value=%s", trigger_name, trigger_value)
 
         if trigger_name == SCENE_TRIGGER_NAME:
@@ -632,11 +637,20 @@ class MurAbsGateway:
             logger.info("Scene cache updated from trigger: %s", new_scene)
 
         # On/Off → OneShot conversion (cloned verbatim from mur_gateway).
-        raw_value = event.get("value")
         v_norm = raw_value.strip().lower() if isinstance(raw_value, str) else raw_value
         if v_norm in ("off", "0", 0, False):
             logger.info("Dropping Off-event for '%s' (gateway converts On/Off to OneShot)",
                         trigger_name)
+            self._log_event({
+                "ts": time.time(),
+                "kind": "fire",
+                "upstream": trigger_name,
+                "abstract": None,
+                "file_path": None,
+                "devices": [],
+                "status": "dropped_off",
+                "value": log_value,
+            })
             return
         if v_norm in ("on", "1", 1, True):
             event.pop("value", None)
@@ -648,18 +662,41 @@ class MurAbsGateway:
         # raw upstream name.
         abstract_names = self.abstract_registry.reverse_index.get(trigger_name, set())
         for abstract_name in list(abstract_names):
-            await self._fire_abstract_trigger(abstract_name, trigger_name, event)
+            await self._fire_abstract_trigger(abstract_name, trigger_name, event, log_value)
 
         # Direct fan-out to raw-name subscribers (preserved mur_gateway semantics).
         conn_ids = self.subscriptions.get(trigger_name, set())
         if not conn_ids:
             if not abstract_names:
                 logger.info("No subscribers for trigger '%s'", trigger_name)
+                # Surface unmapped/no-subscriber events to the UI log too —
+                # operators want to see every upstream event, not just the
+                # ones we forwarded.
+                self._log_event({
+                    "ts": time.time(),
+                    "kind": "fire",
+                    "upstream": trigger_name,
+                    "abstract": None,
+                    "file_path": None,
+                    "devices": [],
+                    "status": "no_subscribers",
+                    "value": log_value,
+                })
             return
 
         target_tsf_us, err = self._resolve_target_tsf(event, len(conn_ids))
         if err is not None:
             logger.warning("Dropping trigger '%s': %s", trigger_name, err)
+            self._log_event({
+                "ts": time.time(),
+                "kind": "fire",
+                "upstream": trigger_name,
+                "abstract": None,
+                "file_path": None,
+                "devices": [],
+                "status": f"dropped: {err}",
+                "value": log_value,
+            })
             return
 
         out_event = dict(event)
@@ -694,6 +731,7 @@ class MurAbsGateway:
                 "file_path": None,
                 "devices": sent_ids,
                 "status": "ok" if sent_count else "no_subscribers",
+                "value": log_value,
             })
 
         for conn_id in failed:
@@ -704,10 +742,14 @@ class MurAbsGateway:
     # -------------------------------------------------------------------
 
     async def _fire_abstract_trigger(self, abstract_name: str,
-                                     upstream_name: str, event: dict) -> None:
+                                     upstream_name: str, event: dict,
+                                     log_value=None) -> None:
         """Resolve the file_path for this abstract trigger, POST it to each
         subscribed device's track, then dispatch a OneShot-shaped event under
         the abstract name to those same devices.
+
+        log_value is the raw upstream value before On/Off conversion stripped
+        it; passed in for the live log so operators see what came in.
         """
         cfg = self.abstract_registry.triggers.get(abstract_name)
         if cfg is None:
@@ -730,10 +772,20 @@ class MurAbsGateway:
                 "file_path": file_path,
                 "devices": [],
                 "status": "no_subscribers",
+                "value": log_value,
             })
             return
 
         scene_name = self.cached_scene or DEFAULT_SCENE_FALLBACK
+        # If the gateway has no cached scene yet (Scene Service unreachable
+        # at boot, or no SceneChange has fired), we patch the firmware's
+        # first-boot default scene name. If the device's active scene differs,
+        # the patch lands on a dormant scene and the file change has no
+        # audible effect — the WARNING here is the operator's only clue.
+        if self.cached_scene is None:
+            logger.warning("Abstract '%s': no cached scene — patching scene '%s' "
+                           "(may not be the device's active scene)",
+                           abstract_name, scene_name)
 
         # POST file_path to each device that doesn't already have it cached.
         # POSTs run in parallel — the device handles concurrent HTTP fine.
@@ -745,8 +797,9 @@ class MurAbsGateway:
                 continue
             cached = self.file_cache.get(device.device_id, self.abstract_track_index)
             if cached == file_path:
-                logger.debug("file_path cache hit for %s track %d → %s",
-                             device.device_id, self.abstract_track_index, file_path)
+                logger.info("File change SKIPPED (cache hit): device=%s scene=%s track=%d file=%s",
+                            device.device_id, scene_name,
+                            self.abstract_track_index, file_path)
                 post_targets.append((conn_id, device))
                 post_tasks.append(asyncio.create_task(asyncio.sleep(0, result=True)))
                 continue
@@ -774,6 +827,7 @@ class MurAbsGateway:
                 "file_path": file_path,
                 "devices": [d.device_id for _, d in post_targets],
                 "status": "post_failed",
+                "value": log_value,
             })
             return
 
@@ -796,8 +850,12 @@ class MurAbsGateway:
             ok = await device.send_line(out_line)
             if ok:
                 sent_ids.append(device.device_id)
-                logger.info("  → abstract '%s' sent to %s (file=%s)",
-                            abstract_name, device.device_id, file_path)
+                # Trigger send is logged separately from the file change so
+                # the two events are easy to correlate (or notice when one
+                # ran without the other).
+                logger.info("Trigger send → device=%s trigger=%s%s",
+                            device.device_id, abstract_name,
+                            f" target_tsf_us={target_tsf_us}" if target_tsf_us else "")
             else:
                 failed.append(conn_id)
 
@@ -812,6 +870,7 @@ class MurAbsGateway:
             "file_path": file_path,
             "devices": sent_ids,
             "status": "ok" if sent_ids else "send_failed",
+            "value": log_value,
         })
 
     async def _post_file_path(self, device: DeviceConnection,
@@ -827,6 +886,12 @@ class MurAbsGateway:
         if not device.peer_ip:
             logger.warning("Cannot POST file_path to %s: no peer_ip", device.device_id)
             return False
+        # Pre-log so an operator can see WHICH scene we're patching even if
+        # the POST then fails or hangs. The scene name comes from the
+        # cached_scene; if the device's active scene differs, the patch will
+        # land on a dormant scene and have no audible effect.
+        logger.info("File change → device=%s scene=%s track=%d file=%s",
+                    device.device_id, scene_name, self.abstract_track_index, file_path)
         url = f"http://{device.peer_ip}/api/scenes"
         body = {
             scene_name: {
@@ -841,16 +906,16 @@ class MurAbsGateway:
                                     timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if 200 <= resp.status < 300:
                     self.file_cache.set(device.device_id, self.abstract_track_index, file_path)
-                    logger.info("POST /api/scenes %s track %d → %s (HTTP %d)",
-                                device.device_id, self.abstract_track_index,
-                                file_path, resp.status)
+                    logger.info("File change OK: device=%s scene=%s (HTTP %d)",
+                                device.device_id, scene_name, resp.status)
                     return True
                 text = await resp.text()
-                logger.warning("POST /api/scenes %s failed HTTP %d: %.200s",
-                               device.device_id, resp.status, text)
+                logger.warning("File change FAILED: device=%s scene=%s HTTP %d: %.200s",
+                               device.device_id, scene_name, resp.status, text)
                 return False
         except Exception as e:
-            logger.warning("POST /api/scenes %s exception: %s", device.device_id, e)
+            logger.warning("File change EXCEPTION: device=%s scene=%s err=%s",
+                           device.device_id, scene_name, e)
             return False
 
     async def _get_http_session(self) -> aiohttp.ClientSession:

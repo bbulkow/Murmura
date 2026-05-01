@@ -83,6 +83,7 @@ header h1 { color: #2a5298; font-size: 2.2em; margin-bottom: 6px; }
   color: #666;
   grid-column: 1 / -1;
 }
+.empty-hint.err { color: #b03030; }
 
 .trigger-card {
   background: white;
@@ -205,6 +206,7 @@ select {
 }
 .event-log .row-line.subscribe { color: #305b8a; }
 .event-log .row-line.fire-ok { color: #2a8540; }
+.event-log .row-line.fire-info { color: #666; }
 .event-log .row-line.fire-bad { color: #a03030; background: #fdf0f0; }
 .event-log .row-line .ts { color: #888; margin-right: 8px; }
 .event-log .row-line .tag { font-weight: bold; margin-right: 8px; }

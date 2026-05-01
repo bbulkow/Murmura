@@ -44,3 +44,6 @@ mur-config-server/mur_config_server/
 
 # device-manager runtime data
 device-manager/device_map.json
+
+# mur-abs-gateway operator-edited state (created and rewritten by the UI)
+mur-abs-gateway/abstract_triggers.json

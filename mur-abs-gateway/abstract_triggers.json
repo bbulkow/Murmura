@@ -1,4 +1,14 @@
 {
-  "abstract_triggers": {},
+  "abstract_triggers": {
+    "AbstractTriggerOsprey": {
+      "associated_device_id": "FAKE-001",
+      "mappings": [
+        {
+          "file_path": "/sdcard/osprey.wav",
+          "upstream": "phone.red.911"
+        }
+      ]
+    }
+  },
   "version": 1
 }
