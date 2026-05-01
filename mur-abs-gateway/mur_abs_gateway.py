@@ -1317,14 +1317,20 @@ class MurAbsGateway:
             await resp.write(f"data: {json.dumps(entry)}\n\n".encode("utf-8"))
 
         q = self.event_log.subscribe()
+        last_ping = time.monotonic()
         try:
-            while True:
+            # 1s polling so this loop exits within a second of self._running
+            # going False during shutdown — otherwise aiohttp's runner cleanup
+            # would have to wait the full shutdown_timeout for us to notice.
+            while self._running:
                 try:
-                    entry = await asyncio.wait_for(q.get(), timeout=15.0)
+                    entry = await asyncio.wait_for(q.get(), timeout=1.0)
                     await resp.write(f"data: {json.dumps(entry)}\n\n".encode("utf-8"))
                 except asyncio.TimeoutError:
-                    # Heartbeat keeps proxies / browsers from idling out.
-                    await resp.write(b": ping\n\n")
+                    if time.monotonic() - last_ping > 15.0:
+                        # Heartbeat keeps proxies / browsers from idling out.
+                        await resp.write(b": ping\n\n")
+                        last_ping = time.monotonic()
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
@@ -1394,16 +1400,20 @@ class MurAbsGateway:
         logger.info("Device listener on port %d (for Mur devices)", self.device_port)
 
         # Status HTTP server (4001) — preserves /status and /triggers.
+        # shutdown_timeout overrides aiohttp's 60s default; we only need a
+        # second or two to drain in-flight requests on Ctrl-C.
         status_app = web.Application()
         status_app.router.add_get("/status", self._handle_status)
         status_app.router.add_get("/triggers", self._handle_triggers)
-        status_runner = web.AppRunner(status_app)
+        status_runner = web.AppRunner(status_app, shutdown_timeout=2.0)
         await status_runner.setup()
         status_site = web.TCPSite(status_runner, "0.0.0.0", self.status_port)
         await status_site.start()
         logger.info("Status HTTP on port %d (GET /status, GET /triggers)", self.status_port)
 
         # UI HTTP server (5101) — abstract trigger management + live log.
+        # Same shutdown_timeout note as above; otherwise the open SSE log
+        # stream from any browser tab keeps cleanup() blocked for 60s.
         ui_app = web.Application()
         ui_app.router.add_get("/", self._ui_index)
         ui_app.router.add_get("/api/abstract-triggers", self._api_get_abstract)
@@ -1414,7 +1424,7 @@ class MurAbsGateway:
         ui_app.router.add_get("/api/log", self._api_log)
         ui_app.router.add_get("/api/log/stream", self._api_log_stream)
         ui_app.router.add_get("/static/{filename:.*}", self._api_static)
-        ui_runner = web.AppRunner(ui_app)
+        ui_runner = web.AppRunner(ui_app, shutdown_timeout=2.0)
         await ui_runner.setup()
         ui_site = web.TCPSite(ui_runner, "0.0.0.0", self.ui_port)
         await ui_site.start()
@@ -1459,21 +1469,45 @@ class MurAbsGateway:
             pass
 
         logger.info("Shutting down...")
-        if self._register_task:
-            self._register_task.cancel()
-        if self._prime_task:
-            self._prime_task.cancel()
-        if self._tsf_query_task:
-            self._tsf_query_task.cancel()
+        # Flip _running so long-poll loops (SSE, _api_log_stream) wake up
+        # quickly and exit. Already set by the signal handler in the SIGINT
+        # path, but redundancy doesn't hurt.
+        self._running = False
+
+        # Cancel the periodic background tasks first.
+        for t in (self._register_task, self._prime_task, self._tsf_query_task):
+            if t:
+                t.cancel()
+
+        # Stop accepting new connections.
         upstream_server.close()
         device_server.close()
+
+        # Close the existing upstream connection so its read loop exits and
+        # we stop processing new trigger events mid-shutdown.
+        if self.upstream_writer and not self.upstream_writer.is_closing():
+            try:
+                self.upstream_writer.close()
+            except Exception:
+                pass
+
+        # Close all device sockets so their per-connection handler tasks
+        # unwind in parallel with the runner cleanup below. This is what
+        # produces the "Removed device ..." log lines — same as mur_gateway.
+        for conn_id, dev in list(self.devices.items()):
+            try:
+                dev.writer.close()
+            except Exception:
+                pass
+
+        # Cleanup HTTP runners — bounded by shutdown_timeout=2.0 above so
+        # an idle SSE stream can't pin us for 60 seconds.
         await status_runner.cleanup()
         await ui_runner.cleanup()
+
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
 
-        for conn_id, dev in list(self.devices.items()):
-            dev.writer.close()
         self.devices.clear()
         self.subscriptions.clear()
 
