@@ -379,7 +379,10 @@ function renderLogEntry(entry) {
 
   const tag = document.createElement("span");
   tag.className = "tag";
-  tag.textContent = entry.kind === "subscribe" ? "SUB" : "FIRE";
+  tag.textContent =
+    entry.kind === "subscribe"   ? "SUB"  :
+    entry.kind === "file_change" ? "SET"  :
+                                   "FIRE";
   row.appendChild(tag);
 
   const text = document.createElement("span");
@@ -394,6 +397,11 @@ function renderLogEntry(entry) {
 
 function classifyEntry(entry) {
   if (entry.kind === "subscribe") return "subscribe";
+  // file_change ok or skipped_cache → informational; failures → bad
+  if (entry.kind === "file_change") {
+    if (entry.status === "ok" || entry.status === "skipped_cache") return "fire-info";
+    return "fire-bad";
+  }
   if (entry.status === "ok") return "fire-ok";
   // "no_subscribers" and "dropped_off" are informational, not errors —
   // they mean we received the upstream event and there was simply nothing
@@ -406,12 +414,22 @@ function formatEntry(entry) {
   if (entry.kind === "subscribe") {
     return `${entry.device_id} (${entry.peer_ip}) → [${(entry.triggers || []).join(", ")}]`;
   }
+  if (entry.kind === "file_change") {
+    const dev = entry.device_id || "?";
+    const scene = entry.scene || "?";
+    const track = entry.track_index ?? "?";
+    const fp = entry.file_path || "?";
+    const ctx = entry.abstract ? ` for ${entry.abstract}` : "";
+    return `device=${dev} scene=${scene} track=${track} file=${fp}${ctx}  ${entry.status}`;
+  }
+  // fire
   const upstream = entry.upstream || "?";
   const value = (entry.value !== undefined && entry.value !== null) ? `=${entry.value}` : "";
   const abstract = entry.abstract ? ` → ${entry.abstract}` : " (passthrough)";
+  const scene = entry.scene ? ` scene=${entry.scene}` : "";
   const file = entry.file_path ? ` file=${entry.file_path}` : "";
   const devices = (entry.devices && entry.devices.length) ? `  devices=[${entry.devices.join(",")}]` : "";
-  return `${upstream}${value}${abstract}${file}${devices}  ${entry.status}`;
+  return `${upstream}${value}${abstract}${scene}${file}${devices}  ${entry.status}`;
 }
 
 function formatTs(ts) {
@@ -435,8 +453,42 @@ function startLogStream() {
   open();
 }
 
+async function loadGatewayInfo() {
+  try {
+    const info = await fetchJson("/api/gateway-info");
+    $("#info-trigger").textContent = info.trigger_server || "—";
+    const dot = $("#info-trigger-dot");
+    dot.classList.toggle("connected", !!info.trigger_server_connected);
+    dot.classList.toggle("disconnected", !info.trigger_server_connected);
+    $("#info-scene-url").textContent = info.scene_service_url || "—";
+
+    const sceneEl = $("#info-active-scene");
+    if (info.cached_scene) {
+      const age = info.cached_scene_age_seconds;
+      const ageStr = age == null ? "" : ` (${formatAge(age)} ago)`;
+      sceneEl.textContent = info.cached_scene + ageStr;
+      sceneEl.classList.remove("unknown");
+    } else {
+      sceneEl.textContent = "(none — using 'default' fallback)";
+      sceneEl.classList.add("unknown");
+    }
+
+    $("#info-device-count").textContent = String(info.device_count ?? 0);
+  } catch (e) {
+    // Silent — info strip is best-effort.
+  }
+}
+
+function formatAge(s) {
+  if (s < 60) return `${Math.round(s)}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  return `${Math.round(s / 3600)}h`;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   $("#btn-add-trigger").addEventListener("click", addNewCard);
   $("#btn-reload").addEventListener("click", loadAll);
   loadAll().then(startLogStream);
+  loadGatewayInfo();
+  setInterval(loadGatewayInfo, 5000);
 });

@@ -27,6 +27,30 @@ header {
 header h1 { color: #2a5298; font-size: 2.2em; margin-bottom: 6px; }
 .subtitle { color: #666; font-size: 1em; }
 
+.info-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 22px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+.info-item { display: inline-flex; align-items: center; }
+.info-label { color: #888; margin-right: 6px; }
+.info-value { color: #1e3c72; font-weight: 500; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.info-value.unknown { color: #888; font-style: italic; font-weight: normal; }
+.info-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ccc;
+  margin-left: 6px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.06) inset;
+}
+.info-dot.connected { background: #28a745; }
+.info-dot.disconnected { background: #dc3545; }
+
 .controls {
   background: rgba(255, 255, 255, 0.95);
   padding: 16px 20px;

@@ -791,6 +791,7 @@ class MurAbsGateway:
         # POSTs run in parallel — the device handles concurrent HTTP fine.
         post_tasks: list[asyncio.Task] = []
         post_targets: list[tuple[int, DeviceConnection]] = []
+        post_was_cache_hit: list[bool] = []
         for conn_id in list(conn_ids):
             device = self.devices.get(conn_id)
             if device is None:
@@ -802,13 +803,35 @@ class MurAbsGateway:
                             self.abstract_track_index, file_path)
                 post_targets.append((conn_id, device))
                 post_tasks.append(asyncio.create_task(asyncio.sleep(0, result=True)))
+                post_was_cache_hit.append(True)
                 continue
             post_targets.append((conn_id, device))
             post_tasks.append(asyncio.create_task(
                 self._post_file_path(device, scene_name, file_path)
             ))
+            post_was_cache_hit.append(False)
 
         results = await asyncio.gather(*post_tasks, return_exceptions=False)
+
+        # Per-device file_change events — separate from the trigger fire so
+        # operators can see in the website log which scene we patched.
+        for (conn_id, device), ok, hit in zip(post_targets, results, post_was_cache_hit):
+            if hit:
+                fc_status = "skipped_cache"
+            elif ok:
+                fc_status = "ok"
+            else:
+                fc_status = "post_failed"
+            self._log_event({
+                "ts": time.time(),
+                "kind": "file_change",
+                "device_id": device.device_id,
+                "scene": scene_name,
+                "track_index": self.abstract_track_index,
+                "file_path": file_path,
+                "abstract": abstract_name,
+                "status": fc_status,
+            })
 
         # Filter to devices whose POST succeeded (or whose cache was warm).
         deliverable: list[tuple[int, DeviceConnection]] = []
@@ -825,6 +848,7 @@ class MurAbsGateway:
                 "upstream": upstream_name,
                 "abstract": abstract_name,
                 "file_path": file_path,
+                "scene": scene_name,
                 "devices": [d.device_id for _, d in post_targets],
                 "status": "post_failed",
                 "value": log_value,
@@ -868,6 +892,7 @@ class MurAbsGateway:
             "upstream": upstream_name,
             "abstract": abstract_name,
             "file_path": file_path,
+            "scene": scene_name,
             "devices": sent_ids,
             "status": "ok" if sent_ids else "send_failed",
             "value": log_value,
@@ -1312,6 +1337,26 @@ class MurAbsGateway:
         return web.json_response({"ok": True, "abstract_triggers":
                                   list(sorted(self.abstract_registry.triggers.keys()))})
 
+    async def _api_gateway_info(self, request: web.Request) -> web.Response:
+        """GET /api/gateway-info — small summary surfaced in the UI header."""
+        upstream_connected = (
+            self.upstream_writer is not None
+            and not self.upstream_writer.is_closing()
+        )
+        scene_age = (
+            round(time.monotonic() - self.cached_scene_at, 1)
+            if self.cached_scene_at > 0 else None
+        )
+        return web.json_response({
+            "trigger_server": f"{self.trigger_host}:{self.trigger_port}",
+            "trigger_server_connected": upstream_connected,
+            "scene_service_url": self.scene_service_url,
+            "cached_scene": self.cached_scene,
+            "cached_scene_age_seconds": scene_age,
+            "abstract_track_index": self.abstract_track_index,
+            "device_count": len(self.devices),
+        })
+
     async def _api_get_devices(self, request: web.Request) -> web.Response:
         out = []
         for conn_id, dev in self.devices.items():
@@ -1481,6 +1526,7 @@ class MurAbsGateway:
         # stream from any browser tab keeps cleanup() blocked for 60s.
         ui_app = web.Application()
         ui_app.router.add_get("/", self._ui_index)
+        ui_app.router.add_get("/api/gateway-info", self._api_gateway_info)
         ui_app.router.add_get("/api/abstract-triggers", self._api_get_abstract)
         ui_app.router.add_post("/api/abstract-triggers", self._api_post_abstract)
         ui_app.router.add_get("/api/devices", self._api_get_devices)
