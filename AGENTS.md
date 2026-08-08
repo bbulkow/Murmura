@@ -2,6 +2,24 @@
 
 After making code changes, run code to make sure it works as best as possible.
 
+# Memories and plans live IN THE REPO (multi-machine rule)
+
+Work on this project happens on multiple machines (Windows dev box, the
+Raspberry Pi, others). Anything an agent wants to remember or plan MUST be a
+visible file inside the project directory, where every machine and every human
+can see it:
+
+- **Plans** go in `PLAN_<topic>.md` at the project root. When a plan is done or
+  superseded, delete the file (its residue belongs in the docs/READMEs of what
+  was built).
+- **Durable knowledge** (footguns, conventions, build quirks, design rationale)
+  goes in this file or in the docs it points to (SYNC_DESIGN.md, HTTP_API.md,
+  per-service READMEs) — whichever the next reader would naturally open.
+- **Per-machine agent stores** (`~/.claude/projects/.../memory/`,
+  `~/.claude/plans/`, editor-local state) are invisible to the other machines.
+  They may hold at most a pointer to a repo file, never the content itself. A
+  fact recorded only in a machine-local store is considered NOT recorded.
+
 For esp-idf components, run build and make sure all compile errors are removed.
 
 There are a series of warnings regarding obsolete drivers, those are acceptable.
@@ -32,12 +50,19 @@ Notice that the typical -NoProfile must be ommitted.
 
 This allows claude to run build and determine the sources of error.
 
-Build output is written to `build_output.txt` in the project root (UTF-16LE encoded). Use Grep to search for `error:` lines. Filter to `D:/dev/esp/Murmura/main/` to see only project errors (not cascading framework errors).
+Build output is written to `build_output.txt` in the project root — **UTF-16LE encoded, so plain grep/ripgrep finds NOTHING in it** (every character is null-separated on disk). A grep for `error:` returning zero matches does NOT mean the build passed; that false negative has already happened. Check the trailing `EXIT_CODE=` line (survives the encoding), or decode first:
+
+```
+python -c "import re; t=open('build_output.txt','rb').read().decode('latin-1').replace('\x00',''); [print(l.strip()) for l in t.splitlines() if re.search(r'error:|undefined reference|FAILED', l, re.I)]"
+```
+
+Filter to `D:/dev/esp/Murmura/main/` to see only project errors (not cascading framework errors).
 
 # ESP-IDF coding notes
 
 - **FreeRTOS include order**: `#include "freertos/FreeRTOS.h"` MUST appear before any other FreeRTOS headers (`semphr.h`, `task.h`, `queue.h`). Violating this causes hundreds of cascading errors from kernel headers.
 - **Config vs runtime state**: `scene_config_t` (persisted in scenes.json) has per-track `mode`, `active`, `file_path`, `volume`, triggers, and a per-scene `button_trigger` field. `track_status_t` (runtime) reflects the active scene's config. Never put `is_playing` in config structs — use `is_track_playing()` to check pipeline state. When patching the active scene via `scene_apply_patch()`, fields like `trigger_name`, `trigger_type`, and `mode` must be synced to `track_manager->tracks[]` — the scene config and track_manager are separate copies.
+- **FOOTGUN — patching `file_path` on the active scene restarts a playing track immediately**: in `scene_apply_patch()` (scene_manager.c), a track patch WITHOUT a boolean `active` field falls into the `file_changed && was_active && is_track_playing()` branch, which fires `START_TRACK` right now — unscheduled, at POST-arrival time, different on every device. A patch WITH a boolean `active` takes the other branch instead, which for trigger-mode tracks sends only `ENABLE_TRACK` (an inert flag set in murmura.c) and never reaches the restart; the new `file_path` is still stored for the next trigger. mur-conductor's prep window depends on this: its file-swap patch MUST keep `"active": true` (plus mode/trigger fields). Do not "simplify" that body down to just `file_path` — the bug that reintroduces is intermittent (only when the next file differs AND audio is still playing at prep time) and presents on hardware as one speaker jumping to the next piece early, alone. mur-abs-gateway's swap omits `active` safely ONLY because its target track is idle at swap time — the pattern is context-safe, not universally safe. See mur-conductor/README.md, "Why the prep patch always sends `active: true`".
 - **SPIRAM**: Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` for large allocations. If allocation fails, raise a fatal error (`ESP_ERROR_CHECK(ESP_ERR_NO_MEM)`) — do NOT fall back to regular `malloc`.
 - **Stack overflow risk with `track_config_t` and `track_manager_t`**: These structs contain trigger names and track configs — they are too large for the 4096-byte task stacks. NEVER declare them as local (stack) variables. Use `heap_caps_calloc` in SPIRAM instead. This has caused heap-corrupting crashes twice already. When adding fields to these structs, always check for existing stack-allocated instances (`track_config_t varname;` patterns in `murmura.c` and `http_server.c`).
 - **Boot ordering**: `mur_listener_init()` must be called AFTER `scene_activate()` so that the initial gateway subscribe message contains the correct trigger names from the active scene's tracks. The mur_listener also needs the `scene_manager_t*` for scene trigger dispatch.

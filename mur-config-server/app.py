@@ -1403,6 +1403,395 @@ def batch_control_playback():
 
     return jsonify({'results': [_batch_per_device(d, op) for d in device_ids]})
 
+# ===========================================================================
+# Ensembles (mur-conductor)
+#
+# The conductor owns the ensemble timeline and playlists; this server owns the
+# UI and all file operations. These routes proxy the conductor's status/admin
+# API (so the browser needs no second origin) and implement the two things the
+# conductor deliberately does not do: figuring out which files the members of a
+# group have in common, and copying files between devices to fill the gaps.
+# ===========================================================================
+
+def _conductor_url():
+    return (network_config.config.get('conductor_url')
+            or 'http://127.0.0.1:4002').rstrip('/')
+
+
+@app.route('/ensembles')
+def ensembles_page():
+    """Ensemble group status, playlist editing, and file sync."""
+    return render_template('ensembles.html')
+
+
+@app.route('/api/conductor/status')
+def conductor_status():
+    """Proxy the conductor's /status.
+
+    Deliberately does not touch _device_cache or any device lock - everything
+    here comes from the conductor's own view (which it derives from the
+    gateway), so it costs the devices nothing.
+    """
+    try:
+        response = requests.get(f"{_conductor_url()}/status", timeout=5)
+        if response.status_code == 200:
+            return jsonify(response.json())
+        return jsonify({'error': f'Conductor returned HTTP {response.status_code}',
+                        'groups': []}), 200
+    except requests.RequestException as e:
+        logger.warning(f"Cannot reach conductor at {_conductor_url()}: {e}")
+        return jsonify({'error': f'Cannot reach conductor: {e}', 'groups': []}), 200
+
+
+@app.route('/api/conductor/groups/<group_name>/playlist', methods=['POST'])
+def conductor_set_playlist(group_name):
+    """Proxy a playlist update to the conductor (applies at the next boundary)."""
+    try:
+        response = requests.post(
+            f"{_conductor_url()}/api/groups/{group_name}/playlist",
+            json=request.json or {}, timeout=5)
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error(f"Failed to set playlist for {group_name}: {e}")
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/api/conductor/groups/<group_name>', methods=['POST'])
+def conductor_set_group(group_name):
+    """Proxy group settings (enabled, membership, loop) to the conductor."""
+    try:
+        response = requests.post(f"{_conductor_url()}/api/groups/{group_name}",
+                                 json=request.json or {}, timeout=5)
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error(f"Failed to update group {group_name}: {e}")
+        return jsonify({'error': str(e)}), 502
+
+
+def _group_members(group_name):
+    """[(device_id, ip)] for a conductor group, from the conductor's status."""
+    try:
+        response = requests.get(f"{_conductor_url()}/status", timeout=5)
+        response.raise_for_status()
+        status = response.json()
+    except (requests.RequestException, ValueError) as e:
+        raise RuntimeError(f"Cannot reach conductor: {e}")
+    for group in status.get('groups', []):
+        if group.get('name') == group_name:
+            return [(m['id'], m.get('ip', '')) for m in group.get('members', [])]
+    raise RuntimeError(f"No such conductor group: {group_name}")
+
+
+def _parse_wav_header(blob, file_size):
+    """Duration from a WAV header. Returns None if it isn't parseable WAV.
+
+    Prefers the data chunk's declared size and falls back to the file size,
+    because a file written by a streaming encoder can carry a zero or
+    placeholder length.
+    """
+    if len(blob) < 12 or blob[0:4] != b'RIFF' or blob[8:12] != b'WAVE':
+        return None
+    pos = 12
+    byte_rate = sample_rate = channels = bits = None
+    data_size = None
+    while pos + 8 <= len(blob):
+        chunk_id = blob[pos:pos + 4]
+        chunk_size = int.from_bytes(blob[pos + 4:pos + 8], 'little')
+        if chunk_id == b'fmt ' and pos + 8 + 16 <= len(blob):
+            fmt = blob[pos + 8:pos + 8 + 16]
+            channels = int.from_bytes(fmt[2:4], 'little')
+            sample_rate = int.from_bytes(fmt[4:8], 'little')
+            byte_rate = int.from_bytes(fmt[8:12], 'little')
+            bits = int.from_bytes(fmt[14:16], 'little')
+        elif chunk_id == b'data':
+            data_size = chunk_size
+            if data_size in (0, 0xFFFFFFFF) or data_size > file_size:
+                data_size = max(0, file_size - (pos + 8))
+            break
+        pos += 8 + chunk_size + (chunk_size & 1)
+    if not byte_rate:
+        return None
+    if data_size is None:
+        data_size = max(0, file_size - 44)
+    return {
+        'duration_ms': int(round(data_size * 1000.0 / byte_rate)),
+        'sample_rate': sample_rate, 'channels': channels, 'bits': bits,
+    }
+
+
+def _probe_wav_duration(device_id, ip, filename, file_size, header_bytes=4096):
+    """Read just the header of a file off a device and derive its duration.
+
+    Uses GET /api/file/download and closes the connection after the first few
+    KB, so probing a 15-minute file costs the same as probing a short one.
+    """
+    try:
+        with device_lock(device_id, blocking=True, timeout=5.0):
+            response = requests.get(f"http://{ip}/api/file/download",
+                                    params={'filename': filename},
+                                    stream=True, timeout=10)
+            if response.status_code != 200:
+                return None
+            try:
+                blob = next(response.iter_content(header_bytes), b'')
+            finally:
+                response.close()
+        return _parse_wav_header(blob, file_size)
+    except DeviceBusy:
+        logger.info(f"[BUSY] wav probe {device_id} {filename}")
+        return None
+    except requests.RequestException as e:
+        logger.warning(f"WAV probe failed for {device_id}:{filename}: {e}")
+        return None
+
+
+@app.route('/api/ensemble/<group_name>/files')
+def ensemble_files(group_name):
+    """File inventory across a group, for the playlist picker and sync matrix.
+
+    Every member must hold a file for the group to be able to play it, so
+    `common` (present on all reachable members, same size) is what the playlist
+    picker offers. `differs` means same name but a different size on some
+    member: reported, never auto-resolved, because per-device stems under a
+    shared filename are a legitimate setup.
+    """
+    probe = request.args.get('probe', '').strip()
+    try:
+        members = _group_members(group_name)
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 502
+
+    reachable, unreachable = [], []
+    per_device = {}
+    for device_id, ip in members:
+        if not ip:
+            unreachable.append({'id': device_id, 'reason': 'not connected to gateway'})
+            continue
+        try:
+            with device_lock(device_id, blocking=True, timeout=5.0):
+                response = requests.get(f"http://{ip}/api/files", timeout=5)
+            if response.status_code != 200:
+                unreachable.append({'id': device_id, 'reason': f'HTTP {response.status_code}'})
+                continue
+            files = response.json().get('files', [])
+            per_device[device_id] = {f['name']: f.get('size', 0) for f in files}
+            reachable.append((device_id, ip))
+        except DeviceBusy:
+            unreachable.append({'id': device_id, 'reason': 'device busy'})
+        except (requests.RequestException, ValueError) as e:
+            unreachable.append({'id': device_id, 'reason': str(e)})
+
+    all_names = sorted({name for names in per_device.values() for name in names})
+    matrix, common = [], []
+    for name in all_names:
+        sizes = {d: per_device[d].get(name) for d, _ in reachable}
+        present = [d for d, size in sizes.items() if size is not None]
+        absent = [d for d, size in sizes.items() if size is None]
+        distinct = {size for size in sizes.values() if size is not None}
+        state = ('common' if not absent and len(distinct) == 1
+                 else 'differs' if not absent
+                 else 'partial')
+        if state == 'common':
+            common.append(name)
+        matrix.append({
+            'name': name, 'state': state,
+            'sizes': sizes, 'present_on': present, 'absent_on': absent,
+            'size': min(distinct) if distinct else 0,
+        })
+
+    result = {
+        'group': group_name,
+        'members': [d for d, _ in reachable],
+        'unreachable': unreachable,
+        'common': common,
+        'files': matrix,
+    }
+
+    # Duration probing is opt-in because it costs one short HTTP read per file.
+    if probe:
+        wanted = [n.strip() for n in probe.split(',') if n.strip()]
+        durations = {}
+        for name in wanted:
+            entry = next((m for m in matrix if m['name'] == name), None)
+            if not entry or not entry['present_on']:
+                continue
+            source_id = entry['present_on'][0]
+            source_ip = dict(reachable).get(source_id, '')
+            info = _probe_wav_duration(source_id, source_ip, name,
+                                       entry['sizes'].get(source_id) or 0)
+            if info:
+                durations[name] = info
+        result['durations'] = durations
+
+    return jsonify(result)
+
+
+# --- File sync: one transfer at a time, deliberately slow -------------------
+#
+# Copies run on a single worker thread under the normal per-device locks, so a
+# transfer never overlaps another operation on the same device. Throttled
+# because saturating an ESP32's HTTP server starves everything else it does.
+
+SYNC_RATE_BYTES_PER_SEC = 200 * 1024
+SYNC_CHUNK = 16 * 1024
+
+_sync_lock = threading.Lock()
+_sync_queue = deque()
+_sync_state = {'running': False, 'current': None, 'done': [], 'queued': 0}
+_sync_thread = None
+
+
+def _throttled(iterable, rate=SYNC_RATE_BYTES_PER_SEC):
+    """Yield chunks no faster than `rate` bytes/sec."""
+    start = time.time()
+    sent = 0
+    for chunk in iterable:
+        yield chunk
+        sent += len(chunk)
+        target = sent / float(rate)
+        drift = target - (time.time() - start)
+        if drift > 0:
+            time.sleep(drift)
+
+
+def _sync_worker():
+    global _sync_thread
+    while True:
+        with _sync_lock:
+            if not _sync_queue:
+                _sync_state['running'] = False
+                _sync_state['current'] = None
+                _sync_thread = None
+                return
+            job = _sync_queue.popleft()
+            _sync_state['current'] = dict(job, status='copying')
+            _sync_state['queued'] = len(_sync_queue)
+
+        result = dict(job)
+        tmp_path = None
+        try:
+            tmp_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'mur_config_server', f".sync-{job['filename']}.tmp")
+            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+
+            with device_lock(job['src_id'], blocking=True, timeout=15.0):
+                response = requests.get(f"http://{job['src_ip']}/api/file/download",
+                                        params={'filename': job['filename']},
+                                        stream=True, timeout=300)
+                response.raise_for_status()
+                written = 0
+                with open(tmp_path, 'wb') as out:
+                    for chunk in _throttled(response.iter_content(SYNC_CHUNK)):
+                        out.write(chunk)
+                        written += len(chunk)
+                response.close()
+
+            with device_lock(job['dst_id'], blocking=True, timeout=15.0):
+                with open(tmp_path, 'rb') as src:
+                    upload = requests.post(
+                        f"http://{job['dst_ip']}/api/upload",
+                        params={'filename': job['filename']},
+                        data=_throttled(iter(lambda: src.read(SYNC_CHUNK), b'')),
+                        headers={'Content-Type': 'application/octet-stream'},
+                        timeout=300)
+                upload.raise_for_status()
+
+            result.update(status='ok', bytes=written)
+            logger.info(f"[SYNC] {job['filename']}: {job['src_id']} -> "
+                        f"{job['dst_id']} ({written} bytes)")
+        except DeviceBusy as e:
+            result.update(status='failed', error=f'device busy: {e}')
+            logger.warning(f"[SYNC] busy: {job['filename']} -> {job['dst_id']}")
+        except (requests.RequestException, OSError, ValueError) as e:
+            result.update(status='failed', error=str(e))
+            logger.error(f"[SYNC] failed {job['filename']} -> {job['dst_id']}: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+        with _sync_lock:
+            _sync_state['done'].append(result)
+            _sync_state['current'] = None
+
+
+@app.route('/api/ensemble/<group_name>/sync', methods=['POST'])
+def ensemble_sync(group_name):
+    """Queue copies so every member of the group holds the named files.
+
+    Body: {"filenames": ["a.wav", ...]}  (omit to sync everything that is
+    missing somewhere). Files whose size merely differs between devices are
+    never touched - that case needs a human decision.
+    """
+    global _sync_thread
+    data = request.json or {}
+    requested = data.get('filenames')
+
+    inventory = ensemble_files(group_name)
+    if isinstance(inventory, tuple):
+        return inventory
+    inventory = inventory.get_json()
+    if inventory.get('error'):
+        return jsonify(inventory), 502
+
+    try:
+        members = dict((d, ip) for d, ip in _group_members(group_name))
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 502
+
+    queued = []
+    for entry in inventory['files']:
+        if entry['state'] != 'partial':
+            continue
+        if requested is not None and entry['name'] not in requested:
+            continue
+        source_id = entry['present_on'][0]
+        for dst_id in entry['absent_on']:
+            if not members.get(source_id) or not members.get(dst_id):
+                continue
+            queued.append({
+                'filename': entry['name'],
+                'src_id': source_id, 'src_ip': members[source_id],
+                'dst_id': dst_id, 'dst_ip': members[dst_id],
+                'size': entry['size'],
+            })
+
+    if not queued:
+        return jsonify({'queued': 0, 'message': 'nothing to copy'})
+
+    with _sync_lock:
+        _sync_queue.extend(queued)
+        _sync_state['queued'] = len(_sync_queue)
+        _sync_state['running'] = True
+        if _sync_thread is None or not _sync_thread.is_alive():
+            _sync_thread = threading.Thread(target=_sync_worker, daemon=True)
+            _sync_thread.start()
+
+    total_mb = sum(j['size'] for j in queued) / (1024.0 * 1024.0)
+    logger.info(f"[SYNC] queued {len(queued)} copy job(s), {total_mb:.1f} MB")
+    return jsonify({
+        'queued': len(queued),
+        'jobs': [{'filename': j['filename'], 'src': j['src_id'], 'dst': j['dst_id']}
+                 for j in queued],
+        'estimated_seconds': int(total_mb * 1024 * 1024 / SYNC_RATE_BYTES_PER_SEC),
+    })
+
+
+@app.route('/api/ensemble/sync-status')
+def ensemble_sync_status():
+    with _sync_lock:
+        return jsonify({
+            'running': _sync_state['running'],
+            'current': _sync_state['current'],
+            'queued': len(_sync_queue),
+            'done': list(_sync_state['done'])[-25:],
+            'rate_kb_per_sec': SYNC_RATE_BYTES_PER_SEC // 1024,
+        })
+
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection."""

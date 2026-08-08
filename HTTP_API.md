@@ -96,7 +96,7 @@ Returns device identity, network status, Mur Gateway config, and WiFi info in on
   "id": "MURMURA-001",
   "mac_address": "AA:BB:CC:DD:EE:FF",
   "ip_address": "192.168.1.100",
-  "firmware_version": "3.1",
+  "firmware_version": "3.5",
   "uptime_seconds": 3600,
   "mur_gateway_ip": "192.168.1.10",
   "mur_gateway_port": 4000,
@@ -378,6 +378,25 @@ Lists all audio files on the SD card root directory.
   "message": "File uploaded successfully"
 }
 ```
+
+#### Download Audio File
+
+**GET** `/api/file/download?filename=track.wav`
+
+Streams a file from the SD card root. The read-back counterpart to
+`/api/upload` — used to copy audio from one device to another (every member of
+an ensemble group must hold the same files) and to read a WAV header to derive a
+file's duration.
+
+- `filename` must be a bare filename; path separators are rejected.
+- Response is `application/octet-stream`, sent with chunked transfer encoding
+  (no `Content-Length`). Use `/api/files` to learn the size beforehand.
+- Only reads the first bytes if that is all you need — a ranged read is not
+  supported, but a client may close the connection early.
+
+**Errors:** `400` missing/invalid filename, `404` file not found,
+`500` cannot open or allocate. Errors are always JSON-free plain httpd errors
+and are only ever sent *before* streaming begins.
 
 #### Delete Audio File
 

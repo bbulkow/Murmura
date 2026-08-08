@@ -23,6 +23,11 @@ A web-based fleet management server for Brian's soundscape devicies, designed to
 
  - File upload and management, both batch and individually
  - Managing IDs when devices are being deployed
+ - **Save-all / restore-all configs**: walk every known device, pull its scenes/wifi/identity, persist a snapshot locally; companion restore that pushes a snapshot back to the fleet. Scriptable today; would be nicer in the UI later.
+ - **Cross-fleet scene visibility**: a view that lists every device and the scenes each has. We had to manually hunt down stale scenes after a deploy — this would have made it trivial.
+ - **Alphabetize lists in the UI**: devices, triggers, scenes, wifi networks — wherever there's a list, sort it. Currently insertion-order, which is not what the eye wants.
+ - **Per-device description field**: free-text label like "back of house" / "front of house" stored alongside the device ID. IDs are great for plumbing but unmemorable after install; the description is what humans need on the device-list page.
+ - **Batch delete**: select multiple devices (or all) and delete in one operation instead of one-at-a-time. Useful for cleanup after re-imaging or test-fleet teardown.
 
 
 ## Installation

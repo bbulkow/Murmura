@@ -1,0 +1,21 @@
+[Unit]
+Description=Mur Conductor - ensemble playback coordinator for Murmura devices
+After=network-online.target mur-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brian
+Group=brian
+WorkingDirectory=/home/brian/Murmura/mur-conductor
+Environment="PATH=/home/brian/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /home/brian/Murmura/mur-conductor/mur_conductor.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mur-conductor
+
+[Install]
+WantedBy=multi-user.target

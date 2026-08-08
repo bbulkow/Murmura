@@ -1219,6 +1219,7 @@ class MurAbsGateway:
             devices.append({
                 "id": dev.device_id,
                 "peer": dev.peer,
+                "peer_ip": dev.peer_ip,
                 "triggers": sorted(dev.triggers),
                 "connected_at": dev.connected_at,
                 "uptime_seconds": round(time.time() - dev.connected_at, 1),

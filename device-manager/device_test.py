@@ -347,7 +347,68 @@ def group2_files(base):
             skip(f"2.x Test track NOT found: {name} — some tests may use fallback file")
 
     info(f"Files found: {[f.get('name') for f in files]}")
+
+    group2b_download(base, files)
     return files
+
+
+def group2b_download(base, files):
+    """GET /api/file/download round trip.
+
+    The download endpoint is what lets a coordinator copy audio between devices
+    (every member of an ensemble group needs the same files) and read a WAV
+    header to derive a file's duration. Both uses depend on the bytes coming
+    back exactly, so this uploads a known file, reads it back, and compares.
+    """
+    head("Group 2b: File Download")
+
+    payload = b"RIFF" + b"\x00" * 60 + bytes(range(256)) * 4
+    name = "_dltest.bin"
+
+    try:
+        r = requests.post(f"{base}/api/upload", params={"filename": name},
+                          data=payload,
+                          headers={"Content-Type": "application/octet-stream"},
+                          timeout=TIMEOUT)
+        if not record(r.status_code == 200, "2b.1 Upload test file for download check",
+                      f"HTTP {r.status_code}"):
+            return
+    except requests.RequestException as e:
+        record(False, "2b.1 Upload test file for download check", str(e))
+        return
+
+    try:
+        r = requests.get(f"{base}/api/file/download", params={"filename": name},
+                         timeout=TIMEOUT)
+        record(r.status_code == 200, "2b.2 GET /api/file/download returns 200",
+               f"HTTP {r.status_code}")
+        record(r.content == payload,
+               "2b.3 Downloaded bytes match what was uploaded",
+               f"sent {len(payload)}, got {len(r.content)}")
+
+        # Reading only the first bytes is how duration probing works, so the
+        # server must tolerate the client hanging up early.
+        rs = requests.get(f"{base}/api/file/download", params={"filename": name},
+                          stream=True, timeout=TIMEOUT)
+        head_bytes = next(rs.iter_content(64), b"")
+        rs.close()
+        record(head_bytes == payload[:64],
+               "2b.4 Partial read (header probe) returns the leading bytes",
+               f"{len(head_bytes)} byte(s)")
+    except requests.RequestException as e:
+        record(False, "2b.2 GET /api/file/download", str(e))
+
+    code, data = get(base, "/api/file/download?filename=_definitely_missing_.wav")
+    record(code == 404, "2b.5 Missing file returns 404", f"HTTP {code}")
+
+    code, data = get(base, "/api/file/download?filename=../secret")
+    record(code == 400, "2b.6 Path traversal rejected with 400", f"HTTP {code}")
+
+    code, data = get(base, "/api/file/download")
+    record(code == 400, "2b.7 Missing filename parameter returns 400", f"HTTP {code}")
+
+    code, _ = delete(base, "/api/file/delete", {"filename": name})
+    record(code == 200, "2b.8 Test file cleaned up", f"HTTP {code}")
 
 # =============================================================================
 # GROUP 3: Single Track — File Assignment & Playback

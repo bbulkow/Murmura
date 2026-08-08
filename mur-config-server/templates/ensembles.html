@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Murmura Ensembles</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        /* Page-local styles; no external assets (offline requirement). */
+        .ens-banner { background: #f8f9fa; padding: 12px 15px; border-radius: 8px;
+                      margin-bottom: 18px; border-left: 5px solid #2a5298; }
+        .ens-banner.bad { border-left-color: #dc3545; background: #fdf2f3; }
+        .ens-group { background: #fff; border: 1px solid #d6e4ea; border-radius: 8px;
+                     padding: 16px; margin-bottom: 22px; }
+        .ens-group h2 { margin: 0 0 4px 0; color: #2a5298; font-size: 22px; }
+        .ens-sub { color: #667; font-size: 13px; margin-bottom: 12px; }
+        .ens-cols { display: flex; gap: 20px; flex-wrap: wrap; }
+        .ens-col { flex: 1 1 340px; min-width: 320px; }
+        .ens-col h3 { font-size: 15px; margin: 0 0 8px 0; color: #33475b;
+                      text-transform: uppercase; letter-spacing: .04em; }
+        table.ens { width: 100%; border-collapse: collapse; font-size: 13px; }
+        table.ens th, table.ens td { text-align: left; padding: 5px 7px;
+                                     border-bottom: 1px solid #eef2f4; }
+        table.ens th { color: #667; font-weight: 600; }
+        .pill { display: inline-block; padding: 1px 8px; border-radius: 10px;
+                font-size: 11px; font-weight: 600; }
+        .pill.ok { background: #d7f2dd; color: #14652b; }
+        .pill.warn { background: #fdf0d0; color: #7a5200; }
+        .pill.bad { background: #fadbde; color: #8b1520; }
+        .pill.idle { background: #e7ecef; color: #4a5560; }
+        .beat { font-size: 30px; font-weight: 700; color: #2a5298; line-height: 1.1; }
+        .beat-sub { color: #667; font-size: 12px; }
+        .pl-row { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
+        .pl-row input[type=text] { flex: 1 1 auto; min-width: 90px; padding: 4px 6px;
+                                   border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+        .pl-row input[type=number] { width: 84px; padding: 4px 6px;
+                                     border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+        .pl-row button { padding: 3px 7px; font-size: 12px; cursor: pointer;
+                         border: 1px solid #bbc; background: #f3f5f7; border-radius: 3px; }
+        .mini { padding: 5px 11px; font-size: 13px; }
+        .dirty-note { color: #7a5200; font-size: 12px; margin-left: 8px; }
+        .matrix td.st-common { background: #eefaf1; }
+        .matrix td.st-partial { background: #fdf0d0; }
+        .matrix td.st-differs { background: #eef2fb; }
+        .sync-log { font-family: monospace; font-size: 12px; max-height: 150px;
+                    overflow-y: auto; background: #f7f9fa; padding: 8px;
+                    border-radius: 4px; margin-top: 8px; }
+        .hint { color: #667; font-size: 12px; margin: 6px 0 0 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Murmura Ensembles</h1>
+            <p style="margin:6px 0 0 0;"><a href="/">&larr; Back to devices</a></p>
+        </header>
+
+        <div id="conductorBanner" class="ens-banner">Loading conductor status&hellip;</div>
+        <div id="groups"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/ensembles.js') }}"></script>
+</body>
+</html>

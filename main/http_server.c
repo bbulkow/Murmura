@@ -82,6 +82,7 @@ static esp_err_t device_get_handler(httpd_req_t *req);
 static esp_err_t device_post_handler(httpd_req_t *req);
 static esp_err_t file_upload_handler(httpd_req_t *req);
 static esp_err_t file_delete_handler(httpd_req_t *req);
+static esp_err_t file_download_handler(httpd_req_t *req);
 static esp_err_t system_reboot_handler(httpd_req_t *req);
 
 /**
@@ -1186,6 +1187,128 @@ static esp_err_t file_delete_handler(httpd_req_t *req) {
 }
 
 /**
+ * @brief GET /api/file/download?filename=track.wav - Stream a file from the SD card
+ *
+ * Read-back counterpart to POST /api/upload. Two callers need it: copying audio
+ * between devices (every member of an ensemble group must hold the same files),
+ * and reading a WAV header to derive a file's duration instead of an operator
+ * typing it in.
+ *
+ * Streamed in chunks, so file size does not bound memory use. All error checks
+ * happen before the first chunk goes out — once a chunked response has started,
+ * httpd can no longer send an error status.
+ */
+static esp_err_t file_download_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /api/file/download");
+
+    memset(scratch_query, 0, SCRATCH_QUERY_LEN);
+    memset(scratch_name, 0, SCRATCH_NAME_LEN);
+
+    size_t query_len = httpd_req_get_url_query_len(req);
+    if (query_len == 0 || query_len >= SCRATCH_QUERY_LEN) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename query parameter");
+        return ESP_FAIL;
+    }
+    httpd_req_get_url_query_str(req, scratch_query, SCRATCH_QUERY_LEN);
+
+    memset(scratch_param, 0, SCRATCH_PARAM_LEN);
+    if (httpd_query_key_value(scratch_query, "filename", scratch_param,
+                              SCRATCH_PARAM_LEN) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename query parameter");
+        return ESP_FAIL;
+    }
+
+    // URL decode, same handling as the upload handler
+    size_t decoded_len = 0;
+    size_t param_len = strlen(scratch_param);
+    for (size_t i = 0, j = 0; i < param_len && j < SCRATCH_NAME_LEN - 1; i++, j++) {
+        if (scratch_param[i] == '%' && i + 2 < param_len) {
+            char hex[3] = {scratch_param[i+1], scratch_param[i+2], '\0'};
+            scratch_name[j] = (char)strtol(hex, NULL, 16);
+            i += 2;
+        } else if (scratch_param[i] == '+') {
+            scratch_name[j] = ' ';
+        } else {
+            scratch_name[j] = scratch_param[i];
+        }
+        decoded_len = j + 1;
+    }
+    scratch_name[decoded_len] = '\0';
+
+    if (scratch_name[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty filename");
+        return ESP_FAIL;
+    }
+
+    // Security check: filename only, no path components
+    if (strchr(scratch_name, '/') != NULL || strchr(scratch_name, '\\') != NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Invalid filename - path separators not allowed");
+        return ESP_FAIL;
+    }
+
+    snprintf(scratch_path, SCRATCH_PATH_LEN, "/sdcard/%s", scratch_name);
+
+    struct stat file_stat;
+    if (stat(scratch_path, &file_stat) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_FAIL;
+    }
+    if (!S_ISREG(file_stat.st_mode)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Not a regular file");
+        return ESP_FAIL;
+    }
+
+    FILE *f = fopen(scratch_path, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open file");
+        return ESP_FAIL;
+    }
+
+    #define DOWNLOAD_CHUNK_SIZE 4096
+    char *chunk_buf = heap_caps_malloc(DOWNLOAD_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
+    if (!chunk_buf) {
+        fclose(f);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
+        return ESP_FAIL;
+    }
+
+    // Stack-held because httpd_resp_set_hdr stores the pointer rather than
+    // copying the string — it must stay valid until the response completes.
+    char disposition[SCRATCH_NAME_LEN + 40];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", scratch_name);
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
+
+    ESP_LOGI(TAG, "Streaming %s (%ld bytes)", scratch_path, (long)file_stat.st_size);
+
+    size_t total = 0;
+    esp_err_t ret = ESP_OK;
+    while (1) {
+        size_t n = fread(chunk_buf, 1, DOWNLOAD_CHUNK_SIZE, f);
+        if (n == 0) {
+            break;
+        }
+        if (httpd_resp_send_chunk(req, chunk_buf, n) != ESP_OK) {
+            ESP_LOGW(TAG, "Download aborted after %u bytes (client disconnected?)",
+                     (unsigned)total);
+            ret = ESP_FAIL;
+            break;
+        }
+        total += n;
+    }
+
+    fclose(f);
+    free(chunk_buf);
+
+    if (ret == ESP_OK) {
+        httpd_resp_send_chunk(req, NULL, 0);   // terminate the chunked response
+        ESP_LOGI(TAG, "Download complete: %s (%u bytes)", scratch_name, (unsigned)total);
+    }
+    return ret;
+}
+
+/**
  * @brief POST /api/system/reboot - Reboot the system
  * Body: { "delay_ms": 1000 } (optional, defaults to 1000ms)
  */
@@ -2079,7 +2202,18 @@ esp_err_t http_server_init(audio_stream_t *audio_stream, QueueHandle_t audio_con
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register handler for /api/file/delete: %s", esp_err_to_name(ret));
     }
-    
+
+    httpd_uri_t file_download_uri = {
+        .uri = "/api/file/download",
+        .method = HTTP_GET,
+        .handler = file_download_handler,
+        .user_ctx = NULL
+    };
+    ret = httpd_register_uri_handler(server, &file_download_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register handler for /api/file/download: %s", esp_err_to_name(ret));
+    }
+
     // Register system reboot endpoint
     httpd_uri_t system_reboot_uri = {
         .uri = "/api/system/reboot",
