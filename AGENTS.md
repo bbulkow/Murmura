@@ -68,6 +68,41 @@ Filter to `D:/dev/esp/Murmura/main/` to see only project errors (not cascading f
 - **Boot ordering**: `mur_listener_init()` must be called AFTER `scene_activate()` so that the initial gateway subscribe message contains the correct trigger names from the active scene's tracks. The mur_listener also needs the `scene_manager_t*` for scene trigger dispatch.
 - **SPIRAM and synchronization primitives**: The ESP32's S32C1I atomic compare-and-swap instruction does not work correctly through the SPI cache to external PSRAM. Never embed spinlocks, raw atomic variables, or any synchronization primitive inside a struct allocated wholesale in PSRAM. FreeRTOS `SemaphoreHandle_t` is safe because `xSemaphoreCreate*` allocates from internal RAM by default — but the handle itself (a pointer) must not be confused with the underlying memory. Pattern: keep the struct with the lock in internal RAM and point to bulk data in SPIRAM, or use FreeRTOS semaphore handles (which are internally allocated correctly).
 
+# Audio file format (HARD REQUIREMENT)
+
+**Every WAV on an SD card must be 44100 Hz, 16-bit, STEREO PCM.**
+
+There is **no transcoding anywhere** — not on the device, not in the config
+server, not in the gateway. Bytes go from the SD card through `wav_decoder` into
+a downmixer that was configured **once at boot** and are clocked out at a fixed
+I2S rate. Nothing inspects the file and adapts.
+
+A file that does not match plays wrong, silently, with no error on any surface:
+
+| File | Result |
+|---|---|
+| mono | plays at **exactly 2x speed** (its bytes are read as interleaved stereo frames, so two samples are consumed per output frame) |
+| 22050 Hz | plays at half speed; 88200 Hz at double |
+| 24-bit | garbage |
+
+Checking and fixing:
+
+```bash
+ffprobe -v error -show_entries stream=channels,sample_rate,bits_per_raw_sample -of csv=p=0 f.wav
+ffmpeg -i in.wav -ac 2 -ar 44100 -c:a pcm_s16le out.wav
+```
+
+Converting mono to stereo **does not change the duration** (byte rate and data
+size both double), so playlist durations stay valid. It does double the file
+size.
+
+This is a real footgun and it is documented rather than fixed. **`main/README.md`
+has the analysis and three ADF-supported fixes.** Note that the most promising one
+is not "make stereo tolerate mono" but **make the output mono** - a MUR usually
+drives one speaker, spatialisation is done by placing MURs and trimming
+`playback_offset_us`, and mono output would halve SD usage and read bandwidth as
+well as removing this class of bug outright.
+
 # API contract
 
 **HTTP_API.md** is the authoritative source for all HTTP API endpoints, request/response shapes, and behavior. Read it instead of inspecting `http_server.c` when working on HTTP-related tasks. When adding or changing endpoints, update HTTP_API.md to match.

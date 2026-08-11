@@ -79,6 +79,17 @@ Everything lives in `config.json` next to `mur_conductor.py`. `SIGHUP`
 (`systemctl reload mur-conductor`) reloads it; port and `gateway_status_url`
 changes need a real restart.
 
+**You should not normally need to edit this file.** Groups are fully manageable
+from the config server's `/ensembles` page, which drives the admin API below and
+writes back here. Hand-editing is still supported and is the only way to set the
+ports or `gateway_status_url`. Two caveats if you do edit by hand:
+
+- **There is no `SIGHUP` on Windows.** `signal.SIGHUP` does not exist there, so
+  the reload loop is never armed and a hand edit needs a full restart.
+- The service **exits** if `config.json` fails validation at startup, so a bad
+  hand edit is fatal rather than ignored. The admin API cannot get you into that
+  state: it validates the whole prospective group before writing anything.
+
 ```json
 {
   "listen_port": 5002,
@@ -141,8 +152,35 @@ Status / admin (`status_port`, default 4002):
 | Route | Purpose |
 |---|---|
 | `GET /status` | Everything: gateway link, TSF map state, and per-group readiness, members, current entry, beat count, next-downbeat ETA. |
+| `GET /api/triggers` | The trigger names this conductor drives (mirrored from the ingest port so the config server needs only one base URL). |
+| `POST /api/groups` | Create or delete a group: `{"action": "create"\|"delete", "name": ..., ...fields}`. |
 | `POST /api/groups/<name>/playlist` | Replace a playlist. Applied at the next boundary, so no entry is cut off mid-file. Persisted to `config.json`. |
-| `POST /api/groups/<name>` | Set `enabled`, `expected_device_ids`, or `loop_playlist`. |
+| `POST /api/groups/<name>` | Set any of `name`, `enabled`, `trigger_name`, `scene_name`, `track`, `expected_device_ids`, `readiness_timeout_s`, `prep_lead_ms`, `loop_playlist`. |
+
+Every mutating route validates the *whole* prospective group before applying any
+of it, so a rejected request changes nothing, and what gets persisted is always
+something `load_config` will accept. Responses carry `warnings` (the non-fatal
+sanity checks, which otherwise only reach the log), plus `persisted` and
+`persist_error` — a change is applied in memory even when `config.json` cannot be
+written, and that used to be a silent log line that lost the change on the next
+restart.
+
+### Which edits restart the group
+
+`GroupRunner` holds a live reference to its `GroupConfig` and re-reads it every
+cycle, so most fields take effect at the next downbeat with nothing interrupted:
+`expected_device_ids`, `prep_lead_ms`, `loop_playlist`, `readiness_timeout_s`.
+Renaming only rekeys the runner, so the timeline survives that too.
+
+`enabled`, `trigger_name`, `scene_name` and `track` **restart the group runner**.
+The device is never told to stop, so in OneShot mode it finishes the file it is
+playing — but a new downbeat fires immediately, so **playback jumps back to entry
+1 and `beat_count` resets**. Responses set `restarted: true` when this happened.
+
+For the last three that restart is the honest outcome, not a shortcut: the fleet
+is still configured for the *old* trigger name or scene, so the new runner
+correctly parks in `waiting_readiness` until the members are reprovisioned. Use
+the config server's *Check setup* to see exactly what each member still needs.
 
 ## Device setup (once per device)
 
@@ -164,6 +202,15 @@ curl -X POST http://$DEV/api/config/save
 ```
 
 `setup_ensemble.py` in this directory does all of that for a whole group at once.
+
+Or do it from the browser: the config server's `/ensembles` page has a **Check
+setup** button per group that reads each member's scenes directly and lists
+exactly what is wrong, in dependency order, each with a link to that device's
+page where the existing controls fix it. That check is the same logic as
+`setup_ensemble.py --verify`, plus two things the CLI cannot report: a permanent
+reminder that none of it survives a reboot without *Save Config*, and a note when
+a member is at the gateway but has never been scanned by the config server (so it
+has no device page to link to).
 
 Two deliberate choices worth knowing:
 

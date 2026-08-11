@@ -341,24 +341,86 @@ class DeviceRegistry:
         self.load_registry()
     
     def load_registry(self):
-        """Load device registry from device_scanner output."""
-        if self.registry_file.exists():
-            try:
-                with open(self.registry_file, 'r') as f:
-                    data = json.load(f)
-                    if 'devices' in data:
-                        # Convert list to dict keyed by ID
-                        for device in data['devices']:
-                            device_id = device.get('id', device.get('ip_address'))
-                            self.devices[device_id] = device
-                    logger.info(f"Loaded {len(self.devices)} devices from registry")
-            except Exception as e:
-                logger.error(f"Error loading registry: {e}")
-                self.devices = {}
-    
+        """Rebuild the in-memory registry from device_map.json.
+
+        The FILE IS AUTHORITATIVE: anything not in it is dropped from memory.
+        This used to merge into self.devices without ever resetting it, which
+        meant the dict could only grow — "Delete All" wrote an empty file, the
+        reload iterated zero devices, and every stale entry stayed live until
+        the process restarted. Same cause as duplicate cards after a device ID
+        change. Since the file now wins, any in-memory edit that should
+        survive must go through save_registry().
+        """
+        if not self.registry_file.exists():
+            self.devices = {}
+            return
+        try:
+            with open(self.registry_file, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            # device_scanner writes this file non-atomically, so a read that
+            # lands mid-write sees truncated JSON. Keep the last good contents
+            # rather than blanking the dashboard for one tick.
+            logger.error(f"Error loading registry (keeping previous contents): {e}")
+            return
+
+        fresh = {}
+        for device in data.get('devices', []):
+            device_id = device.get('id') or device.get('ip_address')
+            if device_id:
+                fresh[device_id] = device
+        self.devices = fresh
+        logger.info(f"Loaded {len(self.devices)} devices from registry")
+
+    def save_registry(self) -> bool:
+        """Persist the in-memory registry back to device_map.json.
+
+        Required because load_registry() is authoritative — an in-memory change
+        that never reaches the file gets silently reverted on the next reload
+        (which happens every probe slot and on every GET /api/devices).
+        Written via a temp file and replaced so a concurrent reader never sees
+        a half-written map.
+        """
+        try:
+            self.registry_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                'scan_time': datetime.now().isoformat(),
+                'scan_mode': 'update',
+                'network_range': 'registry-update',
+                'device_count': len(self.devices),
+                'devices': list(self.devices.values()),
+            }
+            tmp = self.registry_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(payload, f, indent=2)
+            os.replace(tmp, self.registry_file)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving registry: {e}")
+            return False
+
+    def clear(self):
+        """Drop every device from memory (the file is cleared separately)."""
+        self.devices = {}
+
     def update_device(self, device_info: Dict):
-        """Update device in registry."""
-        device_id = device_info.get('id', device_info.get('ip_address'))
+        """Update a device, re-keying it if its reported ID changed.
+
+        Dropping the old key matters: a device that reports a new ID (SD card
+        ejected so it falls back to its default ID, then restored) would
+        otherwise keep one entry per ID it has ever announced, and the
+        dashboard would show a duplicate card per ID for one physical unit.
+        """
+        device_id = device_info.get('id') or device_info.get('ip_address')
+        ip = device_info.get('ip_address')
+        stale_keys = [
+            key for key, existing in self.devices.items()
+            if key != device_id and (
+                existing is device_info or (ip and existing.get('ip_address') == ip))
+        ]
+        for key in stale_keys:
+            logger.info(f"Registry: dropping stale key '{key}' (now '{device_id}')")
+            del self.devices[key]
         self.devices[device_id] = device_info
         logger.debug(f"Updated device: {device_id}")
     

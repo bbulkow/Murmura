@@ -37,4 +37,14 @@ void mur_listener_stop(void);
  */
 esp_err_t mur_listener_resubscribe(void);
 
+/**
+ * @brief Whether the gateway socket is currently connected.
+ *
+ * Reported by GET /api/device and shown on the device's own status page. A
+ * configured-looking mur_gateway_ip proves nothing on its own - the port may be
+ * unset or the gateway may be unreachable - and this is the only way to see
+ * that without a serial console.
+ */
+bool mur_listener_is_connected(void);
+
 #endif // MUR_LISTENER_H

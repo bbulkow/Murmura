@@ -75,8 +75,16 @@ def resolve_ips(group: dict, conductor_url: str, overrides: dict) -> dict:
 
 
 def first_file(group: dict) -> str:
-    playlist = group.get("playlist") or []
-    return playlist[0].get("file", "") if playlist else ""
+    """Deliberately empty: the ensemble track should start with no file.
+
+    The conductor sets file_path before every downbeat, so anything put here is
+    only ever the file that plays when a file push has FAILED. Empty is the
+    safer resting state - the firmware ignores a trigger on a track with no file
+    (mur_listener.c), so a device whose prep did not land stays silent instead of
+    playing stale material. That silence is the property this whole design
+    exists to guarantee.
+    """
+    return ""
 
 
 def setup_device(device_id: str, ip: str, group: dict, dry_run: bool) -> bool:
@@ -173,8 +181,9 @@ def verify_device(device_id: str, ip: str, group: dict) -> bool:
                             f"'{t.get('trigger_name')}', not '{group['trigger_name']}'")
         if not t.get("active"):
             problems.append(f"track {track_idx} is not active (triggers will be ignored)")
-        if not t.get("file_path"):
-            problems.append(f"track {track_idx} has no file_path")
+        # file_path is deliberately not checked - see first_file(). Empty is the
+        # preferred resting state, and the conductor overwrites it before every
+        # downbeat either way.
 
     if problems:
         print(f"  {device_id:<12} ({ip}): NEEDS FIXING")
@@ -182,7 +191,8 @@ def verify_device(device_id: str, ip: str, group: dict) -> bool:
             print(f"      - {p}")
         return False
     print(f"  {device_id:<12} ({ip}): ok  (track {track_idx} trigger/OneShot "
-          f"'{group['trigger_name']}', file {t.get('file_path')})")
+          f"'{group['trigger_name']}', file "
+          f"{t.get('file_path') or '(none - silent until conducted)'})")
     return True
 
 

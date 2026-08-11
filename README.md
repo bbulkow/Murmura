@@ -36,6 +36,22 @@ A `synchronized: true` flag on a scene enforces that the scene can only be enter
 
 See [SYNC_DESIGN.md](SYNC_DESIGN.md) for the full design — prior art, the validation procedure, the measurement results, the on-device scheduler, AP-reboot handling, and the end-to-end protocol.
 
+## Ensembles — Conducted Playlists
+
+Synchronization gets many devices to start one sound at the same instant. An **ensemble** is what happens when you want that to keep being true across a multi-hour playlist, unattended, for the length of an installation. A group of Murs advances through a shared playlist in lockstep, starting together from a cold boot, and a unit that reboots alone rejoins cleanly at the next boundary — without ever being heard out of phase.
+
+The trick is an indirection. **mur-conductor** is a metronome and deliberately nothing more: it has no accurate clock and never computes a timestamp. At each playlist boundary — a *downbeat* — it emits a single trigger event. The **gateway** converts that into one absolute deadline on the shared WiFi-TSF clock and fans the *identical* value out to every subscribed device, each of which defers to it locally.
+
+That buys a property worth stating plainly: **network jitter between the conductor and the gateway cannot spread the fleet apart.** A late event shifts the whole grid together. What determines whether two speakers agree is only whether they received the same number — and they always do, because the gateway computes it once. Three things follow for free:
+
+- **Silent until the downbeat.** The ensemble track is in trigger mode, and `config_apply` never starts audio for trigger-mode tracks. A device boots *silent and armed*, so a solo reboot cannot be heard out of phase — it simply is not heard until it rejoins.
+- **Drift correction is structural.** Every entry boundary re-aligns the whole fleet, so drift cannot accumulate beyond a single playlist entry however long the piece runs.
+- **Fast cold start.** A readiness gate waits for the fleet and then fires immediately rather than making everyone wait out an entry, so a whole-installation power cycle converges within seconds of the Pi settling.
+
+The playlist lives on the Pi, not the devices, and that is deliberate: device-local playlist advance is driven by end-of-file detection, which happens at a slightly different instant on every unit and cannot stay aligned. Keeping it central makes every boundary a synchronized event instead.
+
+Configuration is entirely in the fleet dashboard — create a group, add members, and a readiness check tells you exactly what each device is still missing and configures it for you. See [ENSEMBLES.md](ENSEMBLES.md) for the full picture: setup walkthrough, playlist and duration handling, which edits restart a running group, and the known limitations.
+
 ## How It Works
 
 Each Murmura unit (a Mur) is a self-contained audio player built on an ESP32 board with an SD card slot and audio output. On power-up it mounts the SD card, connects to WiFi, loads its saved configuration, and begins looping audio. A JSON HTTP API on each device allows remote control of playback, volume, and file management. A companion fleet management server running on a Raspberry Pi (or any machine on the network) provides a web dashboard to discover, monitor, and control all units simultaneously.
@@ -54,6 +70,7 @@ not clear Espressif's desire to continue with updates. THe last label was 2024.
 - **Scenes** -- named playback configurations ("day", "night", "show") with instant switching, default boot scene, full config per scene
 - **Trigger-based scene switching** -- discrete triggers (value = scene name) and per-scene button triggers for hands-free scene changes via the Haven trigger system
 - **Sub-millisecond synchronized playback** across multiple devices, using the WiFi MAC's TSF clock — same architectural pattern as Sonos / Wi-Fi TimeSync (802.11mc), implemented natively on the ESP-ADF stack with no central time server. Includes per-device speaker-placement offset tuning and `synchronized` scene flag for atomic fleet-wide scene changes. See [SYNC_DESIGN.md](SYNC_DESIGN.md).
+- **Ensembles** -- conducted playlists across a group of devices: shared playlist advanced in lockstep, drift re-corrected at every entry boundary, devices boot silent-and-armed so a solo reboot never plays out of phase, readiness-gated cold start. Configured entirely from the web dashboard, including a per-device readiness check that fixes what it finds. See [ENSEMBLES.md](ENSEMBLES.md).
 - **Configuration persistence** -- scene configs saved to SD card and restored on boot
 - **File upload/delete over HTTP** -- push audio files to devices without physically touching the SD card
 - **Unique device identity** -- each unit has a configurable ID and reports its MAC address, IP, firmware version, and uptime
@@ -97,8 +114,11 @@ aithinker-adf/          Board support overlay files and build instructions
 mur-config-server/      Flask web server for fleet management (Python)
 device-manager/         CLI tools for batch device operations (Python)
 mur-gateway/            Mur Gateway server (bridges trigger sources to devices)
+mur-conductor/          Ensemble conductor -- playlist sequencer and downbeat source
+mur-abs-gateway/        Abstract-trigger gateway variant
 mock-mur-gateway/       Mock Mur Gateway for device testing (replaces real gateway)
 mock-trigger-server/    Mock Haven Trigger Server for end-to-end testing
+mock-scene-server/      Mock scene service for testing scene-change triggers
 ```
 
 ## Building and Running a Mur
@@ -222,12 +242,16 @@ See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response 
 
 - [HTTP_API.md](HTTP_API.md) -- complete HTTP API reference
 - [SYNC_DESIGN.md](SYNC_DESIGN.md) -- sub-millisecond multi-device synchronization (TSF, prior art, measurement, validation procedure)
+- [ENSEMBLES.md](ENSEMBLES.md) -- conducted playlists across a group of devices (setup, playlist handling, operation, limitations)
+- [mur-conductor/README.md](mur-conductor/README.md) -- the conductor service: endpoints, which edits restart a group, device provisioning
+- [main/README.md](main/README.md) -- firmware notes, including the audio file format requirement and why mono misplays
 - [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
 - [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions
 - [mur-config-server/README.md](mur-config-server/README.md) -- fleet management server documentation
 - [mur-config-server/SYSTEMD_INSTALL.md](mur-config-server/SYSTEMD_INSTALL.md) -- auto-start on Raspberry Pi
-- [device-manager/README_NETWORK_TOOLS.md](device-manager/README_NETWORK_TOOLS.md) -- CLI tools reference
-- [mur-gateway/MUR_PROTOCOL.md](mur-gateway/MUR_PROTOCOL.md) -- device ↔ Mur Gateway protocol spec
+- [device-manager/README.md](device-manager/README.md) -- CLI tools reference
+- [device-manager/CHEATSHEET.md](device-manager/CHEATSHEET.md) -- CLI quick reference
+- [MUR_PROTOCOL.md](MUR_PROTOCOL.md) -- device ↔ Mur Gateway protocol spec
 
 ## License
 

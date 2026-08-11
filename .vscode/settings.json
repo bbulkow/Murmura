@@ -1,5 +1,6 @@
 {
-    "idf.currentSetup": "C:\\Users\\bbulk\\dev\\esp\\esp-adf\\esp-idf",
-    "idf.flashType": "UART",
-    "idf.portWin": "COM4"
+  "idf.currentSetup": "C:\\Users\\bbulk\\dev\\esp\\esp-adf\\esp-idf",
+  "idf.flashType": "UART",
+  "idf.portWin": "COM4",
+  "idf.customExtraVars": {}
 }

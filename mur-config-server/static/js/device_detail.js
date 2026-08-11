@@ -172,6 +172,11 @@ async function loadDeviceData() {
                 console.debug('[DEVICE-DETAIL] device status from cache (server busy)');
             }
             updateDeviceInfo(deviceData);
+            applyMurGateway(deviceData);
+            applySceneTrigger(deviceData.scene_trigger_name || '');
+            noteSample(deviceData.status !== 'offline' && deviceData.status !== 'unknown');
+        } else {
+            noteSample(false);
         }
 
         // Get scenes (skip re-render if user is editing a trigger name)
@@ -192,9 +197,10 @@ async function loadDeviceData() {
             }
         }
 
-        // Get mur gateway config + scene trigger config
-        loadMurGateway();
-        loadSceneTriggerConfig();
+        // Gateway + scene-trigger config now come from the /api/device/<id>
+        // response above. They used to be two more requests per tick - and both
+        // hit the SAME endpoint - so a device that was slow during boot got four
+        // connections every 2 s and started refusing them.
     } catch (error) {
         console.error('[DEVICE-DETAIL] Error loading device data:', error);
         // Show clear error message if Flask server is down
@@ -204,10 +210,55 @@ async function loadDeviceData() {
     }
 }
 
+/*
+ * Status hysteresis.
+ *
+ * A booting device drops the odd request, and each drop increments the server's
+ * consecutive_failures until it crosses the offline threshold - then one success
+ * resets it. Rendering every sample verbatim turned that into the badge (and the
+ * whole page) flapping ONLINE <-> OFFLINE at the poll rate, which made the page
+ * unusable exactly when you most need it. So: require several consecutive bad
+ * samples before believing "offline", and hold the last known state meanwhile.
+ */
+const BAD_SAMPLES_BEFORE_OFFLINE = 3;
+let consecutiveBadSamples = 0;
+let lastGoodStatus = null;
+
+function noteSample(ok) {
+    if (ok) {
+        consecutiveBadSamples = 0;
+    } else {
+        consecutiveBadSamples++;
+    }
+    adjustPollInterval(ok);
+}
+
+function displayStatus(reported) {
+    const good = reported !== 'offline' && reported !== 'unknown';
+    if (good) {
+        lastGoodStatus = reported;
+        return { text: reported, cls: reported };
+    }
+    // Not yet confident it is really gone - keep showing what we last saw.
+    if (consecutiveBadSamples < BAD_SAMPLES_BEFORE_OFFLINE && lastGoodStatus) {
+        return { text: lastGoodStatus, cls: lastGoodStatus, tentative: true };
+    }
+    return { text: reported === 'unknown' ? 'unknown' : 'offline',
+             cls: reported === 'unknown' ? 'unknown' : 'offline' };
+}
+
 // Update device information display
 function updateDeviceInfo(data) {
-    document.getElementById('deviceStatus').textContent = data.status.toUpperCase();
-    document.getElementById('deviceStatus').className = `device-status ${data.status}`;
+    const shown = displayStatus(data.status);
+    const badge = document.getElementById('deviceStatus');
+    badge.textContent = shown.text.toUpperCase() + (shown.tentative ? '…' : '');
+    badge.className = `device-status ${shown.cls}`;
+    badge.title = shown.tentative
+        ? `Device did not answer the last ${consecutiveBadSamples} poll(s); `
+          + 'still showing the last known state.'
+        : '';
+    // Everything below keys off data.status, so give it the settled value too.
+    data = Object.assign({}, data, { status: shown.cls });
     
     if (data.mac_address) {
         document.getElementById('deviceMac').textContent = data.mac_address;
@@ -574,7 +625,37 @@ function showFileSelectionPanel(track, files) {
     // Build file list with clickable items
     const fileListContainer = document.getElementById('fileSelectionList');
     fileListContainer.innerHTML = '';
-    
+
+    /*
+     * "No file" first, because for a conductor-driven track it is the correct
+     * resting state, not an error. The firmware treats an empty file_path as
+     * "clear" and ignores a matching trigger outright (mur_listener.c), so an
+     * ensemble track with no file is guaranteed silent until the conductor
+     * pushes the entry it should play. Leaving a stale filename there means a
+     * failed file push still plays *something* on the next downbeat.
+     */
+    const noneItem = document.createElement('div');
+    noneItem.style.cssText = `
+        padding: 10px;
+        margin: 5px 0 10px 0;
+        background: #fff8e1;
+        border: 1px dashed #d6b656;
+        border-radius: 5px;
+        cursor: pointer;
+    `;
+    noneItem.innerHTML = `
+        <strong>No file</strong>
+        <span style="float: right; color: #666;">clear</span>
+        <div style="font-size:12px;color:#666;margin-top:3px;">
+            Track stays silent until something sets a file. Correct for a track
+            driven by the conductor, which sets the file before each downbeat.
+        </div>
+    `;
+    noneItem.onmouseover = function() { this.style.background = '#fff3c4'; };
+    noneItem.onmouseout  = function() { this.style.background = '#fff8e1'; };
+    noneItem.onclick = function() { selectFileForTrack('', 'No file'); };
+    fileListContainer.appendChild(noneItem);
+
     files.forEach((file, index) => {
         const fileItem = document.createElement('div');
         fileItem.style.cssText = `
@@ -624,7 +705,10 @@ async function selectFileForTrack(filePath, fileName) {
         });
         
         if (response.ok) {
-            showMessage(`Set "${fileName}" for Track ${currentTrackForFileSelection}`, 'success');
+            showMessage(filePath
+                ? `Set "${fileName}" for Track ${currentTrackForFileSelection}`
+                : `Cleared the file on Track ${currentTrackForFileSelection} - it stays `
+                  + 'silent until something sets one', 'success');
             closeFileSelection();
             setTimeout(loadDeviceData, 500);
         } else {
@@ -729,25 +813,45 @@ function disableControls(disabled) {
     document.getElementById('rebootBtn').disabled = disabled;
 }
 
+/*
+ * Adaptive poll interval.
+ *
+ * A device that is struggling (booting, mounting the SD card, connecting to the
+ * gateway) is exactly the wrong thing to poll every 2 s: the requests it drops
+ * are what push it to 'offline', and the retries keep it there. Back off while
+ * it is failing, snap straight back to 2 s on the first good sample.
+ */
+const POLL_MS_MIN = 2000;
+const POLL_MS_MAX = 10000;
+let pollMs = POLL_MS_MIN;
+
+function adjustPollInterval(ok) {
+    const previous = pollMs;
+    pollMs = ok ? POLL_MS_MIN : Math.min(POLL_MS_MAX, Math.round(pollMs * 1.5));
+    if (pollMs !== previous && refreshInterval) {
+        console.debug(`[DEVICE-DETAIL] poll interval ${previous} -> ${pollMs} ms`);
+        startAutoRefresh();
+    }
+}
+
 // Start auto-refresh
 function startAutoRefresh() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
     }
-    
-    console.log('[DEVICE-DETAIL] Starting auto-refresh every 2 seconds');
+
     refreshInterval = setInterval(() => {
         loadDeviceData();
-    }, 2000);
+    }, pollMs);
 }
 
-// Reset auto-refresh timer (delays next refresh by 2 seconds)
+// Reset auto-refresh timer (delays the next refresh by one interval)
 function resetAutoRefresh() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
         refreshInterval = setInterval(() => {
             loadDeviceData();
-        }, 2000);
+        }, pollMs);
     }
 }
 
@@ -800,17 +904,42 @@ async function loadWiFiStatus() {
 }
 
 // Load and display Mur Gateway config
+/* Explicit refresh only (e.g. right after a save). The poll gets these fields
+   from /api/device/<id> and calls applyMurGateway directly - see loadDeviceData. */
 async function loadMurGateway() {
     try {
         const response = await fetch(`/api/device/${currentDevice}/mur-gateway`);
         if (!response.ok) return;
-        const data = await response.json();
+        applyMurGateway(await response.json());
+    } catch (e) {
+        // silently ignore — not critical
+    }
+}
+
+function applyMurGateway(data) {
+    try {
         const ip = data.mur_gateway_ip || '';
-        const port = data.mur_gateway_port || 4000;
+        // Report the device's actual port, never a substituted default. This
+        // used to be `data.mur_gateway_port || 4000`, which turned the unset
+        // value 0 into a confident ":4000" - so a device that could never
+        // connect displayed a perfectly correct-looking gateway.
+        const port = Number(data.mur_gateway_port) || 0;
         deviceMurGatewayIp = ip;
-        deviceMurGatewayPort = port;
-        const display = ip ? `${ip}${port ? ':' + port : ''}` : '—';
-        document.getElementById('murGatewayDisplay').textContent = display;
+        // The trigger-list lookup needs *a* port (it queries port+1 on the
+        // gateway's status server) and must not inherit a broken 0.
+        deviceMurGatewayPort = port || 4000;
+
+        const el = document.getElementById('murGatewayDisplay');
+        if (!ip) {
+            el.textContent = '— not set';
+            el.style.color = '#b26a00';
+        } else if (!port) {
+            el.textContent = `${ip}:0 — port not set, cannot connect`;
+            el.style.color = '#c62828';
+        } else {
+            el.textContent = `${ip}:${port}`;
+            el.style.color = '#555';
+        }
     } catch (e) {
         // silently ignore — not critical
     }
@@ -818,6 +947,12 @@ async function loadMurGateway() {
 
 window.showMurGatewayEdit = function() {
     const row = document.getElementById('murGatewayEditRow');
+    // Prefill from current values so editing the IP cannot silently blank the
+    // port, and so a broken 0 is visible in the field being corrected.
+    const ipInput = document.getElementById('murGatewayIpInput');
+    const portInput = document.getElementById('murGatewayPortInput');
+    if (ipInput && !ipInput.value) ipInput.value = deviceMurGatewayIp || '';
+    if (portInput && !portInput.value) portInput.value = deviceMurGatewayPort || 4000;
     row.style.display = 'flex';
 };
 
@@ -829,8 +964,18 @@ window.saveMurGateway = async function() {
     const ip = document.getElementById('murGatewayIpInput').value.trim();
     const portRaw = document.getElementById('murGatewayPortInput').value.trim();
     if (!ip) { showMessage('Enter a Mur Gateway IP', 'error'); return; }
-    const payload = { mur_gateway_ip: ip };
-    if (portRaw) payload.mur_gateway_port = parseInt(portRaw);
+    // Always send a port. Omitting it left whatever the device already had -
+    // which is 0 on a device that could not load its gateway config, giving a
+    // valid IP with an unconnectable port and no error anywhere.
+    const port = parseInt(portRaw, 10);
+    const payload = {
+        mur_gateway_ip: ip,
+        mur_gateway_port: (Number.isInteger(port) && port > 0 && port < 65536) ? port : 4000,
+    };
+    if (portRaw && payload.mur_gateway_port !== port) {
+        showMessage(`Port "${portRaw}" is not a valid port; using 4000.`, 'error');
+        return;
+    }
     try {
         const response = await fetch(`/api/device/${currentDevice}/mur-gateway`, {
             method: 'POST',
@@ -851,25 +996,38 @@ window.saveMurGateway = async function() {
 
 // --- Scene Trigger per-device ---
 
+/* Explicit refresh only - this was the SECOND per-tick fetch of the same
+   endpoint loadMurGateway already hit. The poll now calls applySceneTrigger with
+   the value from /api/device/<id>. */
 async function loadSceneTriggerConfig() {
     try {
         const response = await fetch(`/api/device/${currentDevice}/mur-gateway`);
         if (!response.ok) return;
         const data = await response.json();
-        const stn = data.scene_trigger_name || '';
-        document.getElementById('sceneTriggerDisplay').textContent = stn || '--';
-        // Check for scene/trigger value mismatches
-        if (stn) {
-            checkSceneTriggerMismatch(stn);
-        } else {
-            const warningDiv = document.getElementById('sceneTriggerWarnings');
-            if (warningDiv) warningDiv.style.display = 'none';
-        }
+        applySceneTrigger(data.scene_trigger_name || '');
     } catch (e) {
         // not critical
     }
-    // Pre-populate the button trigger datalist (On/Off triggers)
     populateButtonTriggerDatalist();
+}
+
+let lastSceneTriggerChecked = null;
+function applySceneTrigger(stn) {
+    const el = document.getElementById('sceneTriggerDisplay');
+    if (el) el.textContent = stn || '--';
+
+    // Only re-validate when the value actually changes. checkSceneTriggerMismatch
+    // fetches the scene list *and* the gateway trigger list, so running it on
+    // every 2 s tick added two more requests per poll for no new information.
+    if (stn === lastSceneTriggerChecked) return;
+    lastSceneTriggerChecked = stn;
+
+    if (stn) {
+        checkSceneTriggerMismatch(stn);
+    } else {
+        const warningDiv = document.getElementById('sceneTriggerWarnings');
+        if (warningDiv) warningDiv.style.display = 'none';
+    }
 }
 
 async function checkSceneTriggerMismatch(triggerName) {
@@ -1182,6 +1340,27 @@ function renderAllScenes(scenesData) {
 
     container.innerHTML = html;
     attachAllSceneHandlers();
+    highlightDeepLinkedScene();
+}
+
+/*
+ * The ensembles page links here as ?scene=<name>&track=<n> from its readiness
+ * checklist, so the operator lands on the scene block they were told to fix
+ * instead of hunting for it. One-shot: the 2 s poll re-renders the scene list,
+ * and re-scrolling on every tick would fight the user.
+ */
+let deepLinkHandled = false;
+function highlightDeepLinkedScene() {
+    if (deepLinkHandled) return;
+    const wanted = new URLSearchParams(window.location.search).get('scene');
+    if (!wanted) { deepLinkHandled = true; return; }
+    const block = document.querySelector(`.scene-block[data-scene="${wanted}"]`);
+    if (!block) return;   // scene may not exist yet - that is often the point
+    deepLinkHandled = true;
+    block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const previous = block.style.boxShadow;
+    block.style.boxShadow = '0 0 0 4px #ffd75e';
+    setTimeout(() => { block.style.boxShadow = previous; }, 2500);
 }
 
 // Attach handlers for all scene controls (scene-aware version)

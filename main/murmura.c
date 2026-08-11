@@ -501,8 +501,27 @@ void audio_control_task(void *pvParameters)
                      track_manager->mur_gateway_port,
                      track_manager->scene_trigger_name[0] ? track_manager->scene_trigger_name : "(none)",
                      track_manager->device_volume_percent);
+        } else {
+            ESP_LOGW(TAG, "No gateway config loaded (no SD card, or the file is "
+                          "absent/corrupt); using defaults.");
         }
         free(gw_config);
+
+        /* Repair an unusable port, whichever way we got here.
+         *
+         * Two paths produce 0: config_load() failing (track_manager came from
+         * calloc), or a stored track_config.json that was written while the port
+         * was 0. Port 0 is not connectable, and setting only the IP from the web
+         * UI does not fix it because the port is a separate field - so the
+         * device would sit there looking configured and never connect, with the
+         * failure visible only on serial. Checking after the load covers the
+         * persisted case too; an earlier version only handled load failure and
+         * left a saved 0 broken across reboots. */
+        if (track_manager->mur_gateway_port == 0) {
+            track_manager->mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT;
+            ESP_LOGW(TAG, "Gateway port was 0 (unusable); assuming default %d",
+                     MUR_GATEWAY_DEFAULT_PORT);
+        }
 
     }
 

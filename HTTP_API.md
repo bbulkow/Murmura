@@ -299,6 +299,31 @@ Empty name clears default.
 
 ### WiFi Management
 
+Stored networks live in **NVS**, not on the SD card — they survive reboots
+without `POST /api/config/save`. Up to 10 networks (`WIFI_MAX_NETWORKS`).
+The device's own `/settings` page provides a UI for both endpoints below.
+
+**Neither endpoint touches the live connection.** Both only edit the stored
+list; the device stays on whatever AP it is currently associated with. The
+stored list is consulted the next time the device needs to connect — on reboot,
+or after losing its current AP — and the background task takes whichever saved
+network it finds. Adding an entry therefore does *not* mean the device will
+switch to it, and rebooting only forces the selection to run again, not to
+choose the newest entry.
+
+Two consequences worth designing around:
+
+- There is no "connect to this network now" operation. To move a device
+  deliberately, add the new network, remove the ones you do not want it to
+  choose, then reboot (`POST /api/system/reboot`).
+- Removing the network the device is using does not disconnect it, but the
+  device will not rejoin that network after its next reboot.
+
+An earlier firmware called `wifi_manager_reconnect()` from `/api/wifi/add`,
+which dropped the association on every save. That was removed: saving
+credentials should not knock a working device off the air, and it could leave
+the device unreachable if the new entry was mistyped.
+
 #### Add WiFi Network
 
 **POST** `/api/wifi/add`
@@ -308,6 +333,9 @@ Empty name clears default.
 { "ssid": "NetworkName", "password": "NetworkPassword" }
 ```
 
+An empty `password` is allowed (open network). Re-adding an existing SSID
+updates its password rather than creating a duplicate.
+
 **Response (success):**
 ```json
 {
@@ -316,6 +344,9 @@ Empty name clears default.
   "ssid": "NetworkName"
 }
 ```
+
+**Errors** (HTTP 200 with `success: false`): `"Missing or invalid SSID"`,
+`"Missing or invalid password"`, `"Maximum number of networks reached"`.
 
 #### Remove WiFi Network
 
@@ -334,6 +365,9 @@ Empty name clears default.
   "ssid": "NetworkName"
 }
 ```
+
+**Errors** (HTTP 200 with `success: false`): `"Missing or invalid SSID"`,
+`"Network not found"`.
 
 ---
 

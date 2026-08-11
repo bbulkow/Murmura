@@ -161,6 +161,93 @@ The server provides RESTful API endpoints for programmatic access:
 - `POST /api/batch/save-config` - Save config on multiple devices
 - `POST /api/batch/reboot` - Reboot multiple devices
 
+### Ensembles (proxied to mur-conductor)
+- `GET /api/conductor/status` - Conductor + gateway + per-group state. Degrades to
+  HTTP 200 with `{error, groups: []}` so `/ensembles` still renders.
+- `GET /api/conductor/triggers` - Trigger names the conductor drives (datalist source)
+- `POST /api/conductor/groups` - Create/delete a group: `{action, name, ...fields}`
+- `POST /api/conductor/groups/<group>` - Update any group field (see mur-conductor/README.md
+  for which ones restart the group)
+- `POST /api/conductor/groups/<group>/playlist` - Replace a playlist
+
+### Ensembles (this server's own work)
+- `GET /api/ensemble/<group>/readiness` - Per-member setup check. Reads each member's
+  `/api/scenes` directly and returns structured problems, each with a code, a plain
+  sentence, why it matters, how to fix it, and a link to that device's page. Ordered
+  by dependency, not by check order: a wrong active scene or a loop-mode track is
+  the *cause* of "not subscribed", so those are listed first. **Contacts every
+  member, so it is on-demand only** - never called from the status poll.
+- `POST /api/ensemble/<group>/configure` - Provision members for this group.
+  Body `{"device_id": "30"}`, `{"device_ids": [...]}`, or `{}` for all. Re-runs the
+  readiness check per device and applies **only the missing steps** (create scene,
+  configure track, set boot default, activate, save to SD), then re-reads the
+  device and reports what is still wrong. Idempotent - safe to press twice.
+  Clears `file_path`: the conductor writes it before every downbeat, and an empty
+  one keeps a device silent if a file push fails, rather than playing stale
+  material. On a running group this can cost that member one entry.
+- `GET /api/ensemble/<group>/probe?file=X[&size=N]` - Duration + format of one file
+  from its WAV header, for the playlist editor's auto-fill
+- `GET /api/ensemble/<group>/files` - File inventory across members; `?probe=a.wav,b.wav`
+  adds durations read from the WAV headers
+- `POST /api/ensemble/<group>/sync` - Queue throttled copies of files missing from a member
+- `GET /api/ensemble/sync-status` - Progress of the copy queue
+
+## Audio file format
+
+**Every WAV must be 44100 Hz, 16-bit, stereo PCM.** Nothing in this server or on
+the device converts formats.
+
+A **mono** file plays at exactly **2x speed** with no error anywhere — the device
+reads its bytes as interleaved stereo. A wrong sample rate plays at the wrong
+speed. The only symptom is what you hear.
+
+```bash
+# check
+ffprobe -v error -show_entries stream=channels,sample_rate -of csv=p=0 f.wav
+# fix (duration is preserved; file size doubles)
+ffmpeg -i in.wav -ac 2 -ar 44100 -c:a pcm_s16le out.wav
+```
+
+Note the interaction with playlists: durations are read from the WAV header, so a
+mono entry finishes in half its declared span and the conductor waits out the rest
+in silence. Converting the file fixes both symptoms and leaves the playlist
+durations correct, because mono-to-stereo does not change duration.
+
+`main/README.md` has the full analysis and three ADF-supported firmware fixes.
+The most promising is to make the device output **mono** - these speakers are not
+left/right pairs - which would remove the format footgun entirely and halve file
+sizes.
+
+## Ensembles page
+
+`/ensembles` is the whole ensemble workflow: create and delete groups, edit every
+group field, pick members, build the playlist from the files members actually
+share, and check what each device still needs. `mur-conductor/config.json` should
+not need to be opened.
+
+Device-side setup stays deliberately manual. The checklist tells you exactly what
+is wrong and links to the device page, where the existing scene controls fix it -
+rather than a single "provision" button that hides what it changed.
+
+The order that works: **create the group (leave it disabled) → add members → Check
+setup → Configure this device (or Configure all) → set the playlist → Enable.**
+
+*Check setup* lists exactly what each member is missing, in dependency order.
+**Configure this device** then applies only those steps and saves to SD, and
+**Configure all** does every member that needs it. Doing it by hand on the device
+page still works and the checklist links there - the button is the same five
+steps without the clicking.
+
+Two lags are worth knowing, and the page says so where it matters:
+
+- The conductor's view of the fleet is a 10 s poll, and subscriptions are
+  published by the *device*. So after you fix something, the checklist (a direct
+  device read) goes green immediately while the Status column still says "not
+  subscribed" for a few seconds. That is the conductor catching up, not a failed
+  fix - don't undo it.
+- Nothing you change on a device survives a reboot until *Save Config*, and that
+  cannot be verified remotely, so the checklist always lists it as a final step.
+
 ## WebSocket Events
 
 The server supports WebSocket connections for real-time updates:
@@ -214,27 +301,41 @@ The server maintains a persistent registry of discovered devices in `device_regi
 - First and last seen timestamps
 - Device configuration
 
-## Known Bugs
+## Registry semantics (fixed: stale cards / "Delete All" doing nothing)
 
-### Stale device cards / duplicate entries after device ID changes
+`device_map.json` is **authoritative**. `DeviceRegistry.load_registry()`
+rebuilds `self.devices` from the file on every call, so anything absent from
+the file is gone from memory.
 
-`DeviceRegistry.load_registry()` in [network_wrapper.py](network_wrapper.py)
-does not clear `self.devices` before reloading from `device_map.json`. If a
-device's reported ID changes during a session (for example: SD card briefly
-ejected so the device falls back to its default ID, then put back so it
-re-announces with its real ID), the in-memory dict accumulates an entry under
-each ID it has ever seen — even after `device_map.json` is rewritten with only
-the current ID.
+This was previously a merge that never reset the dict, so the registry could
+only grow. Two symptoms, one cause:
 
-The dashboard then shows duplicate cards for the same physical device (same
-IP, same scene, same tracks) and/or stale cards for IDs that no longer exist
-in the file.
+- **"Delete All Devices" appeared to do nothing.** It wrote an empty
+  `device_map.json` and reloaded, but the reload iterated zero devices and left
+  every existing entry in memory. Stale cards stayed on the dashboard until the
+  process was restarted — and since the reload happens on every
+  `GET /api/devices`, they never aged out.
+- **Duplicate cards after a device ID change** (SD card briefly ejected so the
+  device falls back to its default ID, then restored). The dict kept one entry
+  per ID the device had ever announced.
 
-**Workaround**: restart the config server, or click "Delete All" and rescan.
-Both flush the in-memory dict.
+Three consequences of the file being authoritative, all handled in code:
 
-**Fix when there's time**: clear `self.devices = {}` at the top of
-`load_registry()` so in-memory state always matches the file.
+1. `update_device()` drops any stale key for the same physical device (matched
+   on `ip_address`) when re-keying, so a rename cannot leave a duplicate.
+2. In-memory edits that must survive have to be written through with
+   `save_registry()` (temp file + atomic replace). The probe loop calls it when
+   a device's **id or mac** changes — not for the `online` flag, which churns
+   every slot and would otherwise rewrite the file continuously. Without this,
+   an ID change would be reverted by the next reload and re-detected forever.
+3. A failed/partial read **keeps the previous contents** rather than blanking
+   the registry. `device_scanner.py` writes the map non-atomically, so a reload
+   landing mid-write sees truncated JSON; blanking there would flicker the
+   dashboard.
+
+Clearing devices flushes all three stores that hold device state: the file, the
+registry dict, and the `_device_cache` in `app.py`. Clearing only the file is
+what made the original bug survive.
 
 ## Troubleshooting
 

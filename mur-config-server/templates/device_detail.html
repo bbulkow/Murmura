@@ -176,7 +176,7 @@
             </div>
             <div id="murGatewayEditRow" style="display: none; margin-top: 6px; display: none; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <input type="text" id="murGatewayIpInput" placeholder="IP address" style="width: 130px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
-                <input type="number" id="murGatewayPortInput" placeholder="port (optional)" style="width: 130px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <input type="number" id="murGatewayPortInput" placeholder="port (default 4000)" style="width: 130px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px;">
                 <button onclick="saveMurGateway()" class="btn btn-primary" style="padding: 4px 12px; font-size: 13px;">Save</button>
                 <button onclick="hideMurGatewayEdit()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">Cancel</button>
             </div>
@@ -229,7 +229,7 @@
                 <span style="display:inline-flex; align-items:center; gap:6px; font-size:14px; font-weight:normal;">
                     <input type="text" id="newSceneName" placeholder="New scene name"
                            style="width:140px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;"
-                           pattern="[a-zA-Z0-9_-]+" title="Alphanumeric, hyphens, underscores">
+                           pattern="[a-zA-Z0-9_\-]+" title="Alphanumeric, hyphens, underscores">
                     <button onclick="createScene()" class="btn btn-primary" style="padding:3px 10px;font-size:12px;">Create</button>
                 </span>
             </h3>

@@ -68,6 +68,10 @@ static track_manager_t  *s_manager     = NULL;
 static scene_manager_t  *s_scene_mgr   = NULL;
 static TaskHandle_t      s_task_handle = NULL;
 static volatile bool     s_resubscribe = false;
+/* Whether the gateway socket is currently up. Reported by GET /api/device so
+ * the device's own status page can show ground truth: a plausible-looking
+ * gateway address that never connects is otherwise only visible on serial. */
+static volatile bool     s_connected   = false;
 
 /* ---- forward declarations ----------------------------------------- */
 static void  mur_task(void *arg);
@@ -111,6 +115,7 @@ void mur_listener_stop(void)
         vTaskDelete(s_task_handle);
         s_task_handle = NULL;
     }
+    s_connected = false;
     s_manager   = NULL;
     s_scene_mgr = NULL;
 }
@@ -132,6 +137,18 @@ esp_err_t mur_listener_resubscribe(void)
 static int connect_to_gateway(void)
 {
     if (!s_manager || s_manager->mur_gateway_ip[0] == '\0') {
+        return -1;
+    }
+
+    /* Port 0 is not connectable, and it is the value you get when the gateway
+     * config could not be loaded. Without this check we spent the retry loop
+     * calling connect() on :0 forever, which looks identical in the log to a
+     * gateway that is merely down - so a device that was never configured
+     * looked like a network problem. */
+    if (s_manager->mur_gateway_port == 0) {
+        ESP_LOGW(TAG, "Mur Gateway port is not set (0) for %s - cannot connect. "
+                      "Set mur_gateway_port (default %d).",
+                 s_manager->mur_gateway_ip, MUR_GATEWAY_DEFAULT_PORT);
         return -1;
     }
 
@@ -684,6 +701,7 @@ static void mur_task(void *arg)
         }
         send_get_scene(sock);   /* non-fatal if it fails; periodic timer will retry */
 
+        s_connected = true;
         s_resubscribe = false;
         line_pos = 0;
         TickType_t last_pull_tick = xTaskGetTickCount();
@@ -733,10 +751,16 @@ static void mur_task(void *arg)
             }
         }
 
+        s_connected = false;
         close(sock);
         ESP_LOGI(TAG, "Connection closed, will reconnect in %d s...", RECONNECT_MS / 1000);
         vTaskDelay(pdMS_TO_TICKS(RECONNECT_MS));
     }
 
     vTaskDelete(NULL);
+}
+
+bool mur_listener_is_connected(void)
+{
+    return s_connected;
 }

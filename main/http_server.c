@@ -454,6 +454,11 @@ static esp_err_t device_get_handler(httpd_req_t *req) {
                                 config_late_policy_to_str(g_track_manager->late_policy));
         cJSON_AddNumberToObject(response, "playback_offset_us",
                                 g_track_manager->playback_offset_us);
+        /* Whether the socket is actually up. The address alone says nothing -
+         * an unset port or an unreachable gateway both leave it configured but
+         * silent - so report the outcome, not just the intent. */
+        cJSON_AddBoolToObject(response, "mur_gateway_connected",
+                              mur_listener_is_connected());
     } else {
         cJSON_AddStringToObject(response, "mur_gateway_ip", "");
         cJSON_AddNumberToObject(response, "mur_gateway_port", MUR_GATEWAY_DEFAULT_PORT);
@@ -461,6 +466,7 @@ static esp_err_t device_get_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(response, "device_volume", 100);
         cJSON_AddStringToObject(response, "late_policy", "play");
         cJSON_AddNumberToObject(response, "playback_offset_us", 0);
+        cJSON_AddBoolToObject(response, "mur_gateway_connected", false);
     }
 
     // --- WiFi status and networks ---
@@ -719,11 +725,18 @@ static esp_err_t wifi_add_network_handler(httpd_req_t *req) {
     
     if (ret == ESP_OK) {
         cJSON_AddBoolToObject(response, "success", true);
-        cJSON_AddStringToObject(response, "message", "Network added successfully");
+        cJSON_AddStringToObject(response, "message",
+                                "Network saved to NVS. The device selects from its "
+                                "saved networks the next time it connects.");
         cJSON_AddStringToObject(response, "ssid", ssid_json->valuestring);
-        
-        // Trigger reconnection to try the new network
-        wifi_manager_reconnect();
+
+        /* Deliberately does NOT call wifi_manager_reconnect(). That call drops
+           the current association, so merely *saving* a network knocked the
+           device off the air for a reconnect cycle - and could land it on a
+           different AP, or lose it entirely if the new entry was mistyped. The
+           credentials are already committed to NVS here; applying them is a
+           separate, explicit act (reboot). /api/wifi/remove never reconnected
+           either, so the two endpoints now behave the same way. */
     } else {
         cJSON_AddBoolToObject(response, "success", false);
         if (ret == ESP_ERR_NO_MEM) {
@@ -1460,7 +1473,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "  font-weight: 500; "
         "  margin-bottom: 8px; "
         "}"
-        "input[type='text'] { "
+        "input[type='text'], input[type='password'] { "
         "  width: 100%; "
         "  padding: 10px; "
         "  border: 2px solid #e0e0e0; "
@@ -1468,10 +1481,43 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "  font-size: 14px; "
         "  transition: border-color 0.3s ease; "
         "}"
-        "input[type='text']:focus { "
+        "input[type='text']:focus, input[type='password']:focus { "
         "  outline: none; "
         "  border-color: #667eea; "
         "}"
+        ".net-row { "
+        "  display: flex; "
+        "  align-items: center; "
+        "  gap: 8px; "
+        "  padding: 8px 12px; "
+        "  background: #f5f5f5; "
+        "  border-radius: 6px; "
+        "  margin-bottom: 6px; "
+        "}"
+        ".net-row .ssid { flex: 1; color: #333; font-size: 14px; word-break: break-all; }"
+        ".badge { "
+        "  background: #4caf50; "
+        "  color: white; "
+        "  font-size: 11px; "
+        "  font-weight: 600; "
+        "  padding: 2px 8px; "
+        "  border-radius: 10px; "
+        "  white-space: nowrap; "
+        "}"
+        ".badge.range { background: #90a4ae; }"
+        ".btn-small { "
+        "  background: #e0e0e0; "
+        "  color: #c62828; "
+        "  border: none; "
+        "  padding: 5px 10px; "
+        "  border-radius: 5px; "
+        "  font-size: 12px; "
+        "  font-weight: 600; "
+        "  cursor: pointer; "
+        "}"
+        ".btn-small:hover { background: #ffcdd2; }"
+        ".hint { color: #888; font-size: 12px; margin-top: 12px; line-height: 1.5; }"
+        ".spacer { margin-top: 8px; }"
         ".btn-primary { "
         "  background: #667eea; "
         "  color: white; "
@@ -1548,8 +1594,30 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "<button class='btn-primary' onclick='updateDeviceId()'>Update ID</button>"
         "<button class='btn-secondary' onclick='loadCurrentId()'>Refresh</button>"
         "</div>"
+
+        "<div class='card'>"
+        "<h2>WiFi Networks</h2>"
+        "<div id='wifi-message' class='status-message'></div>"
+        "<div class='current-value'>Status: <span id='wifi-status'>Loading...</span></div>"
+        "<label>Saved networks (<span id='net-count'>0</span> of 10)</label>"
+        "<div id='net-list'></div>"
+        "<div class='form-group'>"
+        "<label for='new-ssid'>Add a network</label>"
+        "<input type='text' id='new-ssid' placeholder='Network name (SSID)' maxlength='32'>"
+        "<input type='password' id='new-pass' class='spacer' "
+        "placeholder='Password (leave blank if open)' maxlength='64'>"
         "</div>"
-        
+        "<button class='btn-primary' onclick='addNetwork()'>Add Network</button>"
+        "<button class='btn-secondary' onclick='loadWifi()'>Refresh</button>"
+        "<p class='hint'>Saved immediately and kept across reboots; no need to save "
+        "config. The current connection is left alone &mdash; the device only picks "
+        "from this list when it next needs to connect, and it takes whichever saved "
+        "network it finds, not necessarily the newest. Rebooting forces that choice "
+        "to happen again.</p>"
+        "<button class='btn-secondary' onclick='rebootDevice()'>Reboot Device</button>"
+        "</div>"
+        "</div>"
+
         "<script>"
         "function loadCurrentId() {"
         "  fetch('/api/device')"
@@ -1585,7 +1653,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "      msg.className = 'status-message success';"
         "      msg.textContent = 'ID updated!';"
         "      document.getElementById('current-id').textContent = id;"
-        "      setTimeout(function() { msg.style.display = 'none'; }, 3000);"
+        /* Hide by dropping the kind class, never with an inline display:none -
+           an inline style outranks the .success/.error rules, so it would make
+           every later message on this card permanently invisible. */
+        "      setTimeout(function() { msg.className = 'status-message'; }, 3000);"
         "    } else {"
         "      msg.className = 'status-message error';"
         "      msg.textContent = d.error || 'Failed';"
@@ -1596,8 +1667,146 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
         "    msg.textContent = 'Network error';"
         "  });"
         "}"
-        "if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadCurrentId);"
-        "else loadCurrentId();"
+        "function wifiMsg(kind, text) {"
+        "  var m = document.getElementById('wifi-message');"
+        "  m.className = 'status-message ' + kind;"
+        "  m.textContent = text;"
+        "}"
+        "function loadWifi() {"
+        "  fetch('/api/device')"
+        "    .then(function(r) { if (!r.ok) throw new Error('HTTP err'); return r.json(); })"
+        "    .then(function(d) { renderWifi(d.wifi || {}); })"
+        "    .catch(function() {"
+        "      document.getElementById('wifi-status').textContent = 'Error';"
+        "    });"
+        "}"
+        /* Built with createElement rather than innerHTML: an SSID may contain
+           quotes or angle brackets, and textContent makes that a non-issue. */
+        "function renderWifi(w) {"
+        "  window._wifi = w;"
+        "  var st = document.getElementById('wifi-status');"
+        "  if (w.connected) {"
+        "    st.textContent = 'Connected to ' + w.ssid +"
+        "      (w.signal_strength ? ' (' + w.signal_strength + '%, ' + w.rssi + ' dBm)' : '');"
+        "  } else {"
+        "    st.textContent = 'Not connected';"
+        "  }"
+        "  var nets = w.networks || [];"
+        "  document.getElementById('net-count').textContent = nets.length;"
+        "  var list = document.getElementById('net-list');"
+        "  list.innerHTML = '';"
+        "  if (!nets.length) {"
+        "    var none = document.createElement('div');"
+        "    none.className = 'net-row';"
+        "    none.textContent = 'No networks saved yet';"
+        "    list.appendChild(none);"
+        "    return;"
+        "  }"
+        "  nets.forEach(function(n) {"
+        "    var row = document.createElement('div');"
+        "    row.className = 'net-row';"
+        "    var s = document.createElement('span');"
+        "    s.className = 'ssid';"
+        "    s.textContent = n.ssid;"
+        "    row.appendChild(s);"
+        "    if (w.connected && n.ssid === w.ssid) {"
+        "      var b = document.createElement('span');"
+        "      b.className = 'badge';"
+        "      b.textContent = 'connected';"
+        "      row.appendChild(b);"
+        "    } else if (n.available) {"
+        "      var b2 = document.createElement('span');"
+        "      b2.className = 'badge range';"
+        "      b2.textContent = 'in range';"
+        "      row.appendChild(b2);"
+        "    }"
+        "    var btn = document.createElement('button');"
+        "    btn.className = 'btn-small';"
+        "    btn.textContent = 'Forget';"
+        "    btn.onclick = function() { forgetNetwork(n.ssid); };"
+        "    row.appendChild(btn);"
+        "    list.appendChild(row);"
+        "  });"
+        "}"
+        "function addNetwork() {"
+        "  var ssid = document.getElementById('new-ssid').value.trim();"
+        "  var pass = document.getElementById('new-pass').value;"
+        "  if (!ssid) { wifiMsg('error', 'Enter a network name'); return; }"
+        "  wifiPost('/api/wifi/add', {ssid: ssid, password: pass}, true);"
+        "}"
+        "function forgetNetwork(ssid) {"
+        "  var w = window._wifi || {};"
+        "  var q = (w.connected && ssid === w.ssid)"
+        "    ? 'Forget \"' + ssid + '\"?\\n\\nThis is the network the device is using "
+        "right now. It stays connected for now, but after the next reboot it will not "
+        "rejoin this network - make sure another saved network is in range first.'"
+        "    : 'Forget \"' + ssid + '\"?';"
+        "  if (!confirm(q)) return;"
+        "  wifiPost('/api/wifi/remove', {ssid: ssid}, false);"
+        "}"
+        /* Saving credentials does not disturb the live connection, so this is an
+           ordinary request/response. Success is reported by the saved-networks
+           list refreshing - there is nothing a confirmation banner could add.
+           Only failures get a message, because nothing else would show them. */
+        "function wifiPost(url, body, clearForm) {"
+        "  fetch(url, {"
+        "    method: 'POST',"
+        "    headers: {'Content-Type': 'application/json'},"
+        "    body: JSON.stringify(body)"
+        "  })"
+        "  .then(function(r) { return r.json(); })"
+        "  .then(function(d) {"
+        "    if (d.success) {"
+        "      if (clearForm) {"
+        "        document.getElementById('new-ssid').value = '';"
+        "        document.getElementById('new-pass').value = '';"
+        "      }"
+        "      wifiMsg('', '');"
+        "      loadWifi();"
+        "    } else {"
+        "      wifiMsg('error', d.error || 'Failed');"
+        "    }"
+        "  })"
+        "  .catch(function() {"
+        "    wifiMsg('error', 'Network error - press Refresh to check whether it saved.');"
+        "  });"
+        "}"
+        "function rebootDevice() {"
+        "  if (!confirm('Reboot the device now?\\n\\nPlayback stops and the device is "
+        "unreachable for a few seconds while it restarts.')) return;"
+        "  wifiMsg('success', 'Rebooting...');"
+        "  fetch('/api/system/reboot', {"
+        "    method: 'POST',"
+        "    headers: {'Content-Type': 'application/json'},"
+        "    body: JSON.stringify({delay_ms: 500})"
+        "  })"
+        "  .then(function() { wifiWaitForBoot(20); })"
+        /* The reboot can cut the response off mid-flight; that is not a failure. */
+        "  .catch(function() { wifiWaitForBoot(20); });"
+        "}"
+        "function wifiWaitForBoot(tries) {"
+        "  setTimeout(function() {"
+        "    fetch('/api/device')"
+        "      .then(function(r) { if (!r.ok) throw new Error('HTTP err'); return r.json(); })"
+        "      .then(function(d) {"
+        "        renderWifi(d.wifi || {});"
+        "        wifiMsg('success', 'Device is back up.');"
+        "      })"
+        "      .catch(function() {"
+        "        if (tries > 0) {"
+        "          wifiMsg('success', 'Waiting for the device to come back ("
+        "' + tries + ')...');"
+        "          wifiWaitForBoot(tries - 1);"
+        "        } else {"
+        "          wifiMsg('error', 'Device has not answered yet - reload this page "
+        "in a moment.');"
+        "        }"
+        "      });"
+        "  }, 2000);"
+        "}"
+        "function initSettings() { loadCurrentId(); loadWifi(); }"
+        "if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSettings);"
+        "else initSettings();"
         "</script>"
         "</body>"
         "</html>";
@@ -1851,6 +2060,23 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "        h += '<div class=\"status-item\"><span class=\"label\">Firmware</span><span class=\"value\">' + (data.firmware_version || 'Unknown') + '</span></div>';"
         "        var secs = data.uptime_seconds || 0; var h2 = Math.floor(secs/3600); var m = Math.floor((secs%3600)/60); var s = secs%60;"
         "        h += '<div class=\"status-item\"><span class=\"label\">Uptime</span><span class=\"value\">' + h2 + 'h ' + m + 'm ' + s + 's</span></div>';"
+        /* Gateway address, port and whether the socket is actually up. Reported
+           verbatim - never substitute a default for a missing port, which is
+           what hid an unreachable :0 behind a plausible-looking address. */
+        "        var gwIp = data.mur_gateway_ip || '';"
+        "        var gwPort = data.mur_gateway_port;"
+        "        var gwTxt, gwCol;"
+        "        if (!gwIp) { gwTxt = 'Not set'; gwCol = '#b26a00'; }"
+        "        else if (!gwPort) { gwTxt = gwIp + ':' + gwPort + ' - PORT NOT SET'; gwCol = '#c62828'; }"
+        "        else { gwTxt = gwIp + ':' + gwPort; gwCol = ''; }"
+        "        h += '<div class=\"status-item\"><span class=\"label\">Mur Gateway</span><span class=\"value\"'"
+        "           + (gwCol ? ' style=\"color:' + gwCol + '\"' : '') + '>' + gwTxt + '</span></div>';"
+        "        if (gwIp) {"
+        "          var up = !!data.mur_gateway_connected;"
+        "          h += '<div class=\"status-item\"><span class=\"label\">Gateway Link</span>'"
+        "             + '<span class=\"value\" style=\"color:' + (up ? '#2e7d32' : '#c62828') + '\">'"
+        "             + (up ? 'Connected' : 'Not connected') + '</span></div>';"
+        "        }"
         "        c.innerHTML = h;"
         "      }"
         "      var dv = (typeof data.device_volume === 'number') ? data.device_volume : 100;"

@@ -181,6 +181,148 @@ def _parse_playlist(raw, where: str) -> list:
     return entries
 
 
+# Group, trigger and scene names are internal handles that end up inside HTML
+# attributes in the config server's ensembles page (and scene_name is sent to a
+# device whose own scene names are [A-Za-z0-9_-]+ anyway). Restricting the
+# charset is what makes it safe to build `onclick="fn('<name>')"` from an
+# operator-typed name - an apostrophe there breaks every button in the card.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _check_group_uniqueness(name: str, trigger_name: str, others) -> None:
+    """The two cross-group invariants. Raises ConfigError.
+
+    Split out from the intrinsic checks because it needs context: `others` is
+    the groups accumulated so far when loading, every other group when creating,
+    and every group but the target when updating.
+    """
+    where = f"group '{name}'"
+    # Triggers before names, in two passes rather than one, so that a group
+    # colliding on both reports the trigger - the order this reported in before
+    # the checks were extracted.
+    if any(o.trigger_name == trigger_name for o in others):
+        raise ConfigError(
+            f"{where}: trigger_name '{trigger_name}' is already used by another group")
+    if any(o.name == name for o in others):
+        raise ConfigError(f"duplicate group name '{name}'")
+
+
+def _parse_group(raw, fallback_name: str, others=(), strict_names: bool = True) -> GroupConfig:
+    """Validate one group dict into a GroupConfig. Raises ConfigError.
+
+    Shared by config load, group create and group update, so that every path
+    enforces the same rules - notably the SceneChange ban, which must have no
+    bypass (see SYNC_DESIGN.md).
+
+    Check order is load-bearing: it is the order the messages were emitted in
+    before this was extracted, so a config with one error reports the same
+    sentence it always did.
+
+    `strict_names` applies the charset rule fatally. Callers driven by the HTTP
+    admin API pass True; `load_config` passes False so that an existing
+    deployment whose group name has a space in it still boots (it gets a
+    warning instead - see _group_warnings).
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"group '{fallback_name}' must be an object")
+    merged = dict(GROUP_DEFAULTS)
+    merged.update(raw)
+    name = str(merged.get("name") or fallback_name)
+    where = f"group '{name}'"
+
+    if not name:
+        raise ConfigError("group name is required")
+    if strict_names and not _NAME_RE.match(name):
+        raise ConfigError(
+            f"{where}: name must contain only letters, digits, hyphen and underscore")
+
+    trigger_name = str(merged["trigger_name"] or "").strip()
+    if not trigger_name:
+        raise ConfigError(f"{where}: trigger_name is required")
+    if trigger_name == SCENE_TRIGGER_NAME:
+        raise ConfigError(
+            f"{where}: trigger_name must not be '{SCENE_TRIGGER_NAME}' - that name is "
+            "reserved for the scene service and is special-cased by the gateway "
+            "(see SYNC_DESIGN.md)"
+        )
+    if strict_names and not _NAME_RE.match(trigger_name):
+        raise ConfigError(
+            f"{where}: trigger_name must contain only letters, digits, hyphen and underscore")
+
+    _check_group_uniqueness(name, trigger_name, others)
+
+    scene_name = str(merged["scene_name"] or "").strip()
+    if not scene_name:
+        raise ConfigError(f"{where}: scene_name is required (the ensemble scene on each device)")
+    if strict_names and not _NAME_RE.match(scene_name):
+        raise ConfigError(
+            f"{where}: scene_name must contain only letters, digits, hyphen and underscore")
+
+    try:
+        track = int(merged["track"])
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: track must be an integer")
+    if not 0 <= track <= 2:
+        raise ConfigError(f"{where}: track must be 0..2 (MAX_TRACKS is 3)")
+
+    device_ids = merged["expected_device_ids"]
+    if not isinstance(device_ids, list) or not all(isinstance(d, str) for d in device_ids):
+        raise ConfigError(f"{where}: expected_device_ids must be a list of strings")
+
+    playlist = _parse_playlist(merged["playlist"], where)
+
+    try:
+        prep_lead_ms = int(merged["prep_lead_ms"])
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: prep_lead_ms must be an integer")
+    if prep_lead_ms < 0:
+        raise ConfigError(f"{where}: prep_lead_ms must not be negative")
+
+    try:
+        readiness_timeout_s = float(merged["readiness_timeout_s"])
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: readiness_timeout_s must be a number")
+
+    return GroupConfig(
+        name=name,
+        trigger_name=trigger_name,
+        scene_name=scene_name,
+        track=track,
+        expected_device_ids=list(device_ids),
+        readiness_timeout_s=readiness_timeout_s,
+        prep_lead_ms=prep_lead_ms,
+        loop_playlist=bool(merged["loop_playlist"]),
+        playlist=playlist,
+        enabled=bool(merged["enabled"]),
+    )
+
+
+def _group_warnings(group: GroupConfig) -> list:
+    """Non-fatal problems worth telling a human about.
+
+    Returned rather than logged so the admin API can hand them to the browser -
+    the operator configuring an ensemble from the config server never sees this
+    service's log, and "prep_lead_ms is longer than the entry" is exactly the
+    kind of thing they need to know at the moment they set it.
+    """
+    where = f"group '{group.name}'"
+    warnings = []
+    if not _NAME_RE.match(group.name):
+        warnings.append(f"{where}: name has characters outside [A-Za-z0-9_-]; "
+                        "rename it before editing this group from the config server UI")
+    for j, entry in enumerate(group.playlist):
+        if group.prep_lead_ms >= entry.duration_ms + entry.gap_ms:
+            warnings.append(
+                f"{where}: prep_lead_ms={group.prep_lead_ms} is >= entry {j}'s span "
+                f"({entry.duration_ms + entry.gap_ms} ms) - the file swap for the "
+                "following entry will happen immediately after its downbeat")
+    if not group.playlist:
+        warnings.append(f"{where}: playlist is empty - the group will idle until one is set")
+    if not group.expected_device_ids:
+        warnings.append(f"{where}: expected_device_ids is empty - readiness cannot be checked")
+    return warnings
+
+
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
     """Load and validate config.json. Raises ConfigError on anything fatal."""
     cfg = dict(CONFIG_DEFAULTS)
@@ -214,86 +356,15 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
         raise ConfigError("groups must be a list")
 
     groups = []
-    seen_names = set()
-    seen_triggers = set()
     for i, raw in enumerate(raw_groups):
         if not isinstance(raw, dict):
             raise ConfigError(f"groups[{i}] must be an object")
-        merged = dict(GROUP_DEFAULTS)
-        merged.update(raw)
-        name = str(merged.get("name") or f"group{i}")
-        where = f"group '{name}'"
-
-        trigger_name = str(merged["trigger_name"] or "").strip()
-        if not trigger_name:
-            raise ConfigError(f"{where}: trigger_name is required")
-        if trigger_name == SCENE_TRIGGER_NAME:
-            raise ConfigError(
-                f"{where}: trigger_name must not be '{SCENE_TRIGGER_NAME}' - that name is "
-                "reserved for the scene service and is special-cased by the gateway "
-                "(see SYNC_DESIGN.md)"
-            )
-        if trigger_name in seen_triggers:
-            raise ConfigError(f"{where}: trigger_name '{trigger_name}' is already used by another group")
-        if name in seen_names:
-            raise ConfigError(f"duplicate group name '{name}'")
-        seen_names.add(name)
-        seen_triggers.add(trigger_name)
-
-        scene_name = str(merged["scene_name"] or "").strip()
-        if not scene_name:
-            raise ConfigError(f"{where}: scene_name is required (the ensemble scene on each device)")
-
-        try:
-            track = int(merged["track"])
-        except (TypeError, ValueError):
-            raise ConfigError(f"{where}: track must be an integer")
-        if not 0 <= track <= 2:
-            raise ConfigError(f"{where}: track must be 0..2 (MAX_TRACKS is 3)")
-
-        device_ids = merged["expected_device_ids"]
-        if not isinstance(device_ids, list) or not all(isinstance(d, str) for d in device_ids):
-            raise ConfigError(f"{where}: expected_device_ids must be a list of strings")
-
-        playlist = _parse_playlist(merged["playlist"], where)
-
-        try:
-            prep_lead_ms = int(merged["prep_lead_ms"])
-        except (TypeError, ValueError):
-            raise ConfigError(f"{where}: prep_lead_ms must be an integer")
-        if prep_lead_ms < 0:
-            raise ConfigError(f"{where}: prep_lead_ms must not be negative")
-
-        try:
-            readiness_timeout_s = float(merged["readiness_timeout_s"])
-        except (TypeError, ValueError):
-            raise ConfigError(f"{where}: readiness_timeout_s must be a number")
-
-        group = GroupConfig(
-            name=name,
-            trigger_name=trigger_name,
-            scene_name=scene_name,
-            track=track,
-            expected_device_ids=list(device_ids),
-            readiness_timeout_s=readiness_timeout_s,
-            prep_lead_ms=prep_lead_ms,
-            loop_playlist=bool(merged["loop_playlist"]),
-            playlist=playlist,
-            enabled=bool(merged["enabled"]),
-        )
-
+        # strict_names=False: a name with a space in it is a UI problem, not a
+        # reason to refuse to start an installation that has been running fine.
+        group = _parse_group(raw, fallback_name=f"group{i}", others=groups, strict_names=False)
         # Non-fatal sanity checks - the service still runs, the operator gets told.
-        for j, entry in enumerate(playlist):
-            if prep_lead_ms >= entry.duration_ms + entry.gap_ms:
-                logger.warning(
-                    "%s: prep_lead_ms=%d is >= entry %d's span (%d ms) - the file swap for the "
-                    "following entry will happen immediately after its downbeat",
-                    where, prep_lead_ms, j, entry.duration_ms + entry.gap_ms)
-        if not playlist:
-            logger.warning("%s: playlist is empty - the group will idle until one is set", where)
-        if not device_ids:
-            logger.warning("%s: expected_device_ids is empty - readiness cannot be checked", where)
-
+        for warning in _group_warnings(group):
+            logger.warning("%s", warning)
         groups.append(group)
 
     cfg["groups"] = groups
@@ -650,6 +721,10 @@ class GroupRunner:
             "scene_name": g.scene_name,
             "track": g.track,
             "loop_playlist": g.loop_playlist,
+            # Reported so the config server's settings editor has something to
+            # populate from; neither is otherwise observable at runtime.
+            "prep_lead_ms": g.prep_lead_ms,
+            "readiness_timeout_s": g.readiness_timeout_s,
             "playlist": [e.to_dict() for e in g.playlist],
             "playlist_length": len(g.playlist),
             "current_index": self.index if entry else None,
@@ -955,10 +1030,24 @@ class Conductor:
             try:
                 session = self._get_session()
                 async with session.post(url, json=body, timeout=timeout) as resp:
-                    if 200 <= resp.status < 300:
-                        return None
                     text = (await resp.text())[:200]
-                    last_err = f"HTTP {resp.status}: {text}"
+                    if 200 <= resp.status < 300:
+                        # A 2xx is not success. The firmware answers a rejected
+                        # patch - notably an unknown scene name - with HTTP 200
+                        # and {"success": false, "error": ...}. Treating that as
+                        # ok made last_prep report "ok" forever while nothing
+                        # was being applied, which is exactly the case an
+                        # operator hits after editing a live group's scene_name.
+                        try:
+                            payload = json.loads(text)
+                        except ValueError:
+                            payload = None
+                        if isinstance(payload, dict) and payload.get("success") is False:
+                            last_err = str(payload.get("error") or "device rejected the patch")
+                        else:
+                            return None
+                    else:
+                        last_err = f"HTTP {resp.status}: {text}"
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1092,56 +1181,170 @@ class Conductor:
             group.playlist = playlist
             if loop_playlist is not None:
                 group.loop_playlist = loop_playlist
-            try:
-                save_config(self.cfg, self.config_path)
-            except OSError as e:
-                logger.warning("Could not persist config: %s", e)
+            persisted, persist_error = self._persist()
 
         if runner:
             runner.set_playlist(playlist, loop_playlist)
         return web.json_response({
             "group": name, "playlist_length": len(playlist),
+            "warnings": _group_warnings(group),
+            "persisted": persisted, "persist_error": persist_error,
             "applies": "at the next downbeat boundary",
         })
 
+    def _persist(self) -> tuple:
+        """save_config, reporting failure instead of burying it in a log line.
+
+        Returns (persisted, error). Callers do NOT roll back on failure: the
+        runner may already be acting on the change, so the honest report is
+        "applied but not saved" rather than a silent revert. On Windows
+        os.replace raises PermissionError while anything holds config.json open,
+        which used to mean the change quietly evaporated on the next restart.
+        """
+        try:
+            save_config(self.cfg, self.config_path)
+            return True, None
+        except OSError as e:
+            logger.error("Could not persist config to %s: %s", self.config_path, e)
+            return False, f"{type(e).__name__}: {e}"
+
+    async def _h_groups_action(self, request: web.Request) -> web.Response:
+        """Create or delete a group. Action-verb POST, matching the config
+        server's own /api/scene convention rather than adding DELETE/PUT to a
+        proxy chain that is GET/POST throughout."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        action = str(data.get("action") or "").strip()
+        name = str(data.get("name") or "").strip()
+        if action not in ("create", "delete"):
+            return web.json_response(
+                {"error": "action must be 'create' or 'delete'"}, status=400)
+        if not name:
+            return web.json_response({"error": "name is required"}, status=400)
+
+        if action == "create":
+            try:
+                # fallback_name "" so a nameless create is an error rather than
+                # silently becoming "group0" the way a config file entry would.
+                group = _parse_group(data, fallback_name="", others=self.cfg["groups"])
+            except ConfigError as e:
+                return web.json_response({"error": str(e)}, status=400)
+            async with self._config_lock:
+                self.cfg["groups"].append(group)
+                persisted, persist_error = self._persist()
+            # Mandatory: _h_status lists self.runners, not cfg["groups"], so a
+            # group with no runner does not appear in /status at all - and
+            # therefore not in the UI that just created it.
+            await self._restart_group(group.name)
+            logger.info("Group '%s' created via admin API", group.name)
+            return web.json_response({
+                "group": group.name, "created": True,
+                "warnings": _group_warnings(group),
+                "persisted": persisted, "persist_error": persist_error,
+            })
+
+        # delete
+        async with self._config_lock:
+            group = self._find_group(name)
+            if group is None:
+                return web.json_response({"error": f"no such group: {name}"}, status=404)
+            self.cfg["groups"] = [g for g in self.cfg["groups"] if g is not group]
+            persisted, persist_error = self._persist()
+        # _restart_group stops the runner and returns early once _find_group
+        # misses, so this is also the teardown path.
+        await self._restart_group(name)
+        logger.info("Group '%s' deleted via admin API", name)
+        return web.json_response({
+            "group": name, "deleted": True,
+            "persisted": persisted, "persist_error": persist_error,
+            "note": "member devices keep their ensemble scene; a prep already in "
+                    "flight can land for a few more seconds",
+        })
+
+    # Fields the admin API may set. Playlist is deliberately absent: it has its
+    # own route, and one path for it is worth more than the convenience.
+    _EDITABLE_FIELDS = ("name", "enabled", "trigger_name", "scene_name", "track",
+                        "expected_device_ids", "readiness_timeout_s",
+                        "prep_lead_ms", "loop_playlist")
+
+    # Changing any of these needs a runner restart, because the runner reads
+    # them once or because the fleet is no longer configured for the new value.
+    # Everything else is picked up live: GroupRunner holds a reference to the
+    # GroupConfig and re-reads it every cycle, which is why this set is small.
+    _RESTART_FIELDS = ("enabled", "trigger_name", "scene_name", "track")
+
     async def _h_set_group(self, request: web.Request) -> web.Response:
         name = request.match_info["name"]
-        group = self._find_group(name)
-        if group is None:
+        target = self._find_group(name)
+        if target is None:
             return web.json_response({"error": f"no such group: {name}"}, status=404)
         try:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "body must be JSON"}, status=400)
 
-        changed = []
-        async with self._config_lock:
-            if "enabled" in data:
-                group.enabled = bool(data["enabled"])
-                changed.append("enabled")
-            if "expected_device_ids" in data:
-                ids = data["expected_device_ids"]
-                if not isinstance(ids, list) or not all(isinstance(d, str) for d in ids):
-                    return web.json_response(
-                        {"error": "expected_device_ids must be a list of strings"}, status=400)
-                group.expected_device_ids = list(ids)
-                changed.append("expected_device_ids")
-            if "loop_playlist" in data:
-                group.loop_playlist = bool(data["loop_playlist"])
-                changed.append("loop_playlist")
-            if changed:
-                try:
-                    save_config(self.cfg, self.config_path)
-                except OSError as e:
-                    logger.warning("Could not persist config: %s", e)
+        if "playlist" in data:
+            return web.json_response(
+                {"error": f"use POST /api/groups/{name}/playlist to change the playlist"},
+                status=400)
+        unknown = [k for k in data if k not in self._EDITABLE_FIELDS]
+        if unknown:
+            return web.json_response(
+                {"error": f"unknown field(s): {', '.join(sorted(unknown))}"}, status=400)
 
-        needs_restart = "enabled" in changed
+        # Validate the whole prospective group before touching anything. The old
+        # handler assigned each field as it went, so a bad value partway through
+        # left memory and config.json disagreeing. Reconstructing also means the
+        # SceneChange ban and every other rule apply here with no duplication -
+        # and guarantees what we persist is something load_config will accept,
+        # which matters because main() exits on ConfigError.
+        merged = target.to_dict()
+        for key in self._EDITABLE_FIELDS:
+            if key in data:
+                merged[key] = data[key]
+        others = [g for g in self.cfg["groups"] if g is not target]
+        try:
+            candidate = _parse_group(merged, fallback_name=target.name, others=others)
+        except ConfigError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        old_name = target.name
+        changed = [k for k in self._EDITABLE_FIELDS
+                   if k in data and getattr(candidate, k) != getattr(target, k)]
+
+        async with self._config_lock:
+            # Mutate in place. The runner holds a reference to this exact
+            # object, so replacing it in cfg["groups"] would leave the runner
+            # driving a detached copy.
+            for key in self._EDITABLE_FIELDS:
+                setattr(target, key, getattr(candidate, key))
+            persisted, persist_error = self._persist()
+
+        renamed_from = None
+        if target.name != old_name:
+            renamed_from = old_name
+            # Rekey only; no restart. The runner's .group is the same object, so
+            # its timeline is undisturbed and status() already reports the new
+            # name. self.runners is keyed by name purely for lookup.
+            runner = self.runners.pop(old_name, None)
+            if runner:
+                self.runners[target.name] = runner
+            logger.info("Group '%s' renamed to '%s'", old_name, target.name)
+
+        needs_restart = any(k in changed for k in self._RESTART_FIELDS)
         if needs_restart:
-            await self._restart_group(name)
+            await self._restart_group(target.name)
         return web.json_response({
-            "group": name, "changed": changed,
-            "note": "group runner restarted" if needs_restart
-                    else "membership/loop changes apply immediately",
+            "group": target.name, "changed": changed,
+            "renamed_from": renamed_from,
+            "restarted": needs_restart,
+            "warnings": _group_warnings(target),
+            "persisted": persisted, "persist_error": persist_error,
+            "note": "group runner restarted - the current entry was cut off and "
+                    "the playlist starts again at entry 1" if needs_restart
+                    else "applies at the next downbeat; nothing was interrupted",
         })
 
     # -- lifecycle --------------------------------------------------------
@@ -1151,6 +1354,10 @@ class Conductor:
         old = self.runners.pop(name, None)
         if old:
             old.stop()
+        # Nothing else ever removes from _tasks, and driving group CRUD from a
+        # UI makes dozens of restarts per session realistic - so the list (and
+        # the gather() at shutdown) would grow without bound.
+        self._tasks = [t for t in self._tasks if not t.done()]
         if group is None:
             return
         runner = GroupRunner(group, self)
@@ -1204,12 +1411,17 @@ class Conductor:
         # Status + admin HTTP
         admin = web.Application()
         admin.router.add_get("/status", self._h_status)
+        admin.router.add_post("/api/groups", self._h_groups_action)
         admin.router.add_post("/api/groups/{name}/playlist", self._h_set_playlist)
         admin.router.add_post("/api/groups/{name}", self._h_set_group)
+        # Mirrored from the ingest app so the config server needs only one base
+        # URL for the conductor. Read-only; not an injection endpoint.
+        admin.router.add_get("/api/triggers", self._h_triggers)
         admin_runner = web.AppRunner(admin)
         await admin_runner.setup()
         await web.TCPSite(admin_runner, "0.0.0.0", self.cfg["status_port"]).start()
-        logger.info("Status HTTP on port %d (GET /status)", self.cfg["status_port"])
+        logger.info("Status HTTP on port %d (GET /status, POST /api/groups)",
+                    self.cfg["status_port"])
 
         self._tasks.append(asyncio.create_task(self.health.run()))
         self._tasks.append(asyncio.create_task(self._reload_loop()))

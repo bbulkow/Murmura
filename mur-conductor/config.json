@@ -6,18 +6,110 @@
   "device_http_timeout_s": 3.0,
   "groups": [
     {
-      "name": "mainroom",
+      "name": "purrmaid",
       "enabled": true,
-      "trigger_name": "EnsembleMain",
-      "scene_name": "ensembleA",
+      "trigger_name": "PurrmaidEnsemble",
+      "scene_name": "PurrmaidMain",
       "track": 0,
-      "expected_device_ids": ["MUR-001", "MUR-002"],
-      "readiness_timeout_s": 120,
+      "expected_device_ids": [
+        "30",
+        "36",
+        "FREEKER"
+      ],
+      "readiness_timeout_s": 10.0,
       "prep_lead_ms": 8000,
       "loop_playlist": true,
       "playlist": [
-        {"file": "/sdcard/track1.wav", "duration_ms": 30000, "gap_ms": 0},
-        {"file": "/sdcard/track2.wav", "duration_ms": 30000, "gap_ms": 2000}
+        {
+          "file": "/sdcard/01_Purrmaid_s_Lament.wav",
+          "duration_ms": 214560,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/02_Mermaids.wav",
+          "duration_ms": 275705,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/03_2069.wav",
+          "duration_ms": 167484,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/04_Pussycat_Meow.wav",
+          "duration_ms": 230760,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/05_The_Mermaid.wav",
+          "duration_ms": 168229,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/06_Ragtime_Cat.wav",
+          "duration_ms": 179360,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/07_Mermaid.wav",
+          "duration_ms": 196933,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/08_Leave_My_Kitten_Alone.wav",
+          "duration_ms": 165200,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/09_Mermaid.wav",
+          "duration_ms": 315227,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/10_Cool_For_Cats.wav",
+          "duration_ms": 194333,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/11_Calling_My_Mermaid.wav",
+          "duration_ms": 180558,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/12_Sea_Lion_Woman.wav",
+          "duration_ms": 219880,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/13_Big_Fish.wav",
+          "duration_ms": 191680,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/14_Mermaid.wav",
+          "duration_ms": 264360,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/15_Human_Behaviour.wav",
+          "duration_ms": 250907,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/16_Shipwreck_(Extended).wav",
+          "duration_ms": 482384,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/17_Part_of_Life.wav",
+          "duration_ms": 442000,
+          "gap_ms": 0
+        },
+        {
+          "file": "/sdcard/01_Purrmaid_s_Lament.wav",
+          "duration_ms": 214560,
+          "gap_ms": 0
+        }
       ]
     }
   ]

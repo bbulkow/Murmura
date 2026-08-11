@@ -23,6 +23,14 @@ from network_wrapper import NetworkConfig, DeviceScannerWrapper, DeviceRegistry
 # Override by setting the MUR_CONFIG_SERVER_PORT environment variable
 DEFAULT_PORT = 8765
 SERVER_PORT = int(os.environ.get('MUR_CONFIG_SERVER_PORT', DEFAULT_PORT))
+
+# The port Murs connect to on the Mur Gateway (its device port). Must match
+# MUR_GATEWAY_DEFAULT_PORT in main/http_server.h. Note the gateway's status HTTP
+# server is this + 1, which is what /api/triggers queries - a different thing.
+MUR_GATEWAY_DEFAULT_PORT = 4000
+
+# Tracks per device. Must match MAX_TRACKS in main/murmura.h.
+MAX_TRACKS = 3
 # ============================================================================
 
 # Configure logging with detailed output
@@ -501,9 +509,12 @@ def _probe_loop():
                             else:
                                 cache_entry['metadata_age_cycles'] += 1
                         # Persist mac/id changes to registry record.
+                        identity_changed = False
                         if metadata:
-                            if metadata.get('mac_address'):
+                            if metadata.get('mac_address') and \
+                                    metadata['mac_address'] != device.get('mac_address'):
                                 device['mac_address'] = metadata['mac_address']
+                                identity_changed = True
                             new_id = metadata.get('id')
                             if new_id and new_id != device.get('id'):
                                 logger.warning(
@@ -511,8 +522,16 @@ def _probe_loop():
                                     f"@ {ip_address}"
                                 )
                                 device['id'] = new_id
+                                identity_changed = True
                         device['online'] = True
                         registry.update_device(device)
+                        # load_registry() is authoritative and runs every slot,
+                        # so an identity change kept only in memory would be
+                        # reverted seconds later and re-detected forever. Write
+                        # it through. Deliberately not saved for the online flag
+                        # alone, which churns constantly.
+                        if identity_changed:
+                            registry.save_registry()
                         logger.info(
                             f"[PROBE OK] {device_id} | {elapsed:.2f}s"
                         )
@@ -703,14 +722,23 @@ def clear_all_devices():
     try:
         scanner = DeviceScannerWrapper(network_config)
         success = scanner.clear_all_devices()
-        
+
         if success:
-            # Reload empty registry
+            # Three separate stores hold device state; clearing only the file
+            # leaves the other two populated and the stale cards stay on screen.
+            removed = len(registry.get_all_devices())
+            registry.clear()
             registry.load_registry()
-            
+            with _device_cache_lock:
+                cached = len(_device_cache)
+                _device_cache.clear()
+            logger.info(f"Cleared {removed} registry entry(ies) and "
+                        f"{cached} cache entry(ies)")
+
             return jsonify({
                 'status': 'success',
-                'message': 'All devices cleared'
+                'message': f'All devices cleared ({removed} removed)',
+                'removed': removed
             })
         else:
             return jsonify({
@@ -800,7 +828,12 @@ def get_device(device_id):
         cache_status, _age = _status_from_cache(live_device_id)
         if cache_status == 'unknown':
             cache_status, _age = _status_from_cache(device_id)
-        status = cache_status if cache_status != 'unknown' else 'offline'
+        # 'unknown' means we have no cache entry yet - after a reboot that
+        # changed the device's ID, for instance, since the cache is keyed by ID.
+        # Reporting that as 'offline' asserts something we have not observed and
+        # makes a freshly-seen device look dead. Pass it through and let the
+        # client hold its last known state.
+        status = cache_status
         uptime_str = 'N/A'
 
     return jsonify({
@@ -813,6 +846,14 @@ def get_device(device_id):
         'firmware_version': device.get('firmware_version', 'Unknown'),
         'last_seen': device.get('last_seen', ''),
         'uptime': uptime_str,
+        # Included so the detail page does not need a second (and third) request
+        # per poll for them. /api/device/<id>/mur-gateway remains for explicit
+        # refreshes; it used to be fetched TWICE per 2 s tick, by loadMurGateway
+        # and loadSceneTriggerConfig, which is most of why a booting device got
+        # hammered into timing out.
+        'mur_gateway_ip': device.get('mur_gateway_ip', ''),
+        'mur_gateway_port': device.get('mur_gateway_port', 0),
+        'scene_trigger_name': device.get('scene_trigger_name', ''),
         'from_cache': from_cache,
     })
 
@@ -1239,9 +1280,22 @@ def set_device_mur_gateway(device_id):
     if not device:
         return jsonify({'error': 'Device not found'}), 404
     data = request.json or {}
-    payload = {'mur_gateway_ip': data.get('mur_gateway_ip', '')}
-    if data.get('mur_gateway_port'):
-        payload['mur_gateway_port'] = int(data['mur_gateway_port'])
+    # Always send a port. `if data.get('mur_gateway_port')` dropped the key when
+    # it was missing *or* explicitly 0 (0 is falsy), so the device kept whatever
+    # it had. On a device whose gateway config failed to load that is 0, and the
+    # firmware only updates the port when the key is present - producing a valid
+    # IP on an unconnectable port, reported by nothing.
+    raw_port = data.get('mur_gateway_port')
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        port = MUR_GATEWAY_DEFAULT_PORT
+    if not 0 < port < 65536:
+        return jsonify({'error': f'mur_gateway_port {raw_port!r} is not a valid port'}), 400
+    payload = {
+        'mur_gateway_ip': data.get('mur_gateway_ip', ''),
+        'mur_gateway_port': port,
+    }
 
     try:
         with device_lock(device_id, blocking=True, timeout=5.0):
@@ -1316,12 +1370,21 @@ def batch_set_mur_gateway():
     data = request.json
     device_ids = data.get('device_ids', [])
     mur_gateway_ip = data.get('mur_gateway_ip', '')
-    mur_gateway_port = data.get('mur_gateway_port')
+    raw_port = data.get('mur_gateway_port')
 
-    payload = {'mur_gateway_ip': mur_gateway_ip}
-    if mur_gateway_port:
-        payload['mur_gateway_port'] = int(mur_gateway_port)
-    logger.info(f"Batch setting mur gateway to {mur_gateway_ip} for {len(device_ids)} devices")
+    # Same fix as the single-device route: always send a port, or a device whose
+    # stored port is 0 stays unconnectable while looking configured.
+    try:
+        mur_gateway_port = int(raw_port)
+    except (TypeError, ValueError):
+        mur_gateway_port = MUR_GATEWAY_DEFAULT_PORT
+    if not 0 < mur_gateway_port < 65536:
+        return jsonify({'error': f'mur_gateway_port {raw_port!r} is not a valid port'}), 400
+
+    payload = {'mur_gateway_ip': mur_gateway_ip,
+               'mur_gateway_port': mur_gateway_port}
+    logger.info(f"Batch setting mur gateway to {mur_gateway_ip}:{mur_gateway_port} "
+                f"for {len(device_ids)} devices")
 
     def op(device, ip_address):
         response = requests.post(f"http://{ip_address}/api/device", json=payload, timeout=3)
@@ -1456,9 +1519,31 @@ def conductor_set_playlist(group_name):
         return jsonify({'error': str(e)}), 502
 
 
+@app.route('/api/conductor/groups', methods=['POST'])
+def conductor_groups_action():
+    """Proxy a group create/delete to the conductor: {action, name, ...fields}.
+
+    Action-verb POST rather than DELETE/PUT to match /api/device/<id>/scene and
+    the rest of this server, which is GET/POST throughout.
+    """
+    try:
+        response = requests.post(f"{_conductor_url()}/api/groups",
+                                 json=request.json or {}, timeout=5)
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error(f"Failed group action: {e}")
+        return jsonify({'error': str(e)}), 502
+
+
 @app.route('/api/conductor/groups/<group_name>', methods=['POST'])
 def conductor_set_group(group_name):
-    """Proxy group settings (enabled, membership, loop) to the conductor."""
+    """Proxy group settings to the conductor.
+
+    Accepts any of name, enabled, trigger_name, scene_name, track,
+    expected_device_ids, readiness_timeout_s, prep_lead_ms, loop_playlist. The
+    conductor validates the whole prospective group before applying any of it,
+    and reports whether a runner restart was needed.
+    """
     try:
         response = requests.post(f"{_conductor_url()}/api/groups/{group_name}",
                                  json=request.json or {}, timeout=5)
@@ -1468,8 +1553,31 @@ def conductor_set_group(group_name):
         return jsonify({'error': str(e)}), 502
 
 
-def _group_members(group_name):
-    """[(device_id, ip)] for a conductor group, from the conductor's status."""
+@app.route('/api/conductor/triggers')
+def conductor_triggers():
+    """Trigger names the conductor drives, for the group editor's datalist.
+
+    Degrades to 200 with an empty list, like /api/triggers and
+    /api/conductor/status: a datalist that cannot populate must never break the
+    page. Note these are only the names of groups that already exist, so this
+    cannot vet a brand-new group's trigger name - the reserved-name check and
+    the per-device readiness check are what catch that.
+    """
+    try:
+        response = requests.get(f"{_conductor_url()}/api/triggers", timeout=5)
+        response.raise_for_status()
+        return jsonify(response.json())
+    except (requests.RequestException, ValueError) as e:
+        logger.warning(f"Cannot reach conductor for trigger list: {e}")
+        return jsonify({'triggers': [], 'error': str(e)}), 200
+
+
+def _group_status(group_name):
+    """One conductor group's full status dict. Raises RuntimeError.
+
+    The readiness check needs scene_name/track/trigger_name as well as the
+    member list, so both callers share a single /status fetch.
+    """
     try:
         response = requests.get(f"{_conductor_url()}/status", timeout=5)
         response.raise_for_status()
@@ -1478,8 +1586,14 @@ def _group_members(group_name):
         raise RuntimeError(f"Cannot reach conductor: {e}")
     for group in status.get('groups', []):
         if group.get('name') == group_name:
-            return [(m['id'], m.get('ip', '')) for m in group.get('members', [])]
+            return group
     raise RuntimeError(f"No such conductor group: {group_name}")
+
+
+def _group_members(group_name):
+    """[(device_id, ip)] for a conductor group, from the conductor's status."""
+    return [(m['id'], m.get('ip', ''))
+            for m in _group_status(group_name).get('members', [])]
 
 
 def _parse_wav_header(blob, file_size):
@@ -1543,6 +1657,455 @@ def _probe_wav_duration(device_id, ip, filename, file_size, header_bytes=4096):
     except requests.RequestException as e:
         logger.warning(f"WAV probe failed for {device_id}:{filename}: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Ensemble readiness
+#
+# What setup_ensemble.py --verify prints, as structured data the browser can
+# act on. Ordered by DEPENDENCY, not by check order: a device publishes its
+# trigger subscriptions from the tracks of its ACTIVE scene, and only tracks in
+# trigger mode (send_subscribe in main/mur_listener.c), so a wrong active scene
+# or a track left in loop mode is the *cause* of "not subscribed", not a
+# separate problem. Fixing causes before symptoms is the whole point of the
+# ordering - a checklist that lists them alphabetically sends the operator
+# chasing the symptom.
+# ---------------------------------------------------------------------------
+
+def _readiness_problems(scenes, group, member):
+    """Structured problems for one member. Ports setup_ensemble.py:verify_device."""
+    scene_name = group.get('scene_name')
+    track_idx = group.get('track')
+    trigger_name = group.get('trigger_name')
+    problems = []
+
+    def add(code, order, severity, message, why, fix, actual=None, expected=None):
+        problems.append({'code': code, 'order': order, 'severity': severity,
+                         'message': message, 'why': why, 'fix': fix,
+                         'actual': actual, 'expected': expected})
+
+    all_scenes = scenes.get('scenes') or {}
+    scene = all_scenes.get(scene_name)
+    if scene is None:
+        add('scene_missing', 10, 'error',
+            f"Scene '{scene_name}' does not exist on this device.",
+            "The conductor patches this scene to tell the device which file to "
+            "play next. Without it, every file push is rejected.",
+            f"On the device page, create a scene named '{scene_name}'.",
+            actual=', '.join(sorted(all_scenes)) or '(none)', expected=scene_name)
+        # Deliberately do NOT return here the way the CLI does - the operator
+        # should see every problem in one pass, not one per round trip.
+    else:
+        tracks = {t.get('track'): t for t in scene.get('tracks', [])}
+        t = tracks.get(track_idx)
+        if t is None:
+            add('track_absent', 20, 'error',
+                f"Track {track_idx} is missing from scene '{scene_name}'.",
+                "This is the track that carries the ensemble material.",
+                f"On the device page, configure track {track_idx} of '{scene_name}'.")
+        else:
+            if t.get('mode') != 'trigger':
+                add('track_mode_wrong', 20, 'error',
+                    f"Track {track_idx} is in '{t.get('mode')}' mode, not 'trigger'.",
+                    "A loop-mode track starts playing at boot, out of sync with "
+                    "everyone else - and the device only tells the gateway about "
+                    "triggers on trigger-mode tracks, so it will never be "
+                    "subscribed either.",
+                    f"On the device page, set track {track_idx} to Trig.",
+                    actual=t.get('mode'), expected='trigger')
+            if t.get('trigger_type') != 'OneShot':
+                add('track_trigger_type_wrong', 20, 'error',
+                    f"Track {track_idx} trigger type is '{t.get('trigger_type')}', "
+                    "not 'OneShot'.",
+                    "OneShot plays the file once per downbeat, which is what the "
+                    "conductor sends. On/Off would need a stop event that the "
+                    "gateway deliberately drops.",
+                    f"On the device page, set track {track_idx}'s trigger type to OneShot.",
+                    actual=t.get('trigger_type'), expected='OneShot')
+            if t.get('trigger_name') != trigger_name:
+                add('track_trigger_name_wrong', 20, 'error',
+                    f"Track {track_idx} listens for '{t.get('trigger_name') or '(none)'}', "
+                    f"not '{trigger_name}'.",
+                    "The downbeat is a trigger event with this group's name. A "
+                    "track listening for anything else never hears it.",
+                    f"On the device page, set track {track_idx}'s trigger name to "
+                    f"'{trigger_name}'.",
+                    actual=t.get('trigger_name') or '', expected=trigger_name)
+            if not t.get('active'):
+                add('track_inactive', 20, 'error',
+                    f"Track {track_idx} is not enabled.",
+                    "A disabled track ignores triggers entirely.",
+                    f"On the device page, enable track {track_idx}.",
+                    actual='disabled', expected='enabled')
+            # No check on file_path. An empty one is the *preferred* resting
+            # state for a conductor-driven track: the firmware ignores a
+            # matching trigger when no file is set, so the track is guaranteed
+            # silent until the conductor pushes the entry to play. A stale
+            # filename is what's mildly undesirable - it means a failed file
+            # push still plays something on the next downbeat - and the
+            # conductor overwrites it before every downbeat regardless.
+
+        if scenes.get('active_scene') != scene_name:
+            add('active_scene_wrong', 30, 'error',
+                f"The active scene is '{scenes.get('active_scene')}', not '{scene_name}'.",
+                "A device publishes its trigger subscriptions from the ACTIVE "
+                "scene's tracks only. While another scene is active this device "
+                "is not subscribed to the downbeat, whatever the ensemble scene "
+                "says.",
+                f"On the device page, click Activate on the '{scene_name}' scene.",
+                actual=scenes.get('active_scene'), expected=scene_name)
+        if scenes.get('default_scene') != scene_name:
+            add('default_scene_wrong', 40, 'error',
+                f"The boot default scene is '{scenes.get('default_scene')}', "
+                f"not '{scene_name}'.",
+                "After a reboot the device lands on the default scene. If that "
+                "is not the ensemble scene, a rebooted device drops out of the "
+                "ensemble silently.",
+                f"On the device page, click Set Default on the '{scene_name}' scene.",
+                actual=scenes.get('default_scene'), expected=scene_name)
+        if scene.get('synchronized'):
+            add('synchronized_true', 50, 'error',
+                f"Scene '{scene_name}' has synchronized=true.",
+                "That flag gates scene *activation*, which this design never "
+                "does after boot. On a default scene it makes the firmware log "
+                "an error every boot and blocks the gateway's get_scene "
+                "backstop from restoring the scene.",
+                "On the device page, untick Synchronized on this scene.",
+                actual='true', expected='false')
+
+    if member.get('present') and not member.get('subscribed'):
+        add('not_subscribed', 60, 'error',
+            f"The gateway does not have this device subscribed to '{trigger_name}'.",
+            "Subscriptions are published by the device from its active scene, so "
+            "this is a consequence of the problems above rather than something "
+            "to fix directly.",
+            "Fix the problems above; the device re-subscribes as soon as a scene "
+            "patch is accepted, and the conductor notices within about 10 seconds.")
+
+    # No "remember to save" row. It cannot be verified remotely, so it appeared
+    # on every member on every check regardless of truth - and Configure always
+    # saves, so the one path that needs it already handles it.
+
+    problems.sort(key=lambda p: p['order'])
+    return problems
+
+
+@app.route('/api/ensemble/<group_name>/readiness')
+def ensemble_readiness(group_name):
+    """Per-member ensemble setup check, on demand (it contacts each device)."""
+    try:
+        group = _group_status(group_name)
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 502
+
+    results = []
+    for member in group.get('members', []):
+        device_id = member.get('id')
+        ip = member.get('ip') or ''
+        in_registry = registry.get_device(device_id) is not None
+        entry = {
+            'id': device_id,
+            'ip': ip,
+            'at_gateway': bool(member.get('present')),
+            'subscribed': bool(member.get('subscribed')),
+            'in_registry': in_registry,
+            # /device/<id> resolves through the registry, so a device the
+            # conductor knows but this server has never scanned would 404.
+            'device_page': (f"/device/{device_id}?scene={group.get('scene_name')}"
+                            f"&track={group.get('track')}") if in_registry else None,
+            'reachable': False,
+            'problems': [],
+        }
+        if not in_registry:
+            entry['problems'].append({
+                'code': 'not_in_registry', 'order': 5, 'severity': 'warn',
+                'message': 'This server has never scanned this device.',
+                'why': 'It is at the gateway, so the ensemble can still use it, '
+                       'but there is no device page to link to.',
+                'fix': 'Run a network scan from the dashboard.',
+                'actual': None, 'expected': None,
+            })
+        if not ip:
+            entry['problems'].append({
+                'code': 'not_at_gateway', 'order': 5, 'severity': 'error',
+                'message': 'Not connected to the gateway.',
+                'why': 'Downbeats reach devices through their outbound gateway '
+                       'connection. Without it this device cannot play.',
+                'fix': 'Check the device is powered, on the network, and pointed '
+                       'at the right mur_gateway_ip.',
+                'actual': None, 'expected': None,
+            })
+            results.append(entry)
+            continue
+        try:
+            with device_lock(device_id, blocking=True, timeout=3.0):
+                response = requests.get(f"http://{ip}/api/scenes", timeout=5)
+            if response.status_code != 200:
+                raise requests.RequestException(f"HTTP {response.status_code}")
+            scenes = response.json()
+            entry['reachable'] = True
+            _feed_cache(device_id, scene_data=scenes)
+            entry['problems'].extend(_readiness_problems(scenes, group, member))
+        except DeviceBusy:
+            entry['problems'].append({
+                'code': 'device_busy', 'order': 5, 'severity': 'warn',
+                'message': 'Device was busy; setup not checked.',
+                'why': 'Another request to this device was in flight. This is '
+                       'transient, not a misconfiguration.',
+                'fix': 'Check again in a moment.',
+                'actual': None, 'expected': None,
+            })
+        except (requests.RequestException, ValueError) as e:
+            entry['problems'].append({
+                'code': 'unreachable', 'order': 5, 'severity': 'error',
+                'message': f'Could not read scenes from this device: {e}',
+                'why': 'The device is at the gateway but its HTTP server did not '
+                       'answer, so its setup cannot be verified.',
+                'fix': 'Check the device is responsive.',
+                'actual': None, 'expected': None,
+            })
+        entry['problems'].sort(key=lambda p: p['order'])
+        entry['ok'] = not any(p['severity'] == 'error' for p in entry['problems'])
+        results.append(entry)
+
+    for entry in results:
+        entry.setdefault('ok', False)
+    return jsonify({
+        'group': group_name,
+        'expected': {
+            'scene_name': group.get('scene_name'),
+            'track': group.get('track'),
+            'trigger_name': group.get('trigger_name'),
+            'playlist_length': group.get('playlist_length'),
+        },
+        'checked_at': datetime.now().isoformat(),
+        'member_count': len(results),
+        'ready_count': sum(1 for e in results if e['ok']),
+        'members': results,
+    })
+
+
+def _configure_member(device_id, ip, group, problems, force=False):
+    """Apply only the setup steps this member is actually missing.
+
+    Mirrors setup_ensemble.py's five steps, but driven by the readiness check so
+    a device that is 90% correct gets one patch instead of the whole sequence.
+    Order matters: the scene must exist before it can be patched, and activation
+    is what makes the device publish its trigger subscriptions.
+
+    file_path is cleared to "". The conductor rewrites it before every downbeat,
+    so anything left here is only ever the file that plays when a file push has
+    FAILED - and the firmware ignores a trigger on a track with no file
+    (mur_listener.c), so an empty one means such a device stays silent rather than
+    playing stale material. Silence is the property this design exists to
+    guarantee, so provisioning should leave the track armed and empty.
+
+    On a group that is already running this can cost that member a single entry:
+    if the clear lands between a prep and its downbeat, that downbeat is ignored
+    and the device rejoins at the next one.
+    """
+    scene = group.get('scene_name')
+    track = group.get('track')
+    trigger = group.get('trigger_name')
+    codes = {p['code'] for p in problems}
+    if force:
+        # Re-apply what can be redone harmlessly, even when the check says it is
+        # already right. Two steps are deliberately excluded:
+        #
+        #   scene_missing  - create is wrong to repeat; it is in `codes` already
+        #                    if the scene genuinely is not there.
+        #   active_scene_wrong - scene_activate has no already-active early
+        #                    return, so it always runs config_apply and can cut a
+        #                    track that is currently playing. Re-activating an
+        #                    already-active scene achieves nothing and risks an
+        #                    audible blip on a live member, so only do it when the
+        #                    real check says the active scene is wrong.
+        codes |= {'track_mode_wrong', 'default_scene_wrong'}
+    applied, failed = [], []
+
+    def post(path, payload, label, tolerate=None):
+        try:
+            r = requests.post(f"http://{ip}{path}", json=payload, timeout=5)
+            body = r.json() if r.content else {}
+            # The firmware answers a rejected patch with HTTP 200 + success:false,
+            # so the status code alone is not an outcome.
+            if r.status_code != 200 or body.get('success') is False:
+                err = str(body.get('error') or f'HTTP {r.status_code}')
+                # e.g. creating a scene that already exists is a no-op, not a
+                # failure - same tolerance setup_ensemble.py applies.
+                if tolerate and tolerate in err.lower():
+                    applied.append(f'{label} (already done)')
+                    return True
+                failed.append({'step': label, 'error': err})
+                return False
+            applied.append(label)
+            return True
+        except (requests.RequestException, ValueError) as e:
+            failed.append({'step': label, 'error': str(e)})
+            return False
+
+    if 'scene_missing' in codes:
+        if not post('/api/scene', {'action': 'create', 'name': scene}, 'create scene',
+                    tolerate='exist'):
+            return applied, failed          # nothing else can succeed
+
+    # One patch covers every track problem plus synchronized. `active: true` is
+    # load-bearing: it routes scene_apply_patch into the trigger-mode branch,
+    # which never restarts a playing track. See AGENTS.md.
+    track_codes = {'scene_missing', 'track_absent', 'track_mode_wrong',
+                   'track_trigger_type_wrong', 'track_trigger_name_wrong',
+                   'track_inactive'}
+    if codes & track_codes or 'synchronized_true' in codes:
+        # active:true keeps this on the trigger-mode branch of scene_apply_patch,
+        # which never restarts a playing track - required, and it is also what
+        # makes clearing file_path safe here. See AGENTS.md.
+        tracks = [{'track': track, 'mode': 'trigger', 'trigger_type': 'OneShot',
+                   'trigger_name': trigger, 'active': True, 'file_path': ''}]
+        if 'scene_missing' in codes:
+            # We just created this scene, so its other tracks hold whatever the
+            # firmware defaults to (loop mode, track1/2/3.wav). An ensemble scene
+            # must be silent apart from the conducted track, or those defaults
+            # start playing the moment it is activated. Only assert this on
+            # creation - on an existing scene another track may be doing
+            # something deliberate, and clobbering it would be worse.
+            for other in range(MAX_TRACKS):
+                if other != track:
+                    tracks.append({'track': other, 'active': False})
+        patch = {scene: {'tracks': tracks}}
+        if 'synchronized_true' in codes or 'scene_missing' in codes:
+            patch[scene]['synchronized'] = False
+        post('/api/scenes', patch, 'configure track')
+
+    if 'default_scene_wrong' in codes or 'scene_missing' in codes:
+        post('/api/scene', {'action': 'set_default', 'name': scene}, 'set boot default')
+
+    if 'active_scene_wrong' in codes or 'scene_missing' in codes:
+        post('/api/scene', {'action': 'activate', 'name': scene}, 'activate scene')
+
+    # Always save: nothing above survives a reboot otherwise, and it cannot be
+    # verified remotely so the checklist can never tell us it is already done.
+    if applied or force:
+        post('/api/config/save', {}, 'save to SD')
+    return applied, failed
+
+
+@app.route('/api/ensemble/<group_name>/configure', methods=['POST'])
+def ensemble_configure(group_name):
+    """Provision one member (or all) for this group, fixing only what is wrong.
+
+    Body: {"device_id": "30"} or {"device_ids": [...]}, or {} for every member.
+    """
+    try:
+        group = _group_status(group_name)
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 502
+
+    data = request.json or {}
+    force = bool(data.get('force'))
+    wanted = data.get('device_ids')
+    if data.get('device_id'):
+        wanted = [data['device_id']]
+
+    results = []
+    for member in group.get('members', []):
+        device_id, ip = member.get('id'), member.get('ip') or ''
+        if wanted is not None and device_id not in wanted:
+            continue
+        entry = {'id': device_id, 'applied': [], 'failed': [], 'ok': False}
+        if not ip:
+            entry['failed'].append({'step': 'reach device',
+                                    'error': 'not connected to the gateway'})
+            results.append(entry)
+            continue
+        try:
+            with device_lock(device_id, blocking=True, timeout=5.0):
+                resp = requests.get(f"http://{ip}/api/scenes", timeout=5)
+                if resp.status_code != 200:
+                    raise requests.RequestException(f'HTTP {resp.status_code}')
+                problems = _readiness_problems(resp.json(), group, member)
+                entry['applied'], entry['failed'] = _configure_member(
+                    device_id, ip, group, problems, force=force)
+                # Re-read so the answer reflects the device, not our intentions.
+                after = requests.get(f"http://{ip}/api/scenes", timeout=5)
+                if after.status_code == 200:
+                    scenes_after = after.json()
+                    _feed_cache(device_id, scene_data=scenes_after)
+                    remaining = [p for p in _readiness_problems(scenes_after, group, member)
+                                 if p['severity'] == 'error'
+                                 and p['code'] != 'not_subscribed']
+                    entry['remaining'] = remaining
+                    entry['ok'] = not remaining and not entry['failed']
+        except DeviceBusy:
+            entry['failed'].append({'step': 'acquire device', 'error': 'device busy'})
+        except (requests.RequestException, ValueError) as e:
+            entry['failed'].append({'step': 'read scenes', 'error': str(e)})
+        results.append(entry)
+
+    if not results:
+        return jsonify({'error': 'no matching members in this group'}), 200
+    return jsonify({
+        'group': group_name,
+        'configured': sum(1 for r in results if r['ok']),
+        'total': len(results),
+        # not_subscribed is excluded from `remaining` above: the gateway's view is
+        # a 10s poll, so it is still stale right after a successful fix.
+        'note': 'the Status column can lag ~10s behind this result',
+        'members': results,
+    })
+
+
+@app.route('/api/ensemble/<group_name>/probe')
+def ensemble_probe_duration(group_name):
+    """Duration of one file, read from its WAV header on the first member that has it.
+
+    Exists so the playlist editor can fill duration_ms in automatically. The
+    full /files route needs a fan-out to every member; this is one 4 KB read
+    (plus one /api/files call if the caller cannot supply the size), which is
+    cheap enough to run on every file selection.
+
+    Always 200: a failed probe must leave the editor usable, not error it out.
+    """
+    filename = (request.args.get('file') or '').strip().replace('/sdcard/', '')
+    if not filename:
+        return jsonify({'error': 'file is required'}), 200
+    # The caller usually has the size already from a loaded inventory; it is a
+    # sanity bound on the header's declared data size, not trusted input.
+    try:
+        size_hint = int(request.args.get('size') or 0)
+    except ValueError:
+        size_hint = 0
+
+    try:
+        members = _group_members(group_name)
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 200
+
+    tried = []
+    for device_id, ip in members:
+        if not ip:
+            continue
+        size = size_hint
+        if size <= 0:
+            try:
+                with device_lock(device_id, blocking=True, timeout=5.0):
+                    resp = requests.get(f"http://{ip}/api/files", timeout=5)
+                if resp.status_code == 200:
+                    match = next((f for f in resp.json().get('files', [])
+                                  if f.get('name') == filename), None)
+                    size = int(match.get('size', 0)) if match else 0
+            except (DeviceBusy, requests.RequestException, ValueError):
+                size = 0
+        if size <= 0:
+            tried.append(f'{device_id}: not found')
+            continue
+        info = _probe_wav_duration(device_id, ip, filename, size)
+        if info:
+            info = dict(info, file=filename, source=device_id, size=size)
+            return jsonify(info)
+        tried.append(f'{device_id}: header unreadable')
+
+    return jsonify({'error': f"Could not read a duration for {filename}"
+                             + (f" ({'; '.join(tried)})" if tried else '')}), 200
 
 
 @app.route('/api/ensemble/<group_name>/files')

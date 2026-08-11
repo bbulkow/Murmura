@@ -28,7 +28,17 @@
         .pill.warn { background: #fdf0d0; color: #7a5200; }
         .pill.bad { background: #fadbde; color: #8b1520; }
         .pill.idle { background: #e7ecef; color: #4a5560; }
-        .beat { font-size: 30px; font-weight: 700; color: #2a5298; line-height: 1.1; }
+        .beat { font-size: 30px; font-weight: 700; color: #2a5298; line-height: 1.1;
+                word-break: break-word; }
+        /* Not-playing headline: clearly a state, not a filename. */
+        .beat-idle { font-size: 20px; font-weight: 600; color: #8a94a0; }
+        /* The actionable line: where we are, when the next downbeat lands, how
+           many have gone. Deliberately larger than .beat-sub - this is what you
+           read from arm's length while standing in the room. */
+        .beat-meta { font-size: 16px; color: #33475b; margin-top: 6px; }
+        .beat-meta strong { font-size: 18px; color: #2a5298; }
+        .beat-meta.muted { font-size: 14px; color: #8a94a0; }
+        .beat-meta.muted strong { font-size: 14px; color: #8a94a0; }
         .beat-sub { color: #667; font-size: 12px; }
         .pl-row { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
         .pl-row input[type=text] { flex: 1 1 auto; min-width: 90px; padding: 4px 6px;
@@ -46,6 +56,63 @@
                     overflow-y: auto; background: #f7f9fa; padding: 8px;
                     border-radius: 4px; margin-top: 8px; }
         .hint { color: #667; font-size: 12px; margin: 6px 0 0 0; }
+
+        /* Inline edit panels. Not a modal: the settings form has to sit next to
+           the readiness checklist it exists to fix, and a modal would cover it. */
+        .ens-panel { background: #f7f9fa; border: 1px solid #d6e4ea; border-radius: 6px;
+                     padding: 12px 14px; margin: 12px 0; }
+        .ens-panel h4 { margin: 0 0 10px 0; font-size: 14px; color: #33475b;
+                        text-transform: uppercase; letter-spacing: .04em; }
+        .ens-form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px;
+                        flex-wrap: wrap; }
+        .ens-form-row label { width: 165px; font-size: 13px; color: #445; }
+        .ens-form-row input[type=text], .ens-form-row input[type=number] {
+            padding: 4px 6px; border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+        .ens-form-row input[type=text] { width: 220px; }
+        .ens-form-row input[type=number] { width: 110px; }
+        .ens-form-row .fhint { font-size: 11px; color: #778; flex: 1 1 180px; }
+        .restart-flag { color: #7a5200; font-weight: 600; font-size: 11px; }
+        .paused-note { color: #7a5200; font-size: 12px; font-weight: 600; }
+
+        /* Readiness checklist */
+        .check-row { display: flex; gap: 8px; padding: 6px 0;
+                     border-bottom: 1px solid #eef2f4; font-size: 13px; }
+        .check-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px;
+                     flex: 0 0 9px; }
+        .sev-error .check-dot { background: #dc3545; }
+        .sev-warn  .check-dot { background: #e0a415; }
+        .sev-info  .check-dot { background: #8fa4b5; }
+        .check-body { flex: 1 1 auto; }
+        .check-why { color: #667; font-size: 12px; margin-top: 3px; }
+        .check-fix { color: #14652b; font-size: 12px; margin-top: 3px; }
+        .member-ok { color: #14652b; font-weight: 600; }
+
+        /* Wide content scrolls inside itself rather than pushing the page sideways. */
+        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+        /* Phone layout. This page is used on a handset in the room, so the
+           two-column split, the fixed-width form labels and the playlist row all
+           have to collapse rather than force horizontal scrolling. */
+        @media (max-width: 700px) {
+            .ens-group { padding: 12px 10px; }
+            .ens-group h2 { font-size: 19px; }
+            .ens-col { flex: 1 1 100%; min-width: 0; }
+            .ens-form-row { align-items: flex-start; flex-direction: column; gap: 3px; }
+            .ens-form-row label { width: auto; font-weight: 600; }
+            .ens-form-row input[type=text],
+            .ens-form-row input[type=number] { width: 100%; max-width: 100%; }
+            .ens-form-row .fhint { flex: 1 1 100%; }
+            /* Buttons: full-width targets, comfortably tappable. */
+            .btn.mini { padding: 8px 12px; font-size: 14px; }
+            /* Playlist row: file on its own line, numbers and buttons beneath. */
+            .pl-row { flex-wrap: wrap; gap: 4px; padding-bottom: 8px;
+                      border-bottom: 1px solid #eef2f4; margin-bottom: 8px; }
+            .pl-row select, .pl-row input[type=text] { flex: 1 1 100%; min-width: 0; }
+            .pl-row input[type=number] { width: 72px; }
+            .pl-row button { padding: 6px 10px; }
+            table.ens { font-size: 12px; }
+            table.ens th, table.ens td { padding: 4px 5px; }
+        }
     </style>
 </head>
 <body>
@@ -55,8 +122,75 @@
             <p style="margin:6px 0 0 0;"><a href="/">&larr; Back to devices</a></p>
         </header>
 
+        <div id="messageArea" class="error-message" style="display:none;"></div>
+
         <div id="conductorBanner" class="ens-banner">Loading conductor status&hellip;</div>
+
+        <div style="margin-bottom:14px;">
+            <button id="newGroupBtn" class="btn btn-primary" onclick="toggleCreate(true)">
+                New ensemble group</button>
+        </div>
+
+        <!--
+          Static markup, deliberately outside #groups: the 2 s status poll
+          rewrites the group cards, and anything it can reach it can clobber
+          mid-typing.
+        -->
+        <div id="createPanel" class="ens-panel" style="display:none;">
+            <h4>New ensemble group</h4>
+            <div class="ens-form-row">
+                <label for="ngName">Group name</label>
+                <input type="text" id="ngName" pattern="[A-Za-z0-9_\-]+" placeholder="mainroom"
+                       title="Letters, digits, hyphen, underscore. Just a label.">
+            </div>
+            <div class="ens-form-row">
+                <label for="ngTrigger">Trigger name</label>
+                <input type="text" id="ngTrigger" list="conductorTriggers" placeholder="EnsembleMain">
+                <datalist id="conductorTriggers"></datalist>
+            </div>
+            <div class="ens-form-row">
+                <label for="ngScene">Scene name</label>
+                <input type="text" id="ngScene" pattern="[A-Za-z0-9_\-]+" placeholder="ensembleA"
+                       title="The scene on each device that carries the ensemble.">
+            </div>
+            <div class="ens-form-row">
+                <label for="ngTrack">Track</label>
+                <input type="number" id="ngTrack" value="0" min="0" max="2"
+                       title="0-2. Which track plays the ensemble material.">
+            </div>
+            <div class="ens-form-row">
+                <label for="ngPrep">Prep lead (ms)</label>
+                <input type="number" id="ngPrep" value="8000" min="0" step="500"
+                       title="How far ahead of a downbeat the next filename is pushed to devices.">
+            </div>
+            <div class="ens-form-row">
+                <label for="ngReadiness">Readiness timeout (s)</label>
+                <input type="number" id="ngReadiness" value="120" min="0" step="10">
+
+            </div>
+            <div class="ens-form-row">
+                <label for="ngLoop">Loop the playlist</label>
+                <input type="checkbox" id="ngLoop" checked>
+            </div>
+            <div class="ens-form-row">
+                <label for="ngEnabled">Enabled</label>
+                <input type="checkbox" id="ngEnabled">
+                <span class="fhint" title="An enabled group starts firing downbeats at
+                    devices that are not set up yet. Add members, fix their setup,
+                    then enable.">enable last</span>
+            </div>
+            <div style="margin-top:10px;">
+                <button class="btn btn-primary mini" onclick="createGroup()">Create</button>
+                <button class="btn btn-secondary mini" onclick="toggleCreate(false)">Cancel</button>
+            </div>
+        </div>
+
         <div id="groups"></div>
+
+        <div id="noGroups" class="ens-group" style="display:none;">
+            <em>No ensemble groups yet.</em>
+            <div class="hint">Create one above, then add members.</div>
+        </div>
     </div>
 
     <script src="{{ url_for('static', filename='js/ensembles.js') }}"></script>
