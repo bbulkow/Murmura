@@ -13,6 +13,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
+from urllib.parse import urlparse
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -1718,11 +1719,15 @@ def conductor_triggers():
         return jsonify({'triggers': [], 'error': str(e)}), 200
 
 
-def _group_status(group_name):
+def _group_status(group_name, with_gateway=False):
     """One conductor group's full status dict. Raises RuntimeError.
 
     The readiness check needs scene_name/track/trigger_name as well as the
     member list, so both callers share a single /status fetch.
+
+    with_gateway=True returns (group, gateway) instead, where gateway is the
+    conductor's top-level view of the gateway it polls. Same one fetch: the
+    wrong-gateway diagnosis needs both and must not cost a second round trip.
     """
     try:
         response = requests.get(f"{_conductor_url()}/status", timeout=5)
@@ -1732,13 +1737,34 @@ def _group_status(group_name):
         raise RuntimeError(f"Cannot reach conductor: {e}")
     for group in status.get('groups', []):
         if group.get('name') == group_name:
-            return group
+            return (group, status.get('gateway') or {}) if with_gateway else group
     raise RuntimeError(f"No such conductor group: {group_name}")
+
+
+def _member_ip(member):
+    """(ip, source) for a group member: gateway peer address, else our registry.
+
+    The conductor only ever knows a member's IP as the peer address of its
+    outbound gateway connection, so a device that is powered and on the network
+    but not connected to the gateway has none at all. This server has scanned
+    the subnet and usually does - and an address we can actually reach is the
+    whole point. Without this fallback "not at the gateway" silently became
+    "unreachable", which is a different and usually false claim.
+
+    Every caller still goes through device_lock, so the one-TCP-connection-at-a-
+    time rule the ESP32s need is unaffected.
+    """
+    ip = (member.get('ip') or '').strip()
+    if ip:
+        return ip, 'gateway'
+    device = registry.get_device(member.get('id')) or {}
+    ip = (device.get('ip_address') or '').strip()
+    return (ip, 'registry') if ip else ('', None)
 
 
 def _group_members(group_name):
     """[(device_id, ip)] for a conductor group, from the conductor's status."""
-    return [(m['id'], m.get('ip', ''))
+    return [(m['id'], _member_ip(m)[0])
             for m in _group_status(group_name).get('members', [])]
 
 
@@ -1936,51 +1962,128 @@ def _readiness_problems(scenes, group, member):
     return problems
 
 
+def _wrong_gateway_problem(device_id, ip, gateway):
+    """The `wrong_gateway` problem for a device that answers HTTP but is not at
+    the gateway, or None if it is pointed at the right one (or won't say).
+
+    This is the answer to the question "not at the gateway - why not?", and on
+    a standalone install it is nearly always the same answer: the device is
+    still holding the gateway address of some other network.
+
+    Host only. The conductor publishes the gateway's STATUS url (4001), and the
+    device port (4000) is a separate argument to mur-gateway rather than a fixed
+    offset from it, so a port comparison here would be a guess.
+    """
+    expected_host = urlparse(gateway.get('status_url') or '').hostname
+    if not expected_host:
+        return None
+    try:
+        # Its own lock hold: this is a second request to the same ESP32 and
+        # those must not overlap. Losing the race costs a diagnosis, nothing
+        # more, so DeviceBusy is swallowed rather than raised at the caller -
+        # the scenes read it follows already succeeded.
+        with device_lock(device_id, blocking=True, timeout=3.0):
+            metadata = _fetch_metadata(ip, PROBE_TIMEOUT_SEC)
+    except DeviceBusy:
+        return None
+    if metadata is None:
+        # No diagnosis is better than a wrong one.
+        return None
+    _feed_cache(device_id, metadata=metadata)
+    actual = (metadata.get('mur_gateway_ip') or '').strip()
+    if actual == expected_host:
+        return None
+    port = metadata.get('mur_gateway_port')
+    return {
+        'code': 'wrong_gateway', 'order': 4, 'severity': 'error',
+        'message': (f"This device is pointed at gateway "
+                    f"'{actual or '(unset)'}', not '{expected_host}'."),
+        'why': 'The device opens the connection, so it decides which gateway it '
+               'joins. Pointed elsewhere it never reaches this one, whatever the '
+               'rest of its setup says. Only the address is compared here - the '
+               'conductor publishes the gateway status port, not its device port.',
+        'fix': f"On the device page, set mur_gateway_ip to '{expected_host}'.",
+        'actual': f"{actual or '(unset)'}:{port}" if port else (actual or '(unset)'),
+        'expected': expected_host,
+    }
+
+
 @app.route('/api/ensemble/<group_name>/readiness')
 def ensemble_readiness(group_name):
-    """Per-member ensemble setup check, on demand (it contacts each device)."""
+    """Per-member ensemble setup check, on demand (it contacts each device).
+
+    Gateway membership and HTTP reachability are reported as two independent
+    facts, because they are two independent facts. Collapsing them meant a
+    device that was powered, on the network and serving its own config page
+    was reported as offline purely because it had not joined the gateway - and
+    the check gave up without ever opening a socket to it.
+    """
     try:
-        group = _group_status(group_name)
+        group, gateway = _group_status(group_name, with_gateway=True)
     except RuntimeError as e:
         return jsonify({'error': str(e)}), 502
 
     results = []
     for member in group.get('members', []):
         device_id = member.get('id')
-        ip = member.get('ip') or ''
+        at_gateway = bool(member.get('present'))
+        ip, ip_source = _member_ip(member)
         in_registry = registry.get_device(device_id) is not None
         entry = {
             'id': device_id,
             'ip': ip,
-            'at_gateway': bool(member.get('present')),
+            # Which of the two address sources answered. 'registry' means the
+            # gateway had nothing and we fell back to our own scan.
+            'ip_source': ip_source,
+            'at_gateway': at_gateway,
             'subscribed': bool(member.get('subscribed')),
             'in_registry': in_registry,
             # /device/<id> resolves through the registry, so a device the
             # conductor knows but this server has never scanned would 404.
+            # Offered whatever its state: the device page is where a wrong
+            # mur_gateway_ip gets fixed, so it matters most when the device is
+            # NOT at the gateway.
             'device_page': (f"/device/{device_id}?scene={group.get('scene_name')}"
                             f"&track={group.get('track')}") if in_registry else None,
             'reachable': False,
+            'http_state': 'no_address',
             'problems': [],
         }
         if not in_registry:
             entry['problems'].append({
                 'code': 'not_in_registry', 'order': 5, 'severity': 'warn',
                 'message': 'This server has never scanned this device.',
-                'why': 'It is at the gateway, so the ensemble can still use it, '
-                       'but there is no device page to link to.',
+                'why': 'The ensemble can still use it, but there is no device '
+                       'page to link to and no address to fall back on if it '
+                       'leaves the gateway.',
                 'fix': 'Run a network scan from the dashboard.',
                 'actual': None, 'expected': None,
             })
-        if not ip:
+        if not at_gateway:
             entry['problems'].append({
                 'code': 'not_at_gateway', 'order': 5, 'severity': 'error',
                 'message': 'Not connected to the gateway.',
                 'why': 'Downbeats reach devices through their outbound gateway '
-                       'connection. Without it this device cannot play.',
+                       'connection. Without it this device cannot play, even if '
+                       'everything else about its setup is correct.',
                 'fix': 'Check the device is powered, on the network, and pointed '
                        'at the right mur_gateway_ip.',
                 'actual': None, 'expected': None,
             })
+        if not ip:
+            # The only case where "could not check" is true. Everything else
+            # gets an HTTP attempt, at the gateway or not.
+            entry['problems'].append({
+                'code': 'no_address', 'order': 5, 'severity': 'error',
+                'message': 'No address known for this device.',
+                'why': 'The gateway has no connection from it and this server '
+                       'has never scanned it, so there is nowhere to send a '
+                       'request. Its setup cannot be checked or fixed from here.',
+                'fix': 'Run a network scan from the dashboard.',
+                'actual': None, 'expected': None,
+            })
+            entry['problems'].sort(key=lambda p: p['order'])
+            entry['ok'] = False
             results.append(entry)
             continue
         try:
@@ -1990,9 +2093,17 @@ def ensemble_readiness(group_name):
                 raise requests.RequestException(f"HTTP {response.status_code}")
             scenes = response.json()
             entry['reachable'] = True
+            entry['http_state'] = 'ok'
             _feed_cache(device_id, scene_data=scenes)
             entry['problems'].extend(_readiness_problems(scenes, group, member))
+            if not at_gateway:
+                # It answers us but not the gateway. Worth one more request to
+                # say why, and only ever on this path.
+                problem = _wrong_gateway_problem(device_id, ip, gateway)
+                if problem:
+                    entry['problems'].append(problem)
         except DeviceBusy:
+            entry['http_state'] = 'busy'
             entry['problems'].append({
                 'code': 'device_busy', 'order': 5, 'severity': 'warn',
                 'message': 'Device was busy; setup not checked.',
@@ -2002,12 +2113,16 @@ def ensemble_readiness(group_name):
                 'actual': None, 'expected': None,
             })
         except (requests.RequestException, ValueError) as e:
+            entry['http_state'] = 'no_answer'
             entry['problems'].append({
                 'code': 'unreachable', 'order': 5, 'severity': 'error',
                 'message': f'Could not read scenes from this device: {e}',
-                'why': 'The device is at the gateway but its HTTP server did not '
-                       'answer, so its setup cannot be verified.',
-                'fix': 'Check the device is responsive.',
+                'why': f'We have an address for it ({ip}, from '
+                       + ('this server\'s network scan' if ip_source == 'registry'
+                          else 'its gateway connection')
+                       + ') but its HTTP server did not answer, so its setup '
+                         'cannot be verified.',
+                'fix': 'Check the device is powered and responsive.',
                 'actual': None, 'expected': None,
             })
         entry['problems'].sort(key=lambda p: p['order'])
@@ -2154,13 +2269,18 @@ def ensemble_configure(group_name):
 
     results = []
     for member in group.get('members', []):
-        device_id, ip = member.get('id'), member.get('ip') or ''
+        device_id = member.get('id')
         if wanted is not None and device_id not in wanted:
             continue
+        # Gateway peer address if it has one, our own scan otherwise. A device
+        # that is on the network but not at the gateway is exactly the one that
+        # most needs configuring, so refusing to try was backwards.
+        ip, _ = _member_ip(member)
         entry = {'id': device_id, 'applied': [], 'failed': [], 'ok': False}
         if not ip:
-            entry['failed'].append({'step': 'reach device',
-                                    'error': 'not connected to the gateway'})
+            entry['failed'].append({
+                'step': 'reach device',
+                'error': 'no address for this device - run a network scan'})
             results.append(entry)
             continue
         try:
@@ -2274,7 +2394,8 @@ def ensemble_files(group_name):
     per_device = {}
     for device_id, ip in members:
         if not ip:
-            unreachable.append({'id': device_id, 'reason': 'not connected to gateway'})
+            unreachable.append({'id': device_id,
+                                'reason': 'no address - run a network scan'})
             continue
         try:
             with device_lock(device_id, blocking=True, timeout=5.0):

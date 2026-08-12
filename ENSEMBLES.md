@@ -148,6 +148,18 @@ downbeat lands, and how many have gone. Members show present / subscribed / last
 file push, and *Check files* compares SD contents across the group with a
 throttled copy for anything missing.
 
+**Device setup** reports two independent facts per member and never mixes them.
+*at gateway* is whether the gateway holds that device's outbound connection —
+without it no downbeat can reach it, whatever else is correct. *responding* is
+whether this server just reached its HTTP API. A device can be responding but not
+at the gateway; that is a normal state, usually a stale `mur_gateway_ip`, and the
+check says so by name rather than calling the device offline. Such a device is
+still fully configurable from here: the conductor only knows a member's address
+as the peer address of its gateway connection, so this server falls back to the
+address from its own network scan. The one state that blocks the check is *no
+address*, where neither source has one and a network scan from the dashboard is
+the fix.
+
 **Editing a live group.** Most fields apply at the next downbeat with nothing
 interrupted: membership, `prep_lead_ms`, `loop_playlist`, `readiness_timeout_s`,
 and renaming. Four fields restart the group runner — `enabled`, `trigger_name`,

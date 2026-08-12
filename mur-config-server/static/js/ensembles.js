@@ -780,14 +780,35 @@ function renderReadiness(name, data) {
     const errs = (m.problems || []).filter(p => p.severity === 'error').length;
 
     /*
-     * Three states, and the button is always present so its absence is never the
-     * explanation. An unreachable device cannot be patched over HTTP, so offering
-     * a link to its (equally unreachable) device page was worse than useless -
-     * say it is offline and disable the action instead.
+     * Two chips, because these are two independent facts and each was being
+     * used as the other's explanation. Whether the device holds a connection to
+     * the gateway says nothing about whether it answers HTTP, and the word
+     * "offline" for the first of those was simply wrong - it is the state of a
+     * device sitting on the network serving its own config page perfectly well.
+     * That is also the state in which the operator most needs to reach it, so
+     * the device page link is offered here too.
      */
-    let statusPill, action, link = '';
-    if (!m.reachable) {
-      statusPill = '<span class="pill bad">offline</span>';
+    const linkChip = m.at_gateway
+      ? '<span class="pill ok" title="The gateway holds a connection from this device, so downbeats can reach it.">at gateway</span>'
+      : '<span class="pill bad" title="The gateway has no connection from this device, so it cannot hear a downbeat. This says nothing about whether the device is running.">not at gateway</span>';
+    const HTTP_CHIP = {
+      ok:         ['ok',   'responding',     'This server reached the device over HTTP.'],
+      busy:       ['warn', 'busy',           'Another request to this device was in flight. Transient.'],
+      no_answer:  ['bad',  'no HTTP answer', 'We have an address for this device but it did not answer.'],
+      no_address: ['bad',  'no address',     'Neither the gateway nor this server has an address for this device.'],
+    };
+    const [hCls, hText, hWhy] = HTTP_CHIP[m.http_state] || HTTP_CHIP.no_answer;
+    const httpChip = `<span class="pill ${hCls}" title="${esc(hWhy)}">${hText}</span>`;
+    const countChip = m.reachable && errs
+      ? `<span class="pill bad">${errs} to fix</span>`
+      : m.reachable && !errs ? '<span class="pill ok">ready</span>' : '';
+
+    let action;
+    if (m.http_state === 'no_address') {
+      // The one case where trying is not possible rather than merely unlikely.
+      action = `<button class="btn btn-secondary mini" disabled
+                 title="There is no address to send a request to. Run a network scan from the dashboard.">Try to configure</button>`;
+    } else if (!m.reachable) {
       // Enabled on purpose. This check is a snapshot and the device may have come
       // back since; refusing to try would hide that. If it really is down, the
       // attempt reports why - which is far better than a dead button.
@@ -795,26 +816,20 @@ function renderReadiness(name, data) {
                  onclick="configureMember('${esc(name)}','${esc(m.id)}',false)"
                  title="This device did not answer the last check. Pressing this tries anyway and reports what happens.">Try to configure</button>`;
     } else if (errs) {
-      statusPill = `<span class="pill bad">${errs} to fix</span>`;
       action = `<button class="btn btn-primary mini"
                  onclick="configureMember('${esc(name)}','${esc(m.id)}',false)"
                  title="Apply only the steps this device is missing, then save to SD">Configure this device</button>`;
-      if (m.device_page) {
-        link = `<a class="btn btn-secondary mini" href="${esc(m.device_page)}"
-                   target="_blank" rel="noopener">Device page &rarr;</a>`;
-      }
     } else {
-      statusPill = '<span class="pill ok">ready</span>';
       action = `<button class="btn btn-secondary mini"
                  onclick="configureMember('${esc(name)}','${esc(m.id)}',true)"
                  title="Nothing looks wrong. Re-apply every setup step anyway and save to SD.">Reconfigure</button>`;
-      if (m.device_page) {
-        link = `<a class="btn btn-secondary mini" href="${esc(m.device_page)}"
-                   target="_blank" rel="noopener">Device page &rarr;</a>`;
-      }
     }
-    const noPage = m.reachable && !m.device_page
-      ? '<span class="beat-sub">not scanned - no device page</span>' : '';
+    const link = m.device_page
+      ? `<a class="btn btn-secondary mini" href="${esc(m.device_page)}"
+           target="_blank" rel="noopener">Device page &rarr;</a>`
+      : '';
+    const noPage = m.device_page
+      ? '' : '<span class="beat-sub">not scanned - no device page</span>';
 
     /*
      * Outcome of the last configure attempt for this member, rendered inline.
@@ -843,8 +858,11 @@ function renderReadiness(name, data) {
       <div style="margin-bottom:14px;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <strong>${esc(m.id)}</strong>
-          <span class="beat-sub">${esc(m.ip || 'no address')}</span>
-          ${statusPill}${action}${link}${noPage}
+          <span class="beat-sub" title="${m.ip_source === 'registry'
+            ? 'From this server’s own network scan - the gateway has no connection from this device.'
+            : 'The peer address of this device’s gateway connection.'}"
+            >${esc(m.ip || 'no address')}</span>
+          ${linkChip}${httpChip}${countChip}${action}${link}${noPage}
         </div>
         ${problems || '<div class="member-ok">Nothing to fix.</div>'}
         ${outcome}
