@@ -1043,54 +1043,55 @@ void app_main(void)
     wifiman_config_t existing_config;
     esp_err_t read_ret = wifi_manager_read_credentials(&existing_config);
     
+    // Built-in networks: the static config, so a unit is reachable without visiting
+    // its webpage. Every one of these is ensured present in NVS on each boot;
+    // user-added networks (via the HTTP API) are never touched.
+    // Set MEDEA to 0 to instead force-remove medea from previously-flashed devices.
+#define MEDEA 1
+    static const struct { const char *ssid; const char *password; } builtin_networks[] = {
+        { "murmura",   "flgforever"    },
+#if MEDEA
+        { "medea",     "!medea4u"      },
+#endif
+    };
+    const int builtin_count = sizeof(builtin_networks) / sizeof(builtin_networks[0]);
+
     if (read_ret != ESP_OK || existing_config.network_count == 0) {
         // No networks stored yet, add them for the first time
         ESP_LOGI(TAG, "No WiFi networks found in NVS, adding initial networks...");
-        // wifi_manager_add_network("medea", "!medea4u");
-        wifi_manager_add_network("flg-haven", "fuckoffanddie");
-        // wifi_manager_add_network("YourMobileHotspot", "YourHotspotPassword");
+        for (int n = 0; n < builtin_count; n++) {
+            wifi_manager_add_network(builtin_networks[n].ssid, builtin_networks[n].password);
+        }
         ESP_LOGI(TAG, "WiFi networks stored in NVS");
     } else {
         ESP_LOGI(TAG, "Found %d existing WiFi networks in NVS, skipping add", existing_config.network_count);
         // List existing networks for debug
         bool has_auth_failures = false;
         for (int i = 0; i < existing_config.network_count; i++) {
-            ESP_LOGI(TAG, "  Network %d: %s (Auth fail count: %d)", 
+            ESP_LOGI(TAG, "  Network %d: %s (Auth fail count: %d)",
                      i, existing_config.networks[i].ssid, existing_config.networks[i].auth_fail_count);
             if (existing_config.networks[i].auth_fail_count > 0) {
                 has_auth_failures = true;
             }
         }
 
-        // sometimes we need to add networks when we have some configured.
-        // This is repeditive. Would be better to have a unit in wifi_manager do it
-        bool found = false;
-        for (int i=0; i < existing_config.network_count; i++) {
-            if (strcmp(existing_config.networks[i].ssid, "flg-haven") == 0) { 
-                ESP_LOGI(TAG, " Network: flg-haven found, no need to write");
-                found = true;
-                break;
+        // Sometimes we need to add networks when we already have some configured.
+        for (int n = 0; n < builtin_count; n++) {
+            bool found = false;
+            for (int i = 0; i < existing_config.network_count; i++) {
+                if (strcmp(existing_config.networks[i].ssid, builtin_networks[n].ssid) == 0) {
+                    ESP_LOGI(TAG, " Network: %s found, no need to write", builtin_networks[n].ssid);
+                    found = true;
+                    break;
+                }
+            }
+            if (found == false) {
+                ESP_LOGI(TAG, " Network: %s NOT found, writing", builtin_networks[n].ssid);
+                wifi_manager_add_network(builtin_networks[n].ssid, builtin_networks[n].password);
             }
         }
-        if (found == false) {
-            ESP_LOGI(TAG, " Network: flg-haven NOT found, adding");
-            wifi_manager_add_network("flg-haven", "fuckoffanddie");
-        }
 
-#if 1 // MEDEA
-        found = false;
-        for (int i=0; i < existing_config.network_count; i++) {
-             if (strcmp(existing_config.networks[i].ssid, "medea") == 0) { 
-                 ESP_LOGI(TAG, " Network: medea found, no need to write");
-                 found = true;
-                 break;
-             }
-        }
-        if (found == false) {
-             ESP_LOGI(TAG, " Network: medea NOT found, writing");
-             wifi_manager_add_network("medea", "!medea4u");
-        }
-#else
+#if !MEDEA
         // Force-remove medea from NVS if it exists from previous firmware flashes
         wifi_manager_remove_network("medea");
 #endif
@@ -1101,7 +1102,8 @@ void app_main(void)
             wifi_manager_clear_all_auth_failures();
         }
     }
-    
+#undef MEDEA
+
     // Initialize WiFi manager - this will attempt to connect using stored credentials
     ret = wifi_manager_init();
     if (ret == ESP_OK) {

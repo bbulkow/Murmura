@@ -57,14 +57,16 @@ If you know a device's IP (from your router's DHCP list, or `device_map.json`), 
 
 ### Default networks (hardcoded in firmware)
 
-Every Mur ships with two WiFi networks pre-loaded into NVS on first boot:
+Every Mur ships with these WiFi networks pre-loaded into NVS on first boot:
 
 | SSID | Password |
 |------|----------|
+| `murmura` | `flgforever` |
 | `medea` | `!medea4u` |
-| `flg-haven` | `fuckoffanddie` |
 
-These are hard-coded in `main/murmura.c` and added automatically on first boot. They are not overwritten if you later add additional networks. If neither network is in range, the device boots without WiFi — audio playback continues normally; the HTTP API is simply unreachable until WiFi connects.
+`murmura` is the static config — stand up an AP with that SSID and password and any Mur is reachable without ever visiting its webpage. (`flg-haven` / `fuckoffanddie` was a built-in in earlier firmware; it is no longer written to new devices, but it is not scrubbed from units that already have it stored.)
+
+These are hard-coded in the `builtin_networks[]` table in `main/murmura.c` and added automatically on first boot. Any that are missing are re-added on every subsequent boot, so flashing new firmware picks up newly-added built-ins. They are not overwritten if you later add additional networks. If none of these networks are in range, the device boots without WiFi — audio playback continues normally; the HTTP API is simply unreachable until WiFi connects.
 
 It is also possible to add more wifi addresses. You may need to use one of the hardcoded wifis just to get into the device, but the device
 manager scripts will allow you to identify then add to the wifi addresses.
