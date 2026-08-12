@@ -965,7 +965,9 @@ function renderPlaylist(name) {
     // and that is only discoverable by listening.
     const real = knownDuration(name, e.file);
     let flag = '';
-    if (!e.duration_ms) {
+    if (e.volume === 0) {
+      flag = '<span class="pill bad" title="This entry plays silently">muted</span>';
+    } else if (!e.duration_ms) {
       flag = '<span class="pill bad">duration not set</span>';
     } else if (real) {
       const delta = e.duration_ms - real;
@@ -986,13 +988,17 @@ function renderPlaylist(name) {
              onchange="setEntry('${esc(name)}',${i},'duration_ms',this.value)">
       <input type="number" value="${e.gap_ms || 0}" min="0" step="500" title="gap after, ms"
              onchange="setEntry('${esc(name)}',${i},'gap_ms',this.value)">
+      <input type="number" class="pl-vol" value="${e.volume ?? 100}" min="0" max="100"
+             step="5" title="volume %"
+             onchange="setEntry('${esc(name)}',${i},'volume',this.value)">
       <button onclick="moveEntry('${esc(name)}',${i},-1)" title="up">&uarr;</button>
       <button onclick="moveEntry('${esc(name)}',${i},1)" title="down">&darr;</button>
       <button onclick="removeEntry('${esc(name)}',${i})" title="remove">&times;</button>
       ${flag}
     </div>`;
   }).join('') +
-  '<div class="beat-sub" style="margin-top:4px;">file &middot; duration ms &middot; gap ms</div>'
+  '<div class="beat-sub" style="margin-top:4px;">file &middot; duration ms &middot; gap ms '
+  + '&middot; vol %</div>'
   + pickerNote;
 }
 
@@ -1069,8 +1075,19 @@ async function probeDuration(name, file) {
 
 async function setEntry(name, i, field, value) {
   const s = st(name);
-  s.playlist[i][field] = (field === 'file') ? value : parseInt(value, 10) || 0;
+  if (field === 'volume') {
+    // Its own branch because the generic `parseInt(...) || 0` below would turn a
+    // typo into 0 = MUTE, silently. Clamp, and fall back to 100 rather than 0.
+    let v = parseInt(value, 10);
+    if (!Number.isFinite(v)) v = 100;
+    s.playlist[i].volume = Math.max(0, Math.min(100, v));
+  } else {
+    s.playlist[i][field] = (field === 'file') ? value : parseInt(value, 10) || 0;
+  }
   markDirty(name);
+  // Re-render so a clamped value snaps back in the box, instead of the input
+  // showing 150 while state holds 100.
+  if (field === 'volume') renderPlaylist(name);
 
   // Picking a file sets its duration from the header - the entire point being
   // that the operator never types a millisecond count.
@@ -1103,7 +1120,7 @@ async function addEntry(name) {
   // file (these are 3-4 minute tracks) and would silently truncate them, so
   // read the real length instead and flag it when that is not possible.
   const ms = file ? await probeDuration(name, file) : null;
-  s.playlist.push({ file, duration_ms: ms || 0, gap_ms: 0 });
+  s.playlist.push({ file, duration_ms: ms || 0, gap_ms: 0, volume: 100 });
   markDirty(name);
   renderPlaylist(name);
   if (file && !ms) {
@@ -1171,7 +1188,8 @@ function revertPlaylist(name) {
 
 async function savePlaylist(name) {
   const s = st(name);
-  const bad = s.playlist.find(e => !e.file || e.duration_ms < 2000);
+  const bad = s.playlist.find(e => !e.file || e.duration_ms < 2000
+                                || !(e.volume >= 0 && e.volume <= 100));
   if (bad) {
     showMessage('Every entry needs a file and a duration of at least 2000 ms. '
       + 'Use "Fit to file length" to read them from the files.', 'error');

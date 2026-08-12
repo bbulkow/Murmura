@@ -45,6 +45,9 @@
                                    border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
         .pl-row input[type=number] { width: 84px; padding: 4px 6px;
                                      border: 1px solid #ccc; border-radius: 3px; font-size: 13px; }
+        /* Volume is 3 digits, not 6 like a millisecond value - narrower so the
+           row still fits its buttons on a phone. */
+        .pl-row input[type=number].pl-vol { width: 60px; }
         .pl-row button { padding: 3px 7px; font-size: 12px; cursor: pointer;
                          border: 1px solid #bbc; background: #f3f5f7; border-radius: 3px; }
         .mini { padding: 5px 11px; font-size: 13px; }
@@ -109,6 +112,7 @@
                       border-bottom: 1px solid #eef2f4; margin-bottom: 8px; }
             .pl-row select, .pl-row input[type=text] { flex: 1 1 100%; min-width: 0; }
             .pl-row input[type=number] { width: 72px; }
+            .pl-row input[type=number].pl-vol { width: 56px; }
             .pl-row button { padding: 6px 10px; }
             table.ens { font-size: 12px; }
             table.ens th, table.ens td { padding: 4px 5px; }

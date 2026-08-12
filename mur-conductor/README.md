@@ -109,8 +109,8 @@ ports or `gateway_status_url`. Two caveats if you do edit by hand:
       "prep_lead_ms": 8000,
       "loop_playlist": true,
       "playlist": [
-        {"file": "/sdcard/dawn.wav", "duration_ms": 212000, "gap_ms": 0},
-        {"file": "/sdcard/tide.wav", "duration_ms": 900000, "gap_ms": 2000}
+        {"file": "/sdcard/dawn.wav", "duration_ms": 212000, "gap_ms": 0, "volume": 100},
+        {"file": "/sdcard/tide.wav", "duration_ms": 900000, "gap_ms": 2000, "volume": 70}
       ]
     }
   ]
@@ -127,6 +127,7 @@ ports or `gateway_status_url`. Two caveats if you do edit by hand:
 | `prep_lead_ms` | How far ahead of a downbeat to push the next entry's filename to the devices. |
 | `duration_ms` | How long the entry's audio runs. The next downbeat is `duration_ms + gap_ms` later. |
 | `gap_ms` | Deliberate silence after this entry before the next downbeat. |
+| `volume` | Per-entry level trim, 0-100, default 100. Rides the downbeat event and is applied by the device at the deadline, as the `track` term of `device_volume x global_volume x track.volume`. The same for every member - per-device trim is `device_volume` on the device. 0 is mute. |
 
 `file` names are logical: each device plays its own `/sdcard/<name>` copy, so
 per-device stems work by giving each device a different file under the same name.
@@ -135,6 +136,14 @@ per-device stems work by giving each device a different file under the same name
 the audio is doing: set it too long and the entry gets truncated, too short and
 you get silence before the next entry. Aim to match the real file duration. The
 config-server UI derives it from the WAV header for you.
+
+**How `volume` reaches the devices.** It rides the downbeat event as a `volume`
+field, and the device applies it at the same TSF deadline as the start - so the
+level changes exactly at the boundary, on every member at once. It deliberately
+does *not* go in the prep patch: a patched track volume applies immediately on the
+active scene, and prep runs `prep_lead_ms` ahead, so that would change the level of
+the entry still playing. The trim is runtime state and is never written to the
+device's `scenes.json`. See MUR_PROTOCOL.md, "Per-event volume".
 
 ## Endpoints
 
@@ -145,7 +154,7 @@ Ingest / upstream role (`listen_port`, default 5002):
 | `POST /api/register` | The gateway registers here; the conductor connects back to it. |
 | `GET /api/registrations` | Which gateways are registered and connected. |
 | `GET /api/triggers` | The trigger names this conductor drives (keeps the config-server dropdowns working). |
-| `POST /api/trigger-event` | Manual injection for testing: `{"name": "...", "value": "..."}`. Does not disturb any group's timeline. |
+| `POST /api/trigger-event` | Manual injection for testing: `{"name": "...", "value": "...", "volume": 0-100}`. `volume` is optional and puts any level on the wire without touching a playlist. Does not disturb any group's timeline. |
 
 Status / admin (`status_port`, default 4002):
 

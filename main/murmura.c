@@ -436,6 +436,13 @@ void audio_control_task(void *pvParameters)
     audio_control_parameters_t *params = (audio_control_parameters_t *)pvParameters;
     QueueHandle_t control_queue = params->queue;
 
+    /* Last per-track gain actually pushed to the downmixer, so SET_VOLUME can
+     * skip a redundant write (which would force a downmix close/reopen - see the
+     * SET_VOLUME case). Seeded to 100 because source_info starts every track at
+     * gain 0 dB (murmura_passthrough.c). Owned solely by this task: single
+     * writer, single reader, same thread, so no locking. */
+    static int s_applied_volume[MAX_TRACKS] = {100, 100, 100};
+
     //(QueueHandle_t) pvParameters;
     ESP_LOGI(TAG, "Audio control task started.");
 
@@ -644,14 +651,40 @@ void audio_control_task(void *pvParameters)
                 }
 
                 case AUDIO_ACTION_SET_VOLUME: {
-                    ESP_LOGI(TAG, "Processing SET_VOLUME action for track %d: %d%%", 
+                    ESP_LOGI(TAG, "Processing SET_VOLUME action for track %d: %d%%",
                              msg.data.set_volume.track_index, msg.data.set_volume.volume_percent);
                     int track = msg.data.set_volume.track_index;
                     if (track >= 0 && track < MAX_TRACKS) {
                         int volume = msg.data.set_volume.volume_percent;
                         if (volume < 0) volume = 0;
                         if (volume > 100) volume = 100;
-                        
+
+                        /* Always mirror into the track manager, even when the gain
+                         * write below is skipped - GET /api/device reports this. */
+                        track_manager->tracks[track].volume_percent = volume;
+
+                        /* Skip a redundant gain write.
+                         *
+                         * downmix_set_gain_info() sets reset_flag=1 unconditionally
+                         * (the vendor's early-return guard in downmix.c is
+                         * `x < 0.01 && x > 0.01`, which is never true), so the next
+                         * downmix_process() does a close+open and skips a cycle -
+                         * and a reopen re-enters the switch-on transition for ALL
+                         * three sources. Harmless when volume genuinely changes;
+                         * wasteful on every downbeat once the conductor started
+                         * sending a per-entry volume, which is usually unchanged.
+                         *
+                         * Shadowed here rather than compared against
+                         * tracks[track].volume_percent because config_apply writes
+                         * that field immediately after queueing the message, before
+                         * this task drains it - comparing against it would swallow
+                         * the scene-activation volume entirely. */
+                        if (volume == s_applied_volume[track]) {
+                            ESP_LOGD(TAG, "Track %d volume already %d%% - skipping downmix reopen",
+                                     track, volume);
+                            break;
+                        }
+
                         // Convert volume percent to dB gain
                         // 100% = 0dB, 50% = -6dB, 25% = -12dB, 0% = -60dB
                         float gain_db;
@@ -660,13 +693,20 @@ void audio_control_task(void *pvParameters)
                         } else {
                             gain_db = 20.0f * log10f(volume / 100.0f);
                         }
-                        
-                        float gain[2] = {0.0f, gain_db};
+
+                        /* gain[0] == gain[1]: no transition.
+                         *
+                         * esp_downmix.h documents gain[0] as the transition START
+                         * and gain[1] as the target, interpolated over transit_time
+                         * (500 ms, see murmura_passthrough.c). Passing 0.0f as
+                         * gain[0] therefore made EVERY level change ramp down from
+                         * full volume over half a second - so lowering a playing
+                         * track briefly made it louder, and a per-entry trim would
+                         * fade in from full at the start of every entry. */
+                        float gain[2] = {gain_db, gain_db};
                         downmix_set_gain_info(stream->downmix_e, gain, track);
+                        s_applied_volume[track] = volume;
                         ESP_LOGI(TAG, "Set track %d volume to %d%% (%.1f dB)", track, volume, gain_db);
-                        
-                        // Update loop manager state
-                        track_manager->tracks[track].volume_percent = volume;
                     }
                     break;
                 }

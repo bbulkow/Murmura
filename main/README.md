@@ -28,8 +28,8 @@ live pipeline).
 
 ### The bug
 
-`downmix` is told its input format exactly once, at startup
-(`murmura.c`, `audio_stream_init`):
+`downmix` is told its input format exactly once, at startup, in
+**`murmura_passthrough.c`** (`audio_stream_init_with_passthrough`):
 
 ```c
 esp_downmix_input_info_t source_info[MAX_TRACKS];
@@ -42,9 +42,18 @@ for (int i = 0; i < MAX_TRACKS; i++) {
 source_info_init(stream->downmix_e, source_info);
 ```
 
+> **Mind which copy you are reading.** `murmura.c` contains a near-identical
+> `audio_stream_init()` with the same hard-coded `channel = 2`, but **it is dead
+> code — nothing calls it**. The live pipeline is
+> `audio_stream_init_with_passthrough()` in `murmura_passthrough.c`, which is also
+> where the real `transit_time = 500` lives. The bug is present in both copies;
+> only the passthrough one runs. (`audio_control_set_gain()` in `murmura.c` is
+> likewise uncalled.) An earlier version of this document cited the dead copy.
+
 **Those two comments are false.** `source_info_init()` is called only there. The
 only per-track downmix call at runtime is `downmix_set_gain_info()`, which sets
-gain, not format. The I2S clock is likewise pinned once:
+gain, not format — see "Per-entry volume" below for what that path now does. The
+I2S clock is likewise pinned once:
 
 ```c
 i2s_stream_set_clk(stream->i2s_e, 44100, 16, 2);
@@ -196,10 +205,49 @@ Risks to settle before doing it:
    requirement shrinks from three constraints to two (44100 Hz, 16-bit) — pair
    this with B1 or B2 if arbitrary rates are ever needed.
 
-### Guard worth adding either way
+### Guard worth adding either way (mono/stereo)
 
 The config server already parses these WAV headers to fill playlist durations
 (`_parse_wav_header` / `_probe_wav_duration` in `mur-config-server/app.py`, and
 `GET /api/ensemble/<group>/probe`), so it knows the channel count, sample rate
 and bit depth of every file it offers. It could flag a non-conforming file at
 selection time instead of letting it be discovered by ear. Not implemented.
+
+## Per-track volume: two fixes that were required for per-entry volume
+
+Adding a per-playlist-entry volume (see [ENSEMBLES.md](../ENSEMBLES.md)) surfaced
+two pre-existing bugs in `AUDIO_ACTION_SET_VOLUME` (`murmura.c`). Both are fixed;
+both are worth knowing about because neither is visible by reading the call site.
+
+**1. Every level change ramped down from full volume over 500 ms.** The handler
+built `float gain[2] = {0.0f, gain_db}`. Per `esp_downmix.h`, `gain[0]` is the
+transition *start* and `gain[1]` the target, interpolated over `transit_time`
+(500 ms, set in `murmura_passthrough.c`). So passing 0.0f as the start meant
+lowering a playing track first jumped it to full level and then slid down — and a
+per-entry trim would have faded in from full at the start of every entry, which is
+the opposite of a trim. Now `{gain_db, gain_db}`: no transition.
+
+**2. Every gain write forced a downmix close/reopen, even when the value was
+unchanged.** The vendor's early-return guard in `esp-adf-libs/esp_codec/downmix.c`
+reads `(x < 0.01) && (x > 0.01) && ...` — unsatisfiable, so it is dead code and
+every call falls through to `reset_flag = 1`. The next `downmix_process()` then does
+`downmix_close()` + `downmix_open()` and skips a cycle, and a reopen re-enters the
+switch-on transition for **all three sources**. Harmless when volume genuinely
+changes; wasteful once the conductor started sending a volume on every downbeat,
+which is usually the same value. Now deduped against a `static int
+s_applied_volume[MAX_TRACKS]` owned by `audio_control_task`.
+
+The dedupe deliberately does **not** compare against
+`track_manager->tracks[i].volume_percent`: `config_apply` writes that field
+immediately after queueing the message and before this task drains it, so a
+comparison against it would swallow the scene-activation volume entirely.
+
+The vendor tree is not patched.
+
+### Consequence worth remembering
+
+A reopen re-ramps all three downmix sources, not just the changed one. In a
+conducted ensemble the other two tracks are deactivated when the scene is created,
+so this is inert. A device running a conducted track *alongside* a local loop on
+another track of the same scene would get a level bump on that loop at every volume
+change. Flagged rather than designed around.

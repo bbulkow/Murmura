@@ -109,6 +109,10 @@ class PlaylistEntry:
     file: str
     duration_ms: int
     gap_ms: int = 0
+    # Per-entry level trim, 0-100, applied by the device at the downbeat as the
+    # *track* term of device_volume x global_volume x track.volume. Always sent,
+    # so an entry's level never depends on what played before it.
+    volume: int = 100
 
     @property
     def span_s(self) -> float:
@@ -116,7 +120,8 @@ class PlaylistEntry:
         return (self.duration_ms + self.gap_ms) / 1000.0
 
     def to_dict(self) -> dict:
-        return {"file": self.file, "duration_ms": self.duration_ms, "gap_ms": self.gap_ms}
+        return {"file": self.file, "duration_ms": self.duration_ms,
+                "gap_ms": self.gap_ms, "volume": self.volume}
 
 
 @dataclass
@@ -176,8 +181,21 @@ def _parse_playlist(raw, where: str) -> list:
             raise ConfigError(f"{where}: playlist[{i}].gap_ms must be an integer (ms)")
         if gap_ms < 0:
             raise ConfigError(f"{where}: playlist[{i}].gap_ms must not be negative")
+        # Default 100 rather than "unset": every entry carries an explicit level
+        # so playback is deterministic. An older config.json with no volumes
+        # loads at 100 throughout and gets them written back on the next save.
+        volume = item.get("volume", 100)
+        try:
+            volume = int(volume)
+        except (TypeError, ValueError):
+            raise ConfigError(f"{where}: playlist[{i}].volume must be an integer 0-100")
+        if not 0 <= volume <= 100:
+            raise ConfigError(
+                f"{where}: playlist[{i}].volume={volume} is outside 0-100"
+            )
         entries.append(PlaylistEntry(file=file_path.strip(),
-                                     duration_ms=duration_ms, gap_ms=gap_ms))
+                                     duration_ms=duration_ms, gap_ms=gap_ms,
+                                     volume=volume))
     return entries
 
 
@@ -477,7 +495,8 @@ class GatewayLink:
                 svc.writer = None
             logger.info("Connection to %s closed - awaiting re-registration", name)
 
-    async def send_event(self, name: str, value="") -> tuple[int, int]:
+    async def send_event(self, name: str, value="",
+                         volume: Optional[int] = None) -> tuple[int, int]:
         """Send a trigger event to every connected service.
 
         Returns (services_sent_to, event_id). The wire shape matches what the
@@ -486,9 +505,22 @@ class GatewayLink:
         gateway supplies the shared deadline itself (fanout_delay_ms) once
         more than one device is subscribed, which is exactly the behavior we
         want and the only path verified to work end to end.
+
+        `volume` (0-100) rides along as an extra key when given. The gateway
+        passes unknown fields through untouched, and the device applies it to
+        whichever track the event starts, at the same deadline as the start.
+        Omitted means "leave the level alone" - which is what every non-conductor
+        trigger source does.
+
+        Deliberately a named parameter and not a **kwargs passthrough: the whole
+        point of the paragraph above is that this function does not put time
+        fields on the wire, and a generic escape hatch would let a caller do
+        exactly that.
         """
         eid = self._next_event_id()
         event = {"name": name, "value": value, "id": eid, "timestamp": iso_now()}
+        if volume is not None:
+            event["volume"] = int(volume)
         line = (json.dumps(event) + "\n").encode("utf-8")
 
         sent = 0
@@ -912,7 +944,14 @@ class GroupRunner:
         entry = self._entry(idx)
         # value="On" is stripped by the gateway's On/Off->OneShot conversion, so
         # devices receive a canonical valueless OneShot event.
-        sent, eid = await self.c.link.send_event(g.trigger_name, "On")
+        #
+        # The entry's volume rides the same event so the device can apply it at
+        # the shared deadline. It cannot go in the prep patch instead: a patched
+        # track volume applies IMMEDIATELY on the active scene (scene_manager.c),
+        # so prep - which runs prep_lead_ms ahead - would change the level of the
+        # entry still playing.
+        sent, eid = await self.c.link.send_event(
+            g.trigger_name, "On", volume=entry.volume if entry else None)
         self.beat_count += 1
         self.last_beat_iso = iso_now()
         self.last_beat_sent_to = sent
@@ -922,9 +961,11 @@ class GroupRunner:
                 "the fleet will not advance", g.name, self.beat_count, idx,
                 entry.file if entry else "?")
         else:
-            logger.info("Group '%s': downbeat %d -> entry %d (%s), event_id=%d, %d gateway(s)",
+            logger.info("Group '%s': downbeat %d -> entry %d (%s, vol %s), "
+                        "event_id=%d, %d gateway(s)",
                         g.name, self.beat_count, idx,
-                        entry.file if entry else "?", eid, sent)
+                        entry.file if entry else "?",
+                        entry.volume if entry else "-", eid, sent)
 
     async def _prep(self, idx: int) -> None:
         """Push entry idx's file into every member's ensemble scene track.
@@ -1119,9 +1160,24 @@ class Conductor:
         name = data.get("name")
         if not isinstance(name, str) or not name.strip():
             return web.json_response({"error": "name must be a non-empty string"}, status=400)
-        sent, eid = await self.link.send_event(name.strip(), data.get("value", ""))
-        logger.info("Manual trigger '%s' -> %d gateway(s) (event_id=%d)", name, sent, eid)
-        return web.json_response({"event_id": eid, "sent_to_services": sent})
+        # Optional volume, so one curl can put any level on the wire without
+        # touching a playlist. Same validation as a playlist entry.
+        volume = data.get("volume")
+        if volume is not None:
+            try:
+                volume = int(volume)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "volume must be an integer 0-100"},
+                                         status=400)
+            if not 0 <= volume <= 100:
+                return web.json_response({"error": f"volume={volume} is outside 0-100"},
+                                         status=400)
+        sent, eid = await self.link.send_event(name.strip(), data.get("value", ""),
+                                              volume=volume)
+        logger.info("Manual trigger '%s' (vol %s) -> %d gateway(s) (event_id=%d)",
+                    name, volume if volume is not None else "-", sent, eid)
+        return web.json_response({"event_id": eid, "sent_to_services": sent,
+                                  "volume": volume})
 
     # -- HTTP: status + admin --------------------------------------------
 

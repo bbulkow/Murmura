@@ -76,9 +76,11 @@ static volatile bool     s_connected   = false;
 /* ---- forward declarations ----------------------------------------- */
 static void  mur_task(void *arg);
 static void  process_line(const char *line, int sock);
-static void  dispatch_event(const char *trigger_name, const char *value);
+/* volume: 0-100 to apply to the track(s) this event starts, or -1 for "not
+ * specified" (leave the level alone). See MUR_PROTOCOL.md. */
+static void  dispatch_event(const char *trigger_name, const char *value, int volume);
 static void  dispatch_or_defer(const char *trigger_name, const char *value,
-                               uint64_t target_tsf_us);
+                               uint64_t target_tsf_us, int volume);
 static int   connect_to_gateway(void);
 static bool  send_announce(int sock);
 static bool  send_subscribe(int sock);
@@ -391,11 +393,12 @@ static void handle_scene_response(cJSON *event)
  * dispatch_event — map a trigger event to zero or more tracks and queue
  * the appropriate audio control message.
  */
-static void dispatch_event(const char *trigger_name, const char *value)
+static void dispatch_event(const char *trigger_name, const char *value, int volume)
 {
     if (!s_manager || !trigger_name) return;
 
-    ESP_LOGD(TAG, "Received trigger: name='%s' value='%s'", trigger_name, value ? value : "(null)");
+    ESP_LOGD(TAG, "Received trigger: name='%s' value='%s' volume=%d",
+             trigger_name, value ? value : "(null)", volume);
 
     bool is_on  = (value && (strcasecmp(value, "on")  == 0 || strcmp(value, "1") == 0));
     bool is_off = (value && (strcasecmp(value, "off") == 0 || strcmp(value, "0") == 0));
@@ -475,13 +478,32 @@ static void dispatch_event(const char *trigger_name, const char *value)
         bool should_stop  = (t->trigger_type == TRIGGER_TYPE_ONOFF) && is_off;
 
         if (should_start) {
+            /* Per-event volume, applied BEFORE the start so the first sample out
+             * of the new file is already at the right level. audio_control_task
+             * drains one FIFO queue, so submission order is execution order and
+             * both land at target_tsf_us together.
+             *
+             * Zero timeout on purpose: the level is best-effort but the start is
+             * not, so a full queue must never block the scheduler task here. A
+             * wrong level for one entry self-corrects at the next downbeat; a
+             * hole in the show does not. Hence we never abort the start. */
+            if (volume >= 0) {
+                audio_control_msg_t vmsg = { .type = AUDIO_ACTION_SET_VOLUME, .data = {} };
+                vmsg.data.set_volume.track_index = i;
+                vmsg.data.set_volume.volume_percent = volume;
+                if (xQueueSend(s_manager->audio_control_queue, &vmsg, 0) != pdPASS) {
+                    ESP_LOGW(TAG, "Queue full — SET_VOLUME %d%% for track %d dropped; "
+                                  "starting at the previous level", volume, i);
+                }
+            }
             if (audio_control_send_start_track(s_manager->audio_control_queue, i,
                     t->file_path, pdMS_TO_TICKS(100)) != pdPASS) {
                 ESP_LOGW(TAG, "Queue full or alloc failed — START_TRACK for track %d dropped", i);
             } else {
-                ESP_LOGI(TAG, "Trigger '%s' matched track %d (%s) — starting",
+                ESP_LOGI(TAG, "Trigger '%s' matched track %d (%s) — starting%s",
                          trigger_name, i,
-                         t->trigger_type == TRIGGER_TYPE_ONESHOT ? "OneShot" : "On/Off");
+                         t->trigger_type == TRIGGER_TYPE_ONESHOT ? "OneShot" : "On/Off",
+                         volume >= 0 ? " (with volume)" : "");
             }
         } else if (should_stop) {
             msg.type = AUDIO_ACTION_STOP_TRACK;
@@ -509,13 +531,17 @@ static void dispatch_event(const char *trigger_name, const char *value)
 typedef struct {
     char *name;
     char *value;  /* may be NULL */
+    /* 0-100, or -1 for "not specified". Plain int - nothing to free. MUST be
+     * assigned explicitly: this struct is calloc'd, and a zeroed volume would
+     * mean MUTE rather than "absent". */
+    int   volume;
 } deferred_dispatch_ctx_t;
 
 static void deferred_dispatch_cb(void *arg)
 {
     deferred_dispatch_ctx_t *c = (deferred_dispatch_ctx_t *)arg;
     if (!c) return;
-    dispatch_event(c->name, c->value);
+    dispatch_event(c->name, c->value, c->volume);
 }
 
 static void deferred_dispatch_free(void *arg)
@@ -535,10 +561,15 @@ static void deferred_dispatch_free(void *arg)
  * or drops with a 'late' warning (LATE_POLICY_DROP). See SYNC_DESIGN.md.
  */
 static void dispatch_or_defer(const char *name, const char *value,
-                              uint64_t target_tsf_us)
+                              uint64_t target_tsf_us, int volume)
 {
+    /* NOTE: every immediate-dispatch path below must pass `volume` too. The
+     * target_tsf_us == 0 branch in particular is NOT an edge case - it is the
+     * single-subscriber case, because the gateway deliberately omits a deadline
+     * when only one device is subscribed. Missing it would make volume silently
+     * inert on every one-device bench test. */
     if (target_tsf_us == 0) {
-        dispatch_event(name, value);
+        dispatch_event(name, value, volume);
         return;
     }
 
@@ -555,7 +586,7 @@ static void dispatch_or_defer(const char *name, const char *value,
         /* WiFi not associated — TSF undefined. Fall back to immediate. */
         ESP_LOGW(TAG, "scheduled '%s' but TSF unavailable — firing immediately",
                  name ? name : "(null)");
-        dispatch_event(name, value);
+        dispatch_event(name, value, volume);
         return;
     }
 
@@ -568,7 +599,7 @@ static void dispatch_or_defer(const char *name, const char *value,
         } else {
             ESP_LOGW(TAG, "late event '%s' by %" PRId64 " us — playing anyway (late_policy=play)",
                      name ? name : "(null)", lateness_us);
-            dispatch_event(name, value);
+            dispatch_event(name, value, volume);
         }
         return;
     }
@@ -578,15 +609,17 @@ static void dispatch_or_defer(const char *name, const char *value,
     if (!ctx) {
         ESP_LOGW(TAG, "deferred ctx alloc failed — firing '%s' immediately",
                  name ? name : "(null)");
-        dispatch_event(name, value);
+        dispatch_event(name, value, volume);
         return;
     }
+    /* Before the strdups: calloc zeroed this, and 0 means MUTE, not "absent". */
+    ctx->volume = volume;
     ctx->name = name ? strdup(name) : NULL;
     ctx->value = value ? strdup(value) : NULL;
     if (name && !ctx->name) {
         ESP_LOGW(TAG, "deferred name strdup failed — firing immediately");
         deferred_dispatch_free(ctx);
-        dispatch_event(name, value);
+        dispatch_event(name, value, volume);
         return;
     }
 
@@ -598,13 +631,13 @@ static void dispatch_or_defer(const char *name, const char *value,
         ESP_LOGW(TAG, "scheduler submit failed (%s) — firing '%s' immediately",
                  esp_err_to_name(err), name ? name : "(null)");
         deferred_dispatch_free(ctx);
-        dispatch_event(name, value);
+        dispatch_event(name, value, volume);
         return;
     }
 
     int64_t lead_us = -lateness_us;
-    ESP_LOGI(TAG, "deferred '%s' value='%s' for %lld ms (offset=%ld us, target_tsf=%" PRIu64 ")",
-             name ? name : "(null)", value ? value : "(null)",
+    ESP_LOGI(TAG, "deferred '%s' value='%s' volume=%d for %lld ms (offset=%ld us, target_tsf=%" PRIu64 ")",
+             name ? name : "(null)", value ? value : "(null)", volume,
              (long long)(lead_us / 1000), (long)offset_us, target_tsf_us);
 }
 
@@ -642,6 +675,7 @@ static void process_line(const char *line, int sock)
     cJSON *name_j   = cJSON_GetObjectItem(event, "name");
     cJSON *value_j  = cJSON_GetObjectItem(event, "value");
     cJSON *target_j = cJSON_GetObjectItem(event, "target_tsf_us");
+    cJSON *vol_j    = cJSON_GetObjectItem(event, "volume");
 
     uint64_t target_tsf_us = 0;
     if (cJSON_IsNumber(target_j)) {
@@ -652,11 +686,24 @@ static void process_line(const char *line, int sock)
         }
     }
 
+    /* Optional per-event volume for the track(s) this event starts.
+     * -1 means "not specified" - the overwhelmingly common case, since only
+     * mur-conductor sends this. Clamped HERE so that -1 can only ever mean
+     * absent and never a value a sender wrote. See MUR_PROTOCOL.md. */
+    int volume = -1;
+    if (cJSON_IsNumber(vol_j)) {
+        volume = (int)vol_j->valuedouble;
+        if (volume < 0)   volume = 0;
+        if (volume > 100) volume = 100;
+    } else if (vol_j) {
+        ESP_LOGW(TAG, "Trigger event 'volume' is not a number — ignored");
+    }
+
     if (cJSON_IsString(name_j)) {
         const char *val = cJSON_IsString(value_j) ? value_j->valuestring : NULL;
-        ESP_LOGD(TAG, "Event: name='%s' value='%s' target_tsf_us=%" PRIu64,
-                 name_j->valuestring, val ? val : "null", target_tsf_us);
-        dispatch_or_defer(name_j->valuestring, val, target_tsf_us);
+        ESP_LOGD(TAG, "Event: name='%s' value='%s' target_tsf_us=%" PRIu64 " volume=%d",
+                 name_j->valuestring, val ? val : "null", target_tsf_us, volume);
+        dispatch_or_defer(name_j->valuestring, val, target_tsf_us, volume);
     } else {
         ESP_LOGW(TAG, "Trigger event missing 'name' field");
     }

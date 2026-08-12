@@ -169,7 +169,7 @@ Solicits a `tsf_reply` from a device. The gateway sends this periodically (caden
 Trigger events delivered by the gateway to subscribed devices.
 
 ```json
-{"name": "RedButton.Button_1", "value": "On", "id": 123, "timestamp": "2026-03-11T10:30:00", "target_tsf_us": 12320420545000000}
+{"name": "RedButton.Button_1", "value": "On", "id": 123, "timestamp": "2026-03-11T10:30:00", "target_tsf_us": 12320420545000000, "volume": 80}
 ```
 
 | Field           | Type   | Required | Description |
@@ -179,6 +179,7 @@ Trigger events delivered by the gateway to subscribed devices.
 | `id`            | int    | no       | Unique event ID (for deduplication) |
 | `timestamp`     | string | no       | ISO 8601 timestamp (event creation time, for debugging — **not** used for scheduling) |
 | `target_tsf_us` | uint64 | no       | Absolute TSF deadline in microseconds. If present, the device schedules the action via `mur_scheduler`. If absent, the device fires immediately. See [SYNC_DESIGN.md](SYNC_DESIGN.md). |
+| `volume`        | int    | no       | 0-100 level for the track(s) this event **starts**, applied at the same deadline as the start. Absent means "leave the current level alone". Clamped to 0-100 on the device; 0 is mute (-60 dB). See "Per-event volume" below. |
 
 **Outer-protocol time fields (Trigger Server → gateway only):** the upstream Trigger Server may send `delta_ms` (int) or `iso_time` (ISO 8601 string) instead of `target_tsf_us`. The gateway translates these into `target_tsf_us` before forwarding. The three time fields are mutually exclusive — events with multiple are dropped with a logged warning. Events with no time field default to "now" semantics; the gateway adds an implicit fanout delay (default 100 ms, configurable) when more than one subscriber would receive it.
 
@@ -191,6 +192,41 @@ Trigger events delivered by the gateway to subscribed devices.
 - **Graceful disconnect:** Either side may close the TCP connection at any time. The gateway cleans up subscriptions on disconnect.
 - **Multiple subscriptions:** If multiple devices subscribe to the same trigger, all receive the event.
 - **Encoding:** UTF-8. Messages are newline-delimited (`\n`). Carriage returns (`\r`) are ignored.
+
+## Per-event volume
+
+`volume` exists so a conducted playlist can carry a per-entry level trim
+(see [ENSEMBLES.md](ENSEMBLES.md)). Semantics:
+
+- **Applied only on the per-track START path.** The device enqueues `SET_VOLUME`
+  immediately before `START_TRACK` on the same FIFO audio queue, so both take effect at
+  `target_tsf_us`. It is never applied on a STOP, nor to a track the event does not start
+  (disabled, no file, or value mismatch).
+- **Ignored by the scene trigger and the per-scene button trigger.** Both consume the
+  event before per-track matching. A scene change is not a track start.
+- **Composes as the `track` term** of `device_volume x scene.global_volume x track.volume`
+  (see [HTTP_API.md](HTTP_API.md)), so per-device trim stays with `device_volume`. Note
+  the terms have different slopes: a track volume of 50 is -6 dB, while a global or device
+  volume of 50 is about -12 dB.
+- **Runtime state only.** It is not written to `scenes.json`. `GET /api/device` reports the
+  live level while `GET /api/scenes` keeps reporting the scene's stored `volume`; the next
+  scene activation or reboot resets the track to that stored value, after which the next
+  event re-applies the trim.
+- **Identical for every subscriber.** The gateway serializes one event and sends the same
+  bytes to all of them, so a per-event volume cannot vary per device. That is precisely
+  why per-device trim has to be `device_volume`.
+- The gateway does not interpret `volume`; it rides through as an unknown field.
+
+**Unknown fields generally.** Neither gateway validates the event schema. Both rebuild the
+forwarded event as a shallow copy, removing only `iso_time` and `delta_ms`, so any other
+key reaches the device verbatim. Firmware reads `name`, `value`, `target_tsf_us` and
+`volume` and ignores the rest — which is what makes an additive field safe against older
+firmware.
+
+**Line length budget.** The device reassembles into a 512-byte line buffer and **silently
+discards the overflow**, which then fails to parse as JSON. A realistic event is about
+140-180 bytes, so there is roughly 3x headroom — but a new field plus a long trigger name
+eats into it. Check this before extending the schema.
 
 ## Trigger Type Translation
 

@@ -125,12 +125,18 @@ class FakeDevice:
         self.events += 1
         name = msg.get("name")
         target = msg.get("target_tsf_us")
+        # Per-entry volume, if the sender supplied one. Like target_tsf_us, every
+        # instance must print the SAME value for a given downbeat - the gateway
+        # serializes one event for all subscribers, so a difference would mean
+        # the fan-out is not sharing a payload.
+        vol = msg.get("volume")
+        vol_s = "" if vol is None else f" volume={vol}"
         if target is None:
-            self.log(f"EVENT #{self.events} '{name}' - NO target_tsf_us "
+            self.log(f"EVENT #{self.events} '{name}'{vol_s} - NO target_tsf_us "
                      f"(fires immediately; devices will NOT be aligned)")
         else:
             lead_ms = (int(target) - tsf_us()) / 1000.0
-            self.log(f"EVENT #{self.events} '{name}' target_tsf_us={target} "
+            self.log(f"EVENT #{self.events} '{name}'{vol_s} target_tsf_us={target} "
                      f"(lead {lead_ms:+.1f} ms)")
 
 

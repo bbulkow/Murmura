@@ -212,7 +212,9 @@ A scheduled trigger event passes through two distinct on-device queues. Both hav
 
 ### Queue 1 — `mur_scheduler` heap (capacity 32)
 
-A min-heap keyed on `target_tsf_us`, drained by a dedicated FreeRTOS task on core 0. When the listener parses an incoming event with a future `target_tsf_us`, it allocates a context (strdup'd name + value), submits to the heap, and returns to read the next line. The scheduler task wakes at the head's deadline, pops, and invokes the dispatch callback.
+A min-heap keyed on `target_tsf_us`, drained by a dedicated FreeRTOS task on core 0. When the listener parses an incoming event with a future `target_tsf_us`, it allocates a context (strdup'd name + value, plus an integer `volume`), submits to the heap, and returns to read the next line. The scheduler task wakes at the head's deadline, pops, and invokes the dispatch callback.
+
+The dispatch callback may enqueue more than one `audio_control_msg_t`. A conducted downbeat carrying a `volume` enqueues `SET_VOLUME` and then `START_TRACK`; because `audio_control_task` drains a single FIFO queue, submission order is execution order, so the level is in place before the first sample of the new file. Both therefore take effect at the shared deadline. See MUR_PROTOCOL.md, "Per-event volume".
 
 - **Strict deadline order, not arrival order.** Two events submitted A then B with `A.target_tsf_us > B.target_tsf_us` → B fires first. With the current symmetric-fanout-delay gateway logic this can't happen (target_tsf_us is monotonic with arrival, and TCP gives per-connection FIFO), but any future feature that uses `delta_ms` upstream or breaks the symmetric invariant could create it.
 - **No merging, no cancellation, no event IDs.** A series of `START STOP START STOP STOP` runs every entry in order; the scheduler has no way to detect that some cancel each other. Implementing dedup/collapse would require either a numeric event id from the upstream (we don't track one today) or trigger-type-aware logic on the device. Both are tractable but unbuilt — see "On not building defensive complexity" below.

@@ -118,11 +118,18 @@ default, saved to SD. That is the entire device-side state — there is no
 
 ### The playlist
 
-Each entry is a file, a duration, and an optional gap. The next downbeat lands at
+Each entry is a file, a duration, an optional gap, and a volume. The next downbeat lands at
 `duration + gap` regardless of what the audio is doing, so the duration should
 match the real file length: too long leaves silence, too short cuts the file off.
 The editor reads the true length from the WAV header when you pick a file, and
 *Fit to file length* re-reads them all. Each row flags a mismatch.
+
+**Volume** is a per-entry level trim, 0-100, default 100. Entries are
+loudness-normalized in principle; this is the trim for what the room actually
+needs. It rides the downbeat and lands on every member at the same instant, so it
+changes exactly at the boundary rather than sliding during an entry. If one unit
+needs to be quieter than the rest, that is `device_volume` on that device, not
+this. 0 mutes the entry, and the row says so.
 
 There is deliberately **no "play to the end"**. The conductor schedules the next
 downbeat on an absolute deadline computed in advance, and no device reports
@@ -169,6 +176,9 @@ gateway drops falsy trigger events by design.
 - **One group per device track.** A track carries exactly one trigger name, so
   two groups using the same device and track will have one group's downbeats
   silently ignored. The membership editor warns about this.
+- **Entry volume is fleet-wide.** The gateway serializes one event and sends
+  identical bytes to every subscriber, so an entry's volume is the same on every
+  member by construction. Per-device trim is `device_volume`.
 
 ## Where the code is
 
