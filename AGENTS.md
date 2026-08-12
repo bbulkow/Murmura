@@ -88,13 +88,23 @@ A file that does not match plays wrong, silently, with no error on any surface:
 Checking and fixing:
 
 ```bash
-ffprobe -v error -show_entries stream=channels,sample_rate,bits_per_raw_sample -of csv=p=0 f.wav
+ffprobe -v error -show_entries stream=codec_name,channels,sample_rate,sample_fmt -of default=noprint_wrappers=1 f.wav
 ffmpeg -i in.wav -ac 2 -ar 44100 -c:a pcm_s16le out.wav
 ```
+
+Two traps in that check, both verified against ffmpeg: **`bits_per_raw_sample` is
+`N/A` for PCM streams**, so the obvious depth check silently never matches —
+`sample_fmt` is the field that works. And ffprobe emits fields in **stream-struct
+order, not the order requested**, so parse by key rather than by position (asking
+for `channels,sample_rate` returns `44100,2`).
 
 Converting mono to stereo **does not change the duration** (byte rate and data
 size both double), so playlist durations stay valid. It does double the file
 size.
+
+Format is only half of preparing audio. Level-matching — the -14 LUFS target, why
+a static gain is used instead of `loudnorm`, and the `normalize.ps1` /
+`normalize.sh` scripts at the repo root — is in **`MASTERING.md`**.
 
 This is a real footgun and it is documented rather than fixed. **`main/README.md`
 has the analysis and three ADF-supported fixes.** Note that the most promising one

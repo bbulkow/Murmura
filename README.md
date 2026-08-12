@@ -259,6 +259,7 @@ See [HTTP_API.md](HTTP_API.md) for full API documentation with request/response 
 - [SYNC_DESIGN.md](SYNC_DESIGN.md) -- sub-millisecond multi-device synchronization (TSF, prior art, measurement, validation procedure)
 - [ENSEMBLES.md](ENSEMBLES.md) -- conducted playlists across a group of devices (setup, playlist handling, operation, limitations)
 - [mur-conductor/README.md](mur-conductor/README.md) -- the conductor service: endpoints, which edits restart a group, device provisioning
+- [MASTERING.md](MASTERING.md) -- preparing audio: format, the -14 LUFS level-matching target, and the `normalize.ps1` / `normalize.sh` scripts
 - [main/README.md](main/README.md) -- firmware notes, including the audio file format requirement and why mono misplays
 - [WIFI_SETUP.md](WIFI_SETUP.md) -- WiFi configuration guide
 - [aithinker-adf/README.md](aithinker-adf/README.md) -- hardware setup and ESP-ADF build instructions

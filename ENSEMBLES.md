@@ -131,15 +131,20 @@ changes exactly at the boundary rather than sliding during an entry. If one unit
 needs to be quieter than the rest, that is `device_volume` on that device, not
 this. 0 mutes the entry, and the row says so.
 
+It only ever attenuates. 100 maps to unity gain and is the maximum, so a quiet
+entry cannot be brought up here — the fix is at mastering time, and it is to lower
+the others. See [MASTERING.md](MASTERING.md).
+
 There is deliberately **no "play to the end"**. The conductor schedules the next
 downbeat on an absolute deadline computed in advance, and no device reports
 playback completion back to it. That fixed grid is precisely what keeps the fleet
 aligned.
 
-> **Audio files must be 44100 Hz, 16-bit, stereo PCM WAV.** Nothing in the system
-> transcodes. A mono file plays at exactly double speed with no error on any
-> surface. See the format section in [AGENTS.md](AGENTS.md) and the analysis in
-> [main/README.md](main/README.md).
+> **Audio files must be 44100 Hz, 16-bit, stereo PCM WAV**, level-matched to
+> -14 LUFS. Nothing in the system transcodes. A mono file plays at exactly double
+> speed with no error on any surface. See [MASTERING.md](MASTERING.md) for how to
+> prepare files (and the scripts that do it), the format section in
+> [AGENTS.md](AGENTS.md), and the analysis in [main/README.md](main/README.md).
 
 ## Operating it
 
