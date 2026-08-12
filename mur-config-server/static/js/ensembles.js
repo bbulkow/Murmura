@@ -234,11 +234,17 @@ function renderGroupShell(card, group) {
     </div>
 
     <div style="margin-top:16px; border-top:1px solid #eef2f4; padding-top:12px;">
+      <!-- "Copy missing files" was removed here, deliberately. It sent the
+           upload with chunked framing, which the firmware cannot read, so every
+           copy created an empty file at the destination and reported success.
+           The framing is fixed and POST .../sync still works, but a transfer
+           that holds a device for minutes does not belong behind a one-click
+           button on a 2 s-polling status page: it has no progress, no cancel,
+           and its lock hold makes the dashboard report the fleet offline.
+           Until it has a page of its own, use device-manager/file_manager.py. -->
       <h3>Files on members
         <button class="btn btn-secondary mini" style="margin-left:8px;"
                 onclick="loadFiles('${g}')">Check files</button>
-        <button class="btn btn-warning mini"
-                onclick="syncFiles('${g}')">Copy missing files</button>
       </h3>
       <!-- data-resting marks placeholder text that the poll may refresh; once
            real results land here it must never be overwritten. -->
@@ -1347,66 +1353,21 @@ function renderFiles(name, data) {
       <span title="Only files present on every member can be played by the group,
         so these are what the playlist picker offers.">${data.common.length} on all
         members</span>${missingCount
-        ? ` &middot; <strong title="Use Copy missing files to queue the copies."
+        ? ` &middot; <strong title="Some members are missing these. Push them from
+              a machine holding the WAVs with device-manager/file_manager.py -
+              faster than device-to-device and it reports progress."
             >${missingCount} incomplete</strong>` : ''}
       <span title="Same name, different size. Never overwritten automatically:
         per-device stems sharing a filename are a legitimate setup."></span>
-    </p>
-    <div id="sync-${esc(name)}"></div>`;
+    </p>`;
 }
 
-async function syncFiles(name) {
-  const host = document.getElementById('sync-' + name)
-            || document.getElementById('files-' + name);
-  if (memberCount(name) === 0) {
-    host.innerHTML = noMembersNotice(name, 'Copying files');
-    return;
-  }
-  try {
-    const resp = await fetch(`/api/ensemble/${encodeURIComponent(name)}/sync`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}) });
-    const body = await resp.json();
-    if (body.error) { host.innerHTML = `<p class="hint">${esc(body.error)}</p>`; return; }
-    if (!body.queued) {
-      host.innerHTML = '<p class="hint">Nothing to copy - every member already has '
-        + 'the same files.</p>';
-      return;
-    }
-    host.innerHTML = `<p class="hint">Queued ${body.queued} copy job(s),
-      roughly ${body.estimated_seconds}s. Transfers run one at a time and are
-      throttled so they do not disturb playback.</p><div class="sync-log"
-      id="synclog-${esc(name)}"></div>`;
-    pollSync(name);
-  } catch (e) {
-    host.innerHTML = `<p class="hint">Sync failed: ${esc(e)}</p>`;
-  }
-}
-
-async function pollSync(name) {
-  const log = document.getElementById('synclog-' + name);
-  if (!log) return;
-  try {
-    const s = await (await fetch('/api/ensemble/sync-status')).json();
-    const lines = [];
-    if (s.current) {
-      lines.push(`copying ${s.current.filename}: ${s.current.src_id} -> `
-        + `${s.current.dst_id} (${fmtBytes(s.current.size)})`);
-    }
-    if (s.queued) lines.push(`${s.queued} job(s) waiting`);
-    (s.done || []).slice(-12).reverse().forEach(d => {
-      lines.push(`${d.status === 'ok' ? 'OK  ' : 'FAIL'} ${d.filename}: `
-        + `${d.src_id} -> ${d.dst_id}${d.error ? ' (' + d.error + ')' : ''}`);
-    });
-    log.innerHTML = lines.map(esc).join('<br>')
-      || '<em>no transfers yet</em>';
-    if (s.running || s.current) setTimeout(() => pollSync(name), 1500);
-    else lines.length && log.insertAdjacentHTML('beforeend',
-      '<br><strong>done - click Check files to confirm</strong>');
-  } catch (e) {
-    log.textContent = 'status unavailable: ' + e;
-  }
-}
+/*
+ * syncFiles() and pollSync() lived here. They drove POST .../sync and polled
+ * /api/ensemble/sync-status into a log element inside the group card. Both are
+ * gone with the button; the server endpoints remain and are the starting point
+ * for a transfers page, which is where this belongs.
+ */
 
 poll();
 setInterval(poll, POLL_MS);

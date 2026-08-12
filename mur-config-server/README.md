@@ -202,7 +202,11 @@ The server provides RESTful API endpoints for programmatic access:
   from its WAV header, for the playlist editor's auto-fill
 - `GET /api/ensemble/<group>/files` - File inventory across members; `?probe=a.wav,b.wav`
   adds durations read from the WAV headers
-- `POST /api/ensemble/<group>/sync` - Queue throttled copies of files missing from a member
+- `POST /api/ensemble/<group>/sync` - Queue throttled copies of files missing from a member.
+  No UI drives this: the *Copy missing files* button was removed because a transfer
+  holding a device for minutes does not belong on a 2 s-polling status page (no
+  progress, no cancel, and the lock hold makes the dashboard report the fleet
+  offline). Use `device-manager/file_manager.py` instead; see ENSEMBLES.md.
 - `GET /api/ensemble/sync-status` - Progress of the copy queue
 
 ## Audio file format

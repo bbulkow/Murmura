@@ -2488,6 +2488,34 @@ def _throttled(iterable, rate=SYNC_RATE_BYTES_PER_SEC):
             time.sleep(drift)
 
 
+class _ThrottledUpload:
+    """A request body that is rate-limited AND declares its length.
+
+    Both halves are load-bearing, and the second one is not optional here.
+    requests falls back to `Transfer-Encoding: chunked` for any body it cannot
+    measure - which a bare generator is - and esp_http_server does not
+    implement chunked request bodies. The firmware reads req->content_len,
+    gets 0, runs its copy loop zero times, and answers `200 File uploaded
+    successfully` having created an EMPTY file at the destination path. Every
+    copy silently produced a 0-byte WAV and reported success.
+
+    __len__ is what makes requests emit Content-Length instead;
+    device-manager/file_manager.py sets that header by hand for the same
+    reason. __iter__ is what makes requests treat this as a stream at all.
+    """
+
+    def __init__(self, path, size, rate=SYNC_RATE_BYTES_PER_SEC):
+        self.path, self.size, self.rate = path, size, rate
+
+    def __len__(self):
+        return self.size
+
+    def __iter__(self):
+        with open(self.path, 'rb') as src:
+            for chunk in _throttled(iter(lambda: src.read(SYNC_CHUNK), b''), self.rate):
+                yield chunk
+
+
 def _sync_worker():
     global _sync_thread
     while True:
@@ -2504,9 +2532,12 @@ def _sync_worker():
         result = dict(job)
         tmp_path = None
         try:
+            # basename: the name comes from the source device's own listing, so
+            # a separator in it would place this write outside the data dir.
+            safe = os.path.basename(job['filename'].replace('\\', '/'))
             tmp_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
-                'mur_config_server', f".sync-{job['filename']}.tmp")
+                'mur_config_server', f".sync-{safe}.tmp")
             os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
 
             with device_lock(job['src_id'], blocking=True, timeout=15.0):
@@ -2522,14 +2553,27 @@ def _sync_worker():
                 response.close()
 
             with device_lock(job['dst_id'], blocking=True, timeout=15.0):
-                with open(tmp_path, 'rb') as src:
-                    upload = requests.post(
-                        f"http://{job['dst_ip']}/api/upload",
-                        params={'filename': job['filename']},
-                        data=_throttled(iter(lambda: src.read(SYNC_CHUNK), b'')),
-                        headers={'Content-Type': 'application/octet-stream'},
-                        timeout=300)
+                upload = requests.post(
+                    f"http://{job['dst_ip']}/api/upload",
+                    params={'filename': job['filename']},
+                    data=_ThrottledUpload(tmp_path, written),
+                    headers={'Content-Type': 'application/octet-stream'},
+                    timeout=300)
                 upload.raise_for_status()
+                # 200 is not proof of anything. The firmware opens the target
+                # path with "wb" before reading a single byte and answers 200
+                # whatever it then manages to write, so the only honest check
+                # is the size it ended up with. Without this, a copy that wrote
+                # nothing reported OK - and left the file present-but-empty,
+                # which the inventory classifies as `differs` and this queue
+                # never retries.
+                listing = requests.get(f"http://{job['dst_ip']}/api/files", timeout=10)
+                listing.raise_for_status()
+                landed = next((f.get('size') for f in listing.json().get('files', [])
+                               if f.get('name') == job['filename']), None)
+            if landed != written:
+                raise ValueError(
+                    f"{job['dst_id']} holds {landed} bytes, expected {written}")
 
             result.update(status='ok', bytes=written)
             logger.info(f"[SYNC] {job['filename']}: {job['src_id']} -> "
@@ -2597,6 +2641,10 @@ def ensemble_sync(group_name):
         return jsonify({'queued': 0, 'message': 'nothing to copy'})
 
     with _sync_lock:
+        # A batch starting from idle clears the previous run's results, which
+        # otherwise appeared in the new run's log as if they had just happened.
+        if not _sync_queue and not _sync_state['current']:
+            _sync_state['done'].clear()
         _sync_queue.extend(queued)
         _sync_state['queued'] = len(_sync_queue)
         _sync_state['running'] = True
@@ -2604,13 +2652,16 @@ def ensemble_sync(group_name):
             _sync_thread = threading.Thread(target=_sync_worker, daemon=True)
             _sync_thread.start()
 
-    total_mb = sum(j['size'] for j in queued) / (1024.0 * 1024.0)
-    logger.info(f"[SYNC] queued {len(queued)} copy job(s), {total_mb:.1f} MB")
+    total_bytes = sum(j['size'] for j in queued)
+    logger.info(f"[SYNC] queued {len(queued)} copy job(s), "
+                f"{total_bytes / (1024.0 * 1024.0):.1f} MB")
     return jsonify({
         'queued': len(queued),
         'jobs': [{'filename': j['filename'], 'src': j['src_id'], 'dst': j['dst_id']}
                  for j in queued],
-        'estimated_seconds': int(total_mb * 1024 * 1024 / SYNC_RATE_BYTES_PER_SEC),
+        # Doubled: every byte is throttled twice, once off the source and again
+        # onto the destination, and those legs run in sequence.
+        'estimated_seconds': int(2 * total_bytes / SYNC_RATE_BYTES_PER_SEC),
     })
 
 

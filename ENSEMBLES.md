@@ -145,8 +145,19 @@ aligned.
 
 The group card shows what is playing, which entry of how many, when the next
 downbeat lands, and how many have gone. Members show present / subscribed / last
-file push, and *Check files* compares SD contents across the group with a
-throttled copy for anything missing.
+file push, and *Check files* compares SD contents across the group.
+
+**Getting files onto members** is done with `device-manager/file_manager.py` from
+a machine that holds the WAVs, not from this page. There was a *Copy missing
+files* button; it sent the upload with chunked framing, which `esp_http_server`
+cannot read, so the firmware saw a zero content length, wrote an empty file and
+answered 200 — every copy silently produced a 0-byte WAV and reported success.
+The framing is fixed and `POST /api/ensemble/<group>/sync` works, but the button
+is gone: a transfer that holds a device for minutes has no place behind one click
+on a page that polls every 2 s, with no progress, no cancel, and a lock hold long
+enough to make the dashboard report the fleet offline. It needs a page of its
+own. Pushing from a laptop is also faster — no device-to-device double hop, no
+throttle, and it prints progress.
 
 **Device setup** reports two independent facts per member and never mixes them.
 *at gateway* is whether the gateway holds that device's outbound connection —
@@ -200,6 +211,7 @@ gateway drops falsy trigger events by design.
 | `mur-conductor/README.md` | operational detail, endpoint reference, which edits restart a group |
 | `mur-conductor/setup_ensemble.py` | CLI equivalent of *Configure device*, plus `--verify` |
 | `mur-conductor/fake_device.py` | simulate members without hardware |
-| `mur-config-server/` | the `/ensembles` UI, file comparison and copy, readiness check |
+| `mur-config-server/` | the `/ensembles` UI, file comparison, readiness check |
+| `device-manager/file_manager.py` | push audio files to devices |
 | `mur-gateway/` | stamps the shared TSF deadline and fans it out |
 | `SYNC_DESIGN.md` | the synchronization layer this is built on |
