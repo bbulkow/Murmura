@@ -2,7 +2,11 @@
 
 This guide explains how to install and configure the Mur Gateway as a systemd service on Linux.
 
-The checked-in service file targets `brian@/home/brian/Murmura/mur-gateway` and points the gateway at a Haven Trigger Server on `localhost:5002`. On other deployments, edit `User=`, `Group=`, `WorkingDirectory=`, the `ExecStart=` path, and the `--trigger-host`/`--trigger-port` arguments to match.
+The checked-in service file targets `pi@/home/pi/Murmura/mur-gateway`, runs from the shared virtualenv at `/home/pi/Murmura/venv`, and points the gateway at a trigger source on `localhost:5002`. On other deployments, edit `User=`, `Group=`, `WorkingDirectory=`, the `ExecStart=` path, and the `--trigger-host`/`--trigger-port` arguments to match.
+
+**What is on :5002 depends on the deployment.** In a Haven-style install it is the Haven Trigger Server (`trigger.service`). In an *ensemble* install it is [mur-conductor](../mur-conductor/), which speaks the same registration protocol. Either way the gateway is the client, so it must start *after* whichever one you run — the unit's `After=` lists both, and ordering against an absent unit is a harmless no-op.
+
+**Scene service.** The gateway primes a scene cache from `--scene-service-url` (default `http://localhost:5003`) with 30 retries at 2 s. Run [mur-scene-server](../mur-scene-server/) there — it needs no gateway-side configuration, since 5003 is already the default. If you run *no* scene service, expect ~60 s of `Scene cache prime failed` warnings at every start, then a single `Gave up priming` error, and thereafter a warning on every lazy refresh (`scene_cache_ttl`, default 30 s) whenever a device asks `get_scene`. Not fatal — `cached_scene` stays `null`, devices are answered `null`, and the ensemble/downbeat path never consults the scene cache — but it is noisy in the journal on an unattended host.
 
 ## Ports
 
@@ -20,8 +24,9 @@ All ports are unprivileged — no special capabilities needed.
 ### Prerequisites
 
 ```bash
-cd ~/Murmura/mur-gateway
-pip3 install --user -r requirements.txt
+# Uses the shared virtualenv at /home/pi/Murmura/venv (see mur-config-server/SYSTEMD_INSTALL.md)
+cd ~/Murmura
+./venv/bin/pip install -r mur-gateway/requirements.txt
 ```
 
 ### Install the service

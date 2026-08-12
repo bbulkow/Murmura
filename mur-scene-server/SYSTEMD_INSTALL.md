@@ -1,14 +1,32 @@
 # Running mur-scene-server under systemd
 
 Installs `mur-scene-server` as a service that starts on boot. Written for the
-Raspberry Pi show host; adjust `User`, `Group` and paths if yours differ.
+`murmura` Raspberry Pi show host (user `pi`); adjust `User`, `Group` and paths
+if yours differ.
+
+**First run starts empty.** `seed_scenes` / `seed_active_scene` in `config.json`
+apply **only** in `--ephemeral` mode. A normal persistent install begins with
+zero scenes and `active_scene: null`, and the gateway will correctly cache
+`null` until you create scenes in the web UI. That is not a fault — but it does
+mean the scene half of the system does nothing at all until someone opens
+<http://murmura.local:5003/> and defines the scenes.
+
+**Cross-links.** `config.json` carries `config_server_url` for the UI's service
+links. On this host mur-config-server runs on **port 80**, not the upstream
+default of 8765, so that entry reads `http://127.0.0.1:80`. The browser
+rewrites the *host* of these links but keeps the port, so the port must be
+right.
 
 ## 1. Prerequisites
 
+Debian 13 (trixie) and other PEP-668 "externally managed" distros reject a bare
+`pip3 install`, so this deployment shares one virtualenv across every Murmura
+service (see [mur-config-server/SYSTEMD_INSTALL.md](../mur-config-server/SYSTEMD_INSTALL.md)):
+
 ```bash
-cd ~/Murmura/mur-scene-server
-pip3 install -r requirements.txt
-python3 mur_scene_server.py        # confirm it starts, then Ctrl-C
+cd ~/Murmura
+./venv/bin/pip install -r mur-scene-server/requirements.txt
+./venv/bin/python mur-scene-server/mur_scene_server.py   # confirm it starts, then Ctrl-C
 ```
 
 Check <http://localhost:5003/> loads before going further.
@@ -19,10 +37,10 @@ Check <http://localhost:5003/> loads before going further.
 
 | Setting | Value |
 |---|---|
-| User / Group | `brian` |
-| Working directory | `/home/brian/Murmura/mur-scene-server` |
+| User / Group | `pi` |
+| Working directory | `/home/pi/Murmura/mur-scene-server` |
 | Port | `5003` via `MUR_SCENE_SERVER_PORT` |
-| Python | `/usr/bin/python3` |
+| Python | `/home/pi/Murmura/venv/bin/python` (shared venv) |
 
 `WorkingDirectory` matters less here than for mur-config-server — this service
 resolves `config.json` and its state directory relative to the **script file**,

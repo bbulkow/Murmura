@@ -1,15 +1,19 @@
 [Unit]
-Description=Mur Gateway - Haven Trigger Server bridge for Murmura ESP32 devices
-After=network-online.target trigger.service
+Description=Mur Gateway - trigger-source bridge for Murmura ESP32 devices
+# The gateway is the TCP client of the trigger source on :5002. In an ensemble
+# deployment that source is mur-conductor, so order after it; on a Haven-style
+# deployment the source is trigger.service instead. Ordering either one that is
+# absent is a no-op, so both are listed and Restart=always covers a race.
+After=network-online.target mur-conductor.service trigger.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=brian
-Group=brian
-WorkingDirectory=/home/brian/Murmura/mur-gateway
-Environment="PATH=/home/brian/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/python3 /home/brian/Murmura/mur-gateway/mur_gateway.py --trigger-host localhost --trigger-port 5002
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Murmura/mur-gateway
+Environment="PATH=/home/pi/Murmura/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/pi/Murmura/venv/bin/python /home/pi/Murmura/mur-gateway/mur_gateway.py --trigger-host localhost --trigger-port 5002
 Restart=always
 RestartSec=10
 StandardOutput=journal

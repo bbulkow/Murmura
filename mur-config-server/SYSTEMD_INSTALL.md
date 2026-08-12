@@ -2,19 +2,39 @@
 
 This guide explains how to install and configure the Mur Config Server as a systemd service on Linux (tested on Ubuntu 22.04 / Jetson and Raspberry Pi Bookworm).
 
-The checked-in service file targets `brian@/home/brian/Murmura/mur-config-server` (the `recomputer` Jetson). On other deployments (e.g. Raspberry Pi as user `pi`), edit `User=`, `Group=`, `WorkingDirectory=`, and `ExecStart=` paths to match.
+The checked-in service file targets `pi@/home/pi/Murmura/mur-config-server` (the `murmura` Raspberry Pi installation box), runs as **root** so it can bind **port 80**, and uses the shared virtualenv at `/home/pi/Murmura/venv`. On other deployments edit `User=`, `Group=`, `WorkingDirectory=`, `MUR_CONFIG_SERVER_PORT=`, and the `ExecStart=` interpreter/paths to match.
 
 ## Features
 
-1. **Runs on port 8765 by default** - Unprivileged port; no special capabilities needed.
-2. **Easy port override** - Change the port using the `MUR_CONFIG_SERVER_PORT` environment variable in the service file.
+1. **Port is set by the unit** - `MUR_CONFIG_SERVER_PORT` in the service file; the app's own default (when run by hand) is still 8765.
+2. **Easy port override** - Change that one `Environment=` line and `systemctl daemon-reload`.
 3. **Systemd service file** - Automatically starts the server on boot and restarts on failure.
 
 ## Port Configuration
 
 ### Default Port
-- **In service**: Port **8765** (configured via `MUR_CONFIG_SERVER_PORT` in the service file).
-- **Manual run**: Same default of **8765** (unless overridden).
+- **In service**: Port **80** (configured via `MUR_CONFIG_SERVER_PORT` in the service file).
+- **Manual run**: **8765** (the `DEFAULT_PORT` in `app.py`, unless overridden).
+
+### Binding port 80
+
+80 is privileged, so the process needs help to bind it. Two ways:
+
+- **`User=root`** — what the checked-in unit does. Simplest, but the whole
+  Flask app (and everything it shells out to) runs as root. Consequence worth
+  knowing: files the dashboard creates under `/home/pi/Murmura` — notably
+  `device-manager/device_map.json`, uploads, and ensemble config rewrites —
+  end up owned by `root`, so running the `device-manager/` CLI tools as `pi`
+  afterwards may need `sudo`.
+- **`User=pi` plus capabilities** — the narrower option, if you'd rather not
+  run as root:
+  ```ini
+  User=pi
+  Group=pi
+  AmbientCapabilities=CAP_NET_BIND_SERVICE
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+  ```
+  systemd grants exactly that one capability before exec, and nothing else.
 
 ### Overriding the Port
 
@@ -37,11 +57,25 @@ You can override the port in several ways:
 
 ### Prerequisites
 
-1. Ensure Python 3 and required dependencies are installed:
+1. Ensure Python 3 and required dependencies are installed. Debian 13 (trixie)
+   and other PEP-668 "externally managed" distros reject `pip install --user`,
+   so this deployment uses one **shared** virtualenv for every Murmura service:
+
    ```bash
-   cd ~/Murmura/mur-config-server
-   pip3 install --user -r requirements.txt
+   cd ~/Murmura
+   python3 -m venv venv
+   ./venv/bin/pip install -r mur-config-server/requirements.txt \
+                          -r mur-gateway/requirements.txt \
+                          -r mur-conductor/requirements.txt \
+                          -r device-manager/requirements.txt
    ```
+
+   It has to be *shared*, not one venv per service: `network_wrapper.py` launches
+   `device-manager/device_scanner.py` with `sys.executable`, so device-manager's
+   `aiohttp` must be importable from the config server's own interpreter.
+
+   `netifaces` has no prebuilt aarch64 wheel and compiles on install — if that
+   step fails, `sudo apt install python3-dev` and retry.
 
 ### Installation Steps
 

@@ -19,8 +19,11 @@ time. The unit file declares `Conflicts=mur-gateway.service` to enforce that.
 ### Prerequisites
 
 ```bash
-cd ~/Murmura/mur-abs-gateway
-pip3 install --user -r requirements.txt
+# Uses the shared virtualenv at /home/pi/Murmura/venv (see mur-config-server/SYSTEMD_INSTALL.md)
+cd ~/Murmura
+./venv/bin/pip install -r mur-abs-gateway/requirements.txt
+# NOTE: mur-abs-gateway is a drop-in *replacement* for mur-gateway, not an
+# addition — its unit declares Conflicts=mur-gateway.service. Do not enable both.
 ```
 
 ### Disable mur-gateway, install mur-abs-gateway

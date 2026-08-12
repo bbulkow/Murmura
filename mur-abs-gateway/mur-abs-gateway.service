@@ -6,11 +6,11 @@ Conflicts=mur-gateway.service
 
 [Service]
 Type=simple
-User=brian
-Group=brian
-WorkingDirectory=/home/brian/Murmura/mur-abs-gateway
-Environment="PATH=/home/brian/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/python3 /home/brian/Murmura/mur-abs-gateway/mur_abs_gateway.py --trigger-host localhost --trigger-port 5002
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Murmura/mur-abs-gateway
+Environment="PATH=/home/pi/Murmura/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/pi/Murmura/venv/bin/python /home/pi/Murmura/mur-abs-gateway/mur_abs_gateway.py --trigger-host localhost --trigger-port 5002
 Restart=always
 RestartSec=10
 StandardOutput=journal
