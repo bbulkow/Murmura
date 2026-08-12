@@ -4,10 +4,13 @@ Uses device-manager scripts for efficient network scanning.
 """
 import os
 import json
+import math
 import time
+import zlib
 import threading
 import logging
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_from_directory
@@ -99,25 +102,63 @@ def device_lock(device_id, *, blocking=True, timeout=3.0):
 # probes.
 # _device_cache[device_id] = {
 #   'formatted': dict | None,         # last good UI dict (preserved across failures)
-#   'last_ok_at': float (epoch),
-#   'last_attempt_at': float (epoch),
+#   'last_ok_at': float (MONOTONIC),  # 0.0 = never succeeded
+#   'last_attempt_at': float (MONOTONIC),
+#   'last_ok_wall': float (epoch),    # display only, never used for decisions
 #   'consecutive_failures': int,
-#   'metadata_age_cycles': int,       # cycles since last /api/device fetch
+#   'metadata_age_cycles': int,       # probes since last /api/device fetch
 # }
+#
+# TIME RULE FOR THIS MODULE: time.monotonic() for every elapsed-time decision,
+# time.time() only for strings shown to humans. An NTP step, or an operator
+# correcting the clock on a show host that booted offline, would otherwise fire
+# every timer at once or stall them all — and time.time() can run backwards.
 # ---------------------------------------------------------------------------
 _device_cache_lock = threading.Lock()
 _device_cache = {}
 
-# Sliding window of recent probe outcomes for adaptive global cycle stretch.
-_probe_outcomes = deque(maxlen=30)
-_probe_outcomes_lock = threading.Lock()
-_global_stretch_factor = 1
-_global_stretch_low_streak = 0
+# ---------------------------------------------------------------------------
+# Probe policy
+#
+# Deliberately fixed, not adaptive, and not configurable. We know exactly what
+# is on the other end: an ESP32 running our firmware, answering /api/scenes out
+# of RAM in well under 200 ms, with 7 HTTP sockets (max_open_sockets) and a
+# single handler task. There is no reason to discover the right probe rate at
+# runtime, and every reason not to — the previous version carried a sliding
+# failure window driving a global cycle multiplier, which could latch into a 4x
+# degraded mode and never come back out.
+#
+# The only rule that actually matters is: never open a second connection to a
+# device while one is in flight. That is enforced by device_lock(), not by
+# rate. Aggregate rate is a non-issue — 40 devices at one ~1 KB request per
+# 10 s is 4 req/s and ~32 kbit/s across the whole AP, and per device it is one
+# connection per 10 s against a server that permits seven at once.
+#
+# What actually hurt these devices historically was never aggregate rate; it
+# was per-device concurrency (the detail page firing four requests every 2 s at
+# one device, file sync holding a device for minutes). Throttling the global
+# cycle was the wrong control variable for that.
+# ---------------------------------------------------------------------------
+PROBE_PERIOD_SEC = 10.0    # every device, every 10 s
+PROBE_TIMEOUT_SEC = 3.0    # generous: a healthy device uses ~5% of it
+PROBE_CONCURRENCY = 8      # distinct devices in flight; never the same one twice
+FAILED_RETRY_SEC = 30.0    # a device that missed its last probe drops to this rate
+STALE_AFTER_SEC = 25.0     # missed ~2 probes -> card goes yellow
+OFFLINE_AFTER_SEC = 45.0   # no successful probe in this long -> card goes offline
+METADATA_EVERY = 10        # fetch /api/device every Nth probe (NVS reads on device)
 
-# Tunables (some loaded from network_config; these are floors / behaviour).
-OFFLINE_FAILURES_THRESHOLD = 5
-DEVICE_BACKOFF_THRESHOLD = 3
-DEVICE_BACKOFF_MAX_SEC = 60
+# Scheduler mechanics, not policy. The tick must be finer than the fleet's
+# probe spacing (PROBE_PERIOD_SEC / N = 250 ms at 40 devices) or the stagger
+# gets quantised away; re-reading device_map.json at that rate would be silly,
+# so it gets its own slower timer.
+PROBE_TICK_SEC = 0.1
+REGISTRY_RELOAD_SEC = 2.0
+
+# Devices with a probe queued or running, so the scheduler never submits the
+# same device twice. Distinct from device_lock, which also excludes the UI and
+# file sync.
+_in_flight = set()
+_in_flight_lock = threading.Lock()
 
 # Background scanning thread
 scan_thread = None
@@ -126,7 +167,6 @@ scan_active = False
 # Probe loop
 _probe_loop_thread = None
 _probe_loop_active = False
-_rr_index = 0
 
 def background_scan():
     """Background thread for continuous scanning."""
@@ -147,7 +187,8 @@ def background_scan():
         
         # Update registry
         registry.load_registry()  # Reload from file updated by device_scanner
-        
+        _seed_cache_from_scan(devices)
+
         # Send update to all connected clients
         socketio.emit('devices_update', {
             'devices': devices,
@@ -223,20 +264,16 @@ def network_configuration():
             network_config.config['timeout'] = data['timeout']
         if 'concurrent_limit' in data:
             network_config.config['concurrent_limit'] = data['concurrent_limit']
-        if 'probe_timeout' in data:
-            network_config.config['probe_timeout'] = data['probe_timeout']
         if 'refresh_interval' in data:
             network_config.config['refresh_interval'] = data['refresh_interval']
         if 'mur_gateway_ip' in data:
             network_config.config['mur_gateway_ip'] = data['mur_gateway_ip']
         if 'mur_gateway_port' in data:
             network_config.config['mur_gateway_port'] = data['mur_gateway_port']
-        if 'cycle_target_sec' in data:
-            network_config.config['cycle_target_sec'] = float(data['cycle_target_sec'])
-        if 'metadata_refetch_every' in data:
-            network_config.config['metadata_refetch_every'] = max(1, int(data['metadata_refetch_every']))
-        if 'stale_window_sec' in data:
-            network_config.config['stale_window_sec'] = float(data['stale_window_sec'])
+        # probe_timeout / cycle_target_sec / metadata_refetch_every /
+        # stale_window_sec are gone: probe policy is now fixed constants at the
+        # top of this file, sized for the hardware rather than discovered at
+        # runtime. Accepting them here would silently do nothing.
 
         network_config.save_config()
 
@@ -337,224 +374,297 @@ def _build_formatted(device, scene_data=None, metadata=None, prior=None):
     return base
 
 
-def _feed_cache(device_id, *, scene_data=None, metadata=None):
+def _seed_cache_from_scan(scanned_devices):
+    """A scan just got a 200 from every one of these devices, with id, mac,
+    firmware and uptime. That is proof of liveness and it costs nothing extra —
+    feed it to the cache so cards are green the moment the scan finishes,
+    instead of sitting 'unknown' until the probe scheduler reaches them.
+
+    count_metadata=False because device_scanner does not capture wifi_ssid or
+    mur_gateway_*; the first real probe still has to fetch /api/device."""
+    seeded = 0
+    for entry in scanned_devices:
+        if not entry.get('online'):
+            continue
+        device_id = entry.get('id') or entry.get('ip_address')
+        if not device_id:
+            continue
+        _feed_cache(device_id, metadata=entry, count_metadata=False)
+        seeded += 1
+    if seeded:
+        logger.info(f"[SCAN SEED] primed cache for {seeded} device(s)")
+
+
+def _new_cache_entry():
+    """A device we have never heard from. metadata_age_cycles starts high so
+    the first probe always fetches /api/device."""
+    return {
+        'formatted': None,
+        'last_ok_at': 0.0,
+        'last_attempt_at': 0.0,
+        'last_ok_wall': 0.0,
+        'consecutive_failures': 0,
+        'metadata_age_cycles': 9999,
+    }
+
+
+def _feed_cache(device_id, *, scene_data=None, metadata=None, count_metadata=True):
     """Update the device cache from a successful response on any code path.
-    Called from the probe loop AND from detail-page proxies, batch ops, etc.
-    so the cache stays fresh without burning extra probe slots."""
+    Called from the probe loop AND from detail-page proxies, batch ops, and
+    scan results, so the cache stays fresh without extra probes.
+
+    count_metadata=False records the success but leaves metadata_age_cycles
+    alone. Used when seeding from a scan: device_scanner captures id/mac/
+    firmware but not wifi_ssid or mur_gateway_*, so the first real probe must
+    still fetch /api/device."""
     device = registry.get_device(device_id)
     if not device:
         return
     with _device_cache_lock:
-        entry = _device_cache.setdefault(device_id, {
-            'formatted': None,
-            'last_ok_at': 0.0,
-            'last_attempt_at': 0.0,
-            'consecutive_failures': 0,
-            'metadata_age_cycles': 9999,
-        })
+        entry = _device_cache.setdefault(device_id, _new_cache_entry())
         prior = entry.get('formatted')
         formatted = _build_formatted(device, scene_data=scene_data, metadata=metadata, prior=prior)
         entry['formatted'] = formatted
-        entry['last_ok_at'] = time.time()
-        entry['last_attempt_at'] = time.time()
+        now_mono = time.monotonic()
+        entry['last_ok_at'] = now_mono
+        entry['last_attempt_at'] = now_mono
+        entry['last_ok_wall'] = time.time()
         entry['consecutive_failures'] = 0
-        if metadata is not None:
+        if metadata is not None and count_metadata:
             entry['metadata_age_cycles'] = 0
 
 
 def _record_cache_failure(device_id):
     """Bump consecutive_failures without zeroing cached card content."""
     with _device_cache_lock:
-        entry = _device_cache.setdefault(device_id, {
-            'formatted': None,
-            'last_ok_at': 0.0,
-            'last_attempt_at': 0.0,
-            'consecutive_failures': 0,
-            'metadata_age_cycles': 9999,
-        })
-        entry['last_attempt_at'] = time.time()
+        entry = _device_cache.setdefault(device_id, _new_cache_entry())
+        entry['last_attempt_at'] = time.monotonic()
         entry['consecutive_failures'] += 1
 
 
-def _record_probe_outcome(success):
-    """Sliding-window failure rate drives the global cycle stretch.
-    Doubles the effective cycle period when the AP is congested, halves it
-    back as conditions recover."""
-    global _global_stretch_factor, _global_stretch_low_streak
-    with _probe_outcomes_lock:
-        _probe_outcomes.append(1 if success else 0)
-        if len(_probe_outcomes) >= 10:
-            failure_rate = 1.0 - (sum(_probe_outcomes) / len(_probe_outcomes))
-            if failure_rate >= 0.5 and _global_stretch_factor < 4:
-                _global_stretch_factor *= 2
-                _global_stretch_low_streak = 0
+def _phase(device_id, period):
+    """Stable 0..period offset for this device, so the fleet spreads across the
+    period instead of all coming due at once. crc32, not hash(): hash() is
+    per-process randomized for strings, so phases would reshuffle on restart."""
+    return (zlib.crc32(device_id.encode('utf-8')) % 10_000) / 10_000.0 * period
+
+
+def _next_due(device_id, period, after_mono):
+    """Smallest point strictly after `after_mono` on this device's phase-offset
+    grid. Anchoring to a grid rather than to `after_mono + period` means a probe
+    that runs long does not push this device's later slots out and slowly bunch
+    the fleet back together."""
+    phase = _phase(device_id, period)
+    return math.floor((after_mono - phase) / period + 1) * period + phase
+
+
+def _probe_period_for(entry):
+    """Healthy devices get the normal cadence; ones that missed their last
+    probe drop to the slow retry cadence.
+
+    Switching cadence relocates the device's grid (the phase is a fraction of
+    the period, so a 30 s grid does not line up with a 10 s one). The visible
+    effect is that the first retry after a device starts failing can land sooner
+    than FAILED_RETRY_SEC — a single early retry, never a fast loop, because the
+    next grid point after that one is a full period away. Harmless, but it does
+    show up in the logs as one short gap per device at the moment it goes bad.
+    """
+    return PROBE_PERIOD_SEC if entry['consecutive_failures'] == 0 else FAILED_RETRY_SEC
+
+
+def _due_time(device_id, entry, now_mono):
+    """When this device should next be probed, on the monotonic clock.
+
+    Pure function of the cache entry. The scheduler guarantees last_attempt_at
+    is stamped and not wildly stale before calling this (see _probe_loop); an
+    unstamped entry would mean something fed the cache without going through
+    the scheduler, so treat it as due now rather than never.
+    """
+    if entry is None or entry['last_attempt_at'] == 0.0:
+        return 0.0
+    return _next_due(device_id, _probe_period_for(entry), entry['last_attempt_at'])
+
+
+def _probe_finished(device_id, future):
+    """Release the in-flight slot and surface any worker exception."""
+    with _in_flight_lock:
+        _in_flight.discard(device_id)
+    exc = future.exception()
+    if exc is not None:
+        logger.error(f"[PROBE ERROR] {device_id}: {exc!r}")
+
+
+def _probe_device(device):
+    """Probe one device. Runs on a worker thread; at most PROBE_CONCURRENCY of
+    these are in flight, and never two for the same device."""
+    device_id = device.get('id') or device.get('ip_address') or 'unknown'
+    ip_address = device.get('ip_address')
+
+    with _device_cache_lock:
+        entry = _device_cache.setdefault(device_id, _new_cache_entry())
+        fetch_metadata = entry['metadata_age_cycles'] >= METADATA_EVERY
+        prior = entry.get('formatted')
+
+    if not ip_address:
+        # Degenerate registry entry. Stamp the attempt anyway — every exit path
+        # from this function must advance last_attempt_at, or the scheduler
+        # finds the device due again on the very next tick and spins on it.
+        with _device_cache_lock:
+            entry['last_attempt_at'] = time.monotonic()
+        logger.debug(f"[SKIP no-ip] {device_id}")
+        return
+
+    try:
+        with device_lock(device_id, blocking=False):
+            t0 = time.monotonic()
+            logger.info(
+                f"[PROBE START] {device_id} @ {ip_address} | "
+                f"{'+meta' if fetch_metadata else 'scene-only'}"
+            )
+
+            scene_data = _fetch_scene(ip_address, PROBE_TIMEOUT_SEC)
+            metadata = None
+            if scene_data is not None and fetch_metadata:
+                metadata = _fetch_metadata(ip_address, PROBE_TIMEOUT_SEC)
+            elapsed = time.monotonic() - t0
+
+            if scene_data is None:
+                with _device_cache_lock:
+                    entry['last_attempt_at'] = time.monotonic()
+                    entry['consecutive_failures'] += 1
+                    failures = entry['consecutive_failures']
+                device['online'] = False
+                registry.update_device(device)
                 logger.warning(
-                    f"[CYCLE STRETCH] Failure rate {failure_rate:.0%}, "
-                    f"stretching cycle x{_global_stretch_factor}"
+                    f"[PROBE FAIL] {device_id} | {elapsed:.2f}s | failures={failures}"
                 )
-            elif failure_rate < 0.2:
-                _global_stretch_low_streak += 1
-                if _global_stretch_low_streak >= 2 and _global_stretch_factor > 1:
-                    _global_stretch_factor //= 2
-                    _global_stretch_low_streak = 0
-                    logger.info(
-                        f"[CYCLE STRETCH] Recovering, x{_global_stretch_factor}"
+                return
+
+            formatted = _build_formatted(
+                device, scene_data=scene_data, metadata=metadata, prior=prior
+            )
+            with _device_cache_lock:
+                now_mono = time.monotonic()
+                entry['formatted'] = formatted
+                entry['last_ok_at'] = now_mono
+                entry['last_attempt_at'] = now_mono
+                entry['last_ok_wall'] = time.time()
+                entry['consecutive_failures'] = 0
+                if fetch_metadata and metadata is not None:
+                    entry['metadata_age_cycles'] = 0
+                else:
+                    entry['metadata_age_cycles'] += 1
+
+            # Persist mac/id changes to the registry record.
+            identity_changed = False
+            if metadata:
+                if metadata.get('mac_address') and \
+                        metadata['mac_address'] != device.get('mac_address'):
+                    device['mac_address'] = metadata['mac_address']
+                    identity_changed = True
+                new_id = metadata.get('id')
+                if new_id and new_id != device.get('id'):
+                    logger.warning(
+                        f"[ID CHANGE] {device.get('id')} -> {new_id} @ {ip_address}"
                     )
-            else:
-                _global_stretch_low_streak = 0
+                    device['id'] = new_id
+                    identity_changed = True
+            device['online'] = True
+            registry.update_device(device)
+            # load_registry() is authoritative and runs on a timer, so an
+            # identity change kept only in memory would be reverted seconds
+            # later and re-detected forever. Write it through. Deliberately not
+            # saved for the online flag alone, which churns constantly.
+            if identity_changed:
+                registry.save_registry()
+            logger.info(f"[PROBE OK] {device_id} | {elapsed:.2f}s")
 
-
-def _sleep_remaining(slot_start, slot):
-    """Sleep so the next slot begins exactly `slot` seconds after this one
-    started, regardless of how long the probe actually took. This is what
-    spreads probes evenly across radio time."""
-    elapsed = time.monotonic() - slot_start
-    remaining = slot - elapsed
-    if remaining > 0:
-        time.sleep(remaining)
+    except DeviceBusy:
+        # Something else is talking to this device (detail page, batch write,
+        # file sync). Skip this round and stamp the attempt, so we wait a full
+        # period rather than resubmitting on every scheduler tick for however
+        # long that transfer holds the lock.
+        with _device_cache_lock:
+            entry['last_attempt_at'] = time.monotonic()
+        logger.info(f"[SKIP busy] {device_id}")
 
 
 def _probe_loop():
-    """Background thread: walks the registry round-robin with fixed-slot
-    timing. One probe at a time, evenly spaced. See plan
-    `hi-claude-look-around-imperative-lampson.md` for rationale."""
-    global _rr_index
-    logger.info("[PROBE LOOP] started")
-    while _probe_loop_active:
-        try:
-            registry.load_registry()
-            device_list = sorted(
-                registry.get_device_list(),
-                key=lambda d: d.get('id') or d.get('ip_address') or ''
-            )
-            n = len(device_list)
-            if n == 0:
-                time.sleep(2.0)
-                continue
+    """Scheduler thread. Decides what is due and hands it to the worker pool;
+    does no network I/O itself.
 
-            cycle_target = float(network_config.config.get('cycle_target_sec', 30))
-            slot = (cycle_target * _global_stretch_factor) / n
-            probe_timeout = float(network_config.config.get('probe_timeout', 5))
-            # Cap so a hung probe can't eat the next slot.
-            effective_probe_timeout = max(0.5, min(probe_timeout, slot - 0.5))
-            metadata_every = max(1, int(network_config.config.get('metadata_refetch_every', 10)))
-
-            slot_start = time.monotonic()
-
-            _rr_index = _rr_index % n
-            device = device_list[_rr_index]
-            _rr_index += 1
-            device_id = device.get('id') or device.get('ip_address') or 'unknown'
-            ip_address = device.get('ip_address')
-
-            with _device_cache_lock:
-                cache_entry = _device_cache.setdefault(device_id, {
-                    'formatted': None,
-                    'last_ok_at': 0.0,
-                    'last_attempt_at': 0.0,
-                    'consecutive_failures': 0,
-                    'metadata_age_cycles': 9999,  # force first metadata fetch
-                })
-                cf = cache_entry['consecutive_failures']
-                last_attempt_at = cache_entry['last_attempt_at']
-                metadata_age = cache_entry['metadata_age_cycles']
-
-            # Per-device backoff: a sick device's slot becomes radio-quiet.
-            if cf >= DEVICE_BACKOFF_THRESHOLD:
-                backoff = min(DEVICE_BACKOFF_MAX_SEC, 2 ** cf)
-                if time.time() - last_attempt_at < backoff:
-                    logger.info(
-                        f"[SKIP backoff] {device_id} | failures={cf} | backoff={backoff}s"
-                    )
-                    _sleep_remaining(slot_start, slot)
-                    continue
-
-            if not ip_address:
-                logger.debug(f"[SKIP no-ip] {device_id}")
-                _sleep_remaining(slot_start, slot)
-                continue
-
-            # Strict per-device serialization. If something else is talking to
-            # this device right now, skip our slot — we don't queue, we don't
-            # delay the cycle.
+    Each device has a fixed phase offset inside the probe period (see _phase),
+    so due times spread evenly across the fleet. That is what keeps a
+    scan-seeded cache from stampeding — seeding stamps every device in the same
+    instant, and a scheduler that keyed off that timestamp would fire the whole
+    fleet at once.
+    """
+    logger.info(
+        f"[PROBE LOOP] started | period={PROBE_PERIOD_SEC}s "
+        f"timeout={PROBE_TIMEOUT_SEC}s concurrency={PROBE_CONCURRENCY} "
+        f"failed_retry={FAILED_RETRY_SEC}s"
+    )
+    next_reload = 0.0
+    with ThreadPoolExecutor(max_workers=PROBE_CONCURRENCY,
+                            thread_name_prefix="probe") as pool:
+        while _probe_loop_active:
             try:
-                with device_lock(device_id, blocking=False):
-                    fetch_metadata = metadata_age >= metadata_every
-                    t0 = time.time()
-                    logger.info(
-                        f"[PROBE START] {device_id} @ {ip_address} | "
-                        f"slot={slot:.2f}s | timeout={effective_probe_timeout:.2f}s | "
-                        f"{'+meta' if fetch_metadata else 'scene-only'}"
+                now_mono = time.monotonic()
+                # Re-read device_map.json on its own slower timer: the tick has
+                # to be finer than the fleet's probe spacing (250 ms at 40
+                # devices), and parsing the file at that rate would be silly.
+                if now_mono >= next_reload:
+                    registry.load_registry()
+                    next_reload = now_mono + REGISTRY_RELOAD_SEC
+
+                for device in registry.get_device_list():
+                    device_id = device.get('id') or device.get('ip_address')
+                    if not device_id:
+                        continue
+                    with _device_cache_lock:
+                        cached = _device_cache.get(device_id)
+                        if cached is None:
+                            cached = _new_cache_entry()
+                            _device_cache[device_id] = cached
+                        # Anchor maintenance. Both branches WRITE the stamp
+                        # rather than adjusting a local copy — an anchor that
+                        # gets recomputed as "now" on every tick produces a due
+                        # time that is permanently one grid point in the future,
+                        # and the device is never probed at all.
+                        stamp = cached['last_attempt_at']
+                        if stamp == 0.0:
+                            # First sight. Stamping now puts the first probe on
+                            # this device's own grid point within one period,
+                            # instead of firing immediately — which is what
+                            # keeps a batch of newly-discovered devices from
+                            # stampeding.
+                            cached['last_attempt_at'] = now_mono
+                        elif stamp < now_mono - 2 * _probe_period_for(cached):
+                            # The scheduler was stalled (host suspended, long
+                            # GC, debugger) and the whole fleet is overdue.
+                            # Re-anchor so it re-spreads across the next period
+                            # rather than firing as one burst.
+                            logger.info(f"[PROBE RE-ANCHOR] {device_id}")
+                            cached['last_attempt_at'] = now_mono
+                        snapshot = {
+                            'last_attempt_at': cached['last_attempt_at'],
+                            'consecutive_failures': cached['consecutive_failures'],
+                        }
+                    if now_mono < _due_time(device_id, snapshot, now_mono):
+                        continue
+                    with _in_flight_lock:
+                        if device_id in _in_flight:
+                            continue
+                        _in_flight.add(device_id)
+                    pool.submit(_probe_device, device).add_done_callback(
+                        lambda f, d=device_id: _probe_finished(d, f)
                     )
-
-                    scene_data = _fetch_scene(ip_address, effective_probe_timeout)
-                    metadata = None
-                    if scene_data is not None and fetch_metadata:
-                        metadata = _fetch_metadata(ip_address, effective_probe_timeout)
-
-                    elapsed = time.time() - t0
-
-                    if scene_data is not None:
-                        prior = cache_entry.get('formatted')
-                        formatted = _build_formatted(
-                            device, scene_data=scene_data, metadata=metadata, prior=prior
-                        )
-                        with _device_cache_lock:
-                            cache_entry['formatted'] = formatted
-                            cache_entry['last_ok_at'] = time.time()
-                            cache_entry['last_attempt_at'] = time.time()
-                            cache_entry['consecutive_failures'] = 0
-                            if fetch_metadata and metadata is not None:
-                                cache_entry['metadata_age_cycles'] = 0
-                            else:
-                                cache_entry['metadata_age_cycles'] += 1
-                        # Persist mac/id changes to registry record.
-                        identity_changed = False
-                        if metadata:
-                            if metadata.get('mac_address') and \
-                                    metadata['mac_address'] != device.get('mac_address'):
-                                device['mac_address'] = metadata['mac_address']
-                                identity_changed = True
-                            new_id = metadata.get('id')
-                            if new_id and new_id != device.get('id'):
-                                logger.warning(
-                                    f"[ID CHANGE] {device.get('id')} -> {new_id} "
-                                    f"@ {ip_address}"
-                                )
-                                device['id'] = new_id
-                                identity_changed = True
-                        device['online'] = True
-                        registry.update_device(device)
-                        # load_registry() is authoritative and runs every slot,
-                        # so an identity change kept only in memory would be
-                        # reverted seconds later and re-detected forever. Write
-                        # it through. Deliberately not saved for the online flag
-                        # alone, which churns constantly.
-                        if identity_changed:
-                            registry.save_registry()
-                        logger.info(
-                            f"[PROBE OK] {device_id} | {elapsed:.2f}s"
-                        )
-                        _record_probe_outcome(True)
-                    else:
-                        with _device_cache_lock:
-                            cache_entry['last_attempt_at'] = time.time()
-                            cache_entry['consecutive_failures'] += 1
-                        device['online'] = False
-                        registry.update_device(device)
-                        logger.warning(
-                            f"[PROBE FAIL] {device_id} | {elapsed:.2f}s | "
-                            f"failures={cache_entry['consecutive_failures']}"
-                        )
-                        _record_probe_outcome(False)
-            except DeviceBusy:
-                logger.info(f"[SKIP busy] {device_id}")
-
-            _sleep_remaining(slot_start, slot)
-        except Exception:
-            logger.exception("[PROBE LOOP] iteration crashed")
-            time.sleep(1.0)
+            except Exception:
+                logger.exception("[PROBE LOOP] tick crashed")
+            time.sleep(PROBE_TICK_SEC)
     logger.info("[PROBE LOOP] stopped")
+
+
 
 
 def _start_probe_loop():
@@ -573,26 +683,20 @@ def get_devices():
     Reads ONLY from the in-memory cache populated by the background probe
     loop. No live HTTP fan-out per request — the response is instant. Failed
     probes never zero out card content; they only age the cache and adjust
-    the status field. See plan
-    `hi-claude-look-around-imperative-lampson.md` for rationale.
+    the status field.
+
+    Status is a pure function of how long ago the last probe succeeded. It does
+    not consider consecutive_failures: a single dropped packet should not
+    demote a device whose data is two seconds old.
     """
     registry.load_registry()
     devices = registry.get_device_list()
 
-    stale_window = float(network_config.config.get('stale_window_sec', 60))
-    cycle_target = float(network_config.config.get('cycle_target_sec', 30))
-    n = max(len(devices), 1)
-    slot = (cycle_target * _global_stretch_factor) / n
-    # "Online" means we got a fresh probe within roughly the last full cycle
-    # (with 1.5x headroom so a single slow/skipped probe doesn't immediately
-    # demote a healthy device to "stale"). Tied to the cycle, NOT the slot,
-    # so the answer doesn't change as you add devices.
-    online_threshold = max(1.5 * cycle_target * _global_stretch_factor, 30.0)
-
-    now = time.time()
+    now_mono = time.monotonic()
     formatted_devices = []
     online_count = 0
     stale_count = 0
+    retrying_count = 0
 
     with _device_cache_lock:
         for device in devices:
@@ -622,14 +726,16 @@ def get_devices():
                 continue
 
             formatted = dict(cache_entry['formatted'])
-            age = now - cache_entry['last_ok_at']
+            age = now_mono - cache_entry['last_ok_at']
             cf = cache_entry['consecutive_failures']
+            if cf > 0:
+                retrying_count += 1
 
-            if age < online_threshold and cf == 0:
+            if age < STALE_AFTER_SEC:
                 formatted['status'] = 'online'
                 formatted['source'] = 'fresh'
                 online_count += 1
-            elif age < stale_window and cf < OFFLINE_FAILURES_THRESHOLD:
+            elif age < OFFLINE_AFTER_SEC:
                 formatted['status'] = 'stale'
                 formatted['source'] = 'cached'
                 stale_count += 1
@@ -648,9 +754,8 @@ def get_devices():
         'fresh': online_count,
         'stale': stale_count,
         'registry_only': len(formatted_devices) - online_count - stale_count,
-        'cycle_target_sec': cycle_target,
-        'global_stretch_factor': _global_stretch_factor,
-        'effective_slot_sec': round(slot, 2),
+        'probe_period_sec': PROBE_PERIOD_SEC,
+        'retrying': retrying_count,  # devices on the slow FAILED_RETRY_SEC cadence
     })
 
 @app.route('/api/scan', methods=['POST'])
@@ -687,8 +792,12 @@ def start_scan():
             scanned_count = sum(1 for d in merged_devices if d.get('online'))
             registry_count = sum(1 for d in merged_devices if not d.get('online'))
 
-            # Reload registry
+            # Reload registry, then prime the cache from what the scan already
+            # proved: every one of these devices answered /api/device seconds
+            # ago. Order matters — _feed_cache looks the device up in the
+            # registry, so the reload has to land first.
             registry.load_registry()
+            _seed_cache_from_scan(merged_devices)
 
             socketio.emit('scan_complete', {
                 'devices': merged_devices,
@@ -767,15 +876,18 @@ def _format_uptime_seconds(uptime_seconds):
 
 
 def _status_from_cache(device_id):
-    """Return ('online' | 'stale' | 'offline' | 'unknown', age_sec) from cache."""
+    """Return ('online' | 'stale' | 'offline' | 'unknown', age_sec) from cache.
+
+    Same age-only rule as GET /api/devices, so the detail page and the
+    dashboard never disagree about whether a device is up."""
     entry = _device_cache.get(device_id)
     if entry is None or entry.get('last_ok_at', 0.0) == 0.0:
         return 'unknown', None
-    age = time.time() - entry['last_ok_at']
-    cf = entry['consecutive_failures']
-    stale_window = float(network_config.config.get('stale_window_sec', 60))
-    if age < stale_window and cf < OFFLINE_FAILURES_THRESHOLD:
-        return ('online' if cf == 0 else 'stale'), age
+    age = time.monotonic() - entry['last_ok_at']
+    if age < STALE_AFTER_SEC:
+        return 'online', age
+    if age < OFFLINE_AFTER_SEC:
+        return 'stale', age
     return 'offline', age
 
 
@@ -792,7 +904,6 @@ def get_device(device_id):
         return jsonify({'error': 'Device not found'}), 404
 
     ip_address = device.get('ip_address')
-    probe_timeout = float(network_config.config.get('probe_timeout', 5))
     metadata = None
     from_cache = False
 
@@ -800,7 +911,7 @@ def get_device(device_id):
         with device_lock(device_id, blocking=True, timeout=3.0):
             if ip_address:
                 logger.info(f"[detail] get_device {device_id} @ {ip_address}")
-                metadata = _fetch_metadata(ip_address, probe_timeout)
+                metadata = _fetch_metadata(ip_address, PROBE_TIMEOUT_SEC)
                 if metadata is not None:
                     if metadata.get('mac_address'):
                         device['mac_address'] = metadata['mac_address']
@@ -2240,14 +2351,18 @@ _sync_thread = None
 
 
 def _throttled(iterable, rate=SYNC_RATE_BYTES_PER_SEC):
-    """Yield chunks no faster than `rate` bytes/sec."""
-    start = time.time()
+    """Yield chunks no faster than `rate` bytes/sec.
+
+    Monotonic, per the time rule above: a wall-clock step mid-transfer would
+    either burst the whole remainder at line rate or park it in a long sleep.
+    """
+    start = time.monotonic()
     sent = 0
     for chunk in iterable:
         yield chunk
         sent += len(chunk)
         target = sent / float(rate)
-        drift = target - (time.time() - start)
+        drift = target - (time.monotonic() - start)
         if drift > 0:
             time.sleep(drift)
 

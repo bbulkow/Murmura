@@ -9,6 +9,7 @@ import json
 import logging
 import subprocess
 import ipaddress
+import threading
 import netifaces
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -52,13 +53,12 @@ class NetworkConfig:
             'selected_networks': [],
             'selected_interfaces': [],
             'scan_all': True,
-            'timeout': 2,
-            'concurrent_limit': 50,
-            'probe_timeout': 5,         # Per-HTTP-call timeout to a device
+            'timeout': 2,               # Per-IP timeout for the subnet sweep
+            'concurrent_limit': 50,     # Sweep concurrency (distinct IPs, not one device)
             'refresh_interval': 5,      # Browser auto-refresh cadence (cache-only, cheap)
-            'cycle_target_sec': 30,     # Full pass through all devices in N seconds
-            'metadata_refetch_every': 10,  # Refetch /api/device every N cycles
-            'stale_window_sec': 90,     # Card flips to OFFLINE styling after this (~3 cycles)
+            # Probe policy is NOT here. It is fixed constants in app.py, sized
+            # for the ESP32 rather than discovered at runtime — see the "Probe
+            # policy" block there.
             'conductor_url': 'http://127.0.0.1:4002',  # mur-conductor status/admin API
             'scene_server_url': 'http://127.0.0.1:5003'  # mur-scene-server web UI + API
         }
@@ -339,8 +339,13 @@ class DeviceRegistry:
     def __init__(self, registry_file: str = 'mur_config_server/device_map.json'):
         self.registry_file = Path(registry_file)
         self.devices = {}
+        # The probe scheduler runs several device probes concurrently, and each
+        # one calls update_device()/save_registry() on completion, alongside
+        # Flask request threads. Without this, update_device's stale-key sweep
+        # can iterate self.devices while another thread deletes from it.
+        self._lock = threading.RLock()
         self.load_registry()
-    
+
     def load_registry(self):
         """Rebuild the in-memory registry from device_map.json.
 
@@ -353,7 +358,8 @@ class DeviceRegistry:
         survive must go through save_registry().
         """
         if not self.registry_file.exists():
-            self.devices = {}
+            with self._lock:
+                self.devices = {}
             return
         try:
             with open(self.registry_file, 'r') as f:
@@ -370,8 +376,9 @@ class DeviceRegistry:
             device_id = device.get('id') or device.get('ip_address')
             if device_id:
                 fresh[device_id] = device
-        self.devices = fresh
-        logger.info(f"Loaded {len(self.devices)} devices from registry")
+        with self._lock:
+            self.devices = fresh
+        logger.debug(f"Loaded {len(self.devices)} devices from registry")
 
     def save_registry(self) -> bool:
         """Persist the in-memory registry back to device_map.json.
@@ -384,13 +391,14 @@ class DeviceRegistry:
         """
         try:
             self.registry_file.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                'scan_time': datetime.now().isoformat(),
-                'scan_mode': 'update',
-                'network_range': 'registry-update',
-                'device_count': len(self.devices),
-                'devices': list(self.devices.values()),
-            }
+            with self._lock:
+                payload = {
+                    'scan_time': datetime.now().isoformat(),
+                    'scan_mode': 'update',
+                    'network_range': 'registry-update',
+                    'device_count': len(self.devices),
+                    'devices': list(self.devices.values()),
+                }
             tmp = self.registry_file.with_suffix('.json.tmp')
             with open(tmp, 'w') as f:
                 json.dump(payload, f, indent=2)
@@ -402,7 +410,8 @@ class DeviceRegistry:
 
     def clear(self):
         """Drop every device from memory (the file is cleared separately)."""
-        self.devices = {}
+        with self._lock:
+            self.devices = {}
 
     def update_device(self, device_info: Dict):
         """Update a device, re-keying it if its reported ID changed.
@@ -414,25 +423,29 @@ class DeviceRegistry:
         """
         device_id = device_info.get('id') or device_info.get('ip_address')
         ip = device_info.get('ip_address')
-        stale_keys = [
-            key for key, existing in self.devices.items()
-            if key != device_id and (
-                existing is device_info or (ip and existing.get('ip_address') == ip))
-        ]
-        for key in stale_keys:
-            logger.info(f"Registry: dropping stale key '{key}' (now '{device_id}')")
-            del self.devices[key]
-        self.devices[device_id] = device_info
+        with self._lock:
+            stale_keys = [
+                key for key, existing in self.devices.items()
+                if key != device_id and (
+                    existing is device_info or (ip and existing.get('ip_address') == ip))
+            ]
+            for key in stale_keys:
+                logger.info(f"Registry: dropping stale key '{key}' (now '{device_id}')")
+                del self.devices[key]
+            self.devices[device_id] = device_info
         logger.debug(f"Updated device: {device_id}")
-    
+
     def get_device(self, device_id: str) -> Optional[Dict]:
         """Get device by ID."""
-        return self.devices.get(device_id)
-    
+        with self._lock:
+            return self.devices.get(device_id)
+
     def get_all_devices(self) -> Dict:
         """Get all devices as dict."""
-        return self.devices
-    
+        with self._lock:
+            return dict(self.devices)
+
     def get_device_list(self) -> List[Dict]:
         """Get all devices as list."""
-        return list(self.devices.values())
+        with self._lock:
+            return list(self.devices.values())

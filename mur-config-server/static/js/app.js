@@ -19,8 +19,33 @@ document.addEventListener('DOMContentLoaded', function() {
     fixSceneManagerLink();
     loadLastGateway();
     loadDevices();
-    startAutoRefresh();  // Start auto-refresh timer
+    startAutoRefresh();  // Start auto-refresh timer at the default cadence...
+    loadRefreshInterval();  // ...then adopt the configured one once it arrives.
 });
+
+// The configured refresh cadence used to be read only when the Network Config
+// modal was opened, so the dashboard sat on the hardcoded default for the whole
+// session. /api/devices is a pure cache read, so polling it costs devices
+// nothing and there is no reason to ignore the setting.
+async function loadRefreshInterval() {
+    try {
+        const response = await fetch('/api/network/config');
+        const config = await response.json();
+        applyRefreshInterval(config.refresh_interval);
+    } catch (error) {
+        console.warn('[CONFIG] Could not load refresh interval, keeping default', error);
+    }
+}
+
+// Adopt a refresh cadence and restart the timer so it takes effect immediately.
+function applyRefreshInterval(seconds) {
+    if (!seconds || seconds === refreshIntervalSeconds) return;
+    refreshIntervalSeconds = seconds;
+    console.log(`[CONFIG] Refresh interval now ${refreshIntervalSeconds}s`);
+    if (autoRefreshActive) {
+        startAutoRefresh();
+    }
+}
 
 // scene_server_url comes from network_config.json, which is written for the show
 // host and so normally says 127.0.0.1. Browsing this page from a laptop would
@@ -1070,22 +1095,14 @@ async function openNetworkConfig() {
         const configResponse = await fetch('/api/network/config');
         const config = await configResponse.json();
         
-        // Set timeout and concurrent limit
+        // Set timeout and concurrent limit. Device probe timeout is no longer
+        // configurable — it is a fixed constant in app.py, sized for the ESP32.
         document.getElementById('scanTimeout').value = config.timeout || 2;
-        document.getElementById('probeTimeout').value = config.probe_timeout || 0.5;
         document.getElementById('refreshInterval').value = config.refresh_interval || 10;
         document.getElementById('concurrentLimit').value = config.concurrent_limit || 50;
-        
-        // Update the refresh interval if config has changed
-        if (config.refresh_interval && config.refresh_interval !== refreshIntervalSeconds) {
-            refreshIntervalSeconds = config.refresh_interval;
-            console.log(`[CONFIG] Refresh interval updated to ${refreshIntervalSeconds} seconds`);
-            // Restart auto-refresh with new interval
-            if (autoRefreshActive) {
-                startAutoRefresh();
-            }
-        }
-        
+
+        applyRefreshInterval(config.refresh_interval);
+
         // Load interfaces
         const interfacesResponse = await fetch('/api/network/interfaces');
         const interfacesData = await interfacesResponse.json();
@@ -1142,14 +1159,13 @@ async function saveNetworkConfig() {
         scan_all: scanAll,
         selected_interfaces: selectedInterfaces,
         timeout: parseInt(document.getElementById('scanTimeout').value),
-        probe_timeout: parseFloat(document.getElementById('probeTimeout').value),
         refresh_interval: parseInt(document.getElementById('refreshInterval').value),
         concurrent_limit: parseInt(document.getElementById('concurrentLimit').value)
     };
-    
-    // Update local refresh interval
-    refreshIntervalSeconds = config.refresh_interval;
-    
+
+    // Take effect now, not on next page load.
+    applyRefreshInterval(config.refresh_interval);
+
     try {
         const response = await fetch('/api/network/config', {
             method: 'POST',
