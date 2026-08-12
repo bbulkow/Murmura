@@ -9,7 +9,8 @@ Each Mur has three ways to interact with it:
 | Method | Best For | Requires |
 |--------|----------|---------|
 | **Device web UI** (`http://<device-ip>/`) | Status display (read-only); change device ID at `/settings` | Browser + device IP |
-| **mur-config-server** (`http://localhost:8765`) | Fleet overview, batch play/stop/volume | Python on a laptop or Pi |
+| **mur-config-server** (`http://localhost:8765`) | Fleet overview, batch play/stop/volume, editing what each scene plays | Python on a laptop or Pi |
+| **mur-scene-server** (`http://localhost:5003`) | Switching the fleet-wide active scene; scene schedules | Python on the show host |
 | **CLI scripts** (`device-manager/`) | Batch file sync, ID assignment, scripting | Python + `device_map.json` |
 
 The device web UI is read-only except for one setting: you can change the device ID at `/settings`. Everything else — WiFi management, file transfers, playback control, volume — requires curl, the CLI scripts, or the mur-config-server.
@@ -264,6 +265,66 @@ When an event arrives with `name=ButtonB` and `value=On`, the device activates s
 
 Via mur-config-server: the device detail page shows Scene Trigger and per-scene Trigger fields. The batch panel allows setting the scene trigger name across all devices at once.
 
+### Fleet-wide scene switching (mur-scene-server)
+
+Everything above changes scenes on **one device at a time**. To move the whole fleet
+at once, use **mur-scene-server** at `http://<host>:5003` — the service that owns which
+scene is active across the installation.
+
+The split matters, and it is the thing to keep straight:
+
+> **mur-scene-server decides _which_ scene is active. Each Mur decides _what that scene
+> sounds like_.**
+
+mur-scene-server stores only scene **names** plus which one is active. When you activate
+`night`, it fires the `SceneChange` trigger; the Mur Gateway fans that out and every Mur
+looks up `night` in its own `/sdcard/scenes.json` and plays whatever it finds there. A Mur
+that has no `night` scene falls back to its default scene. Editing what `night` *plays* is
+mur-config-server's job, per device.
+
+Because of that, **a scene name only does something on a Mur that already has a scene with
+that name.** Create the scene on the devices first (or clone it across the fleet), then
+switch to it here.
+
+```bash
+# What scenes exist and which is live
+curl http://<host>:5003/api/scenes
+
+# Switch the whole fleet
+curl -X POST http://<host>:5003/api/scenes/active \
+  -H "Content-Type: application/json" \
+  -d '{"name":"night"}'
+
+# Just the active scene name (this is what the gateway polls)
+curl http://<host>:5003/api/scenes/active
+
+# Add a scene name to the fleet list
+curl -X POST http://<host>:5003/api/scenes \
+  -H "Content-Type: application/json" \
+  -d '{"name":"night"}'
+```
+
+Scene names are validated against the device limits: **1–31 characters, letters, digits,
+hyphen and underscore**. A name that would not fit on a Mur is rejected here rather than
+failing silently later. A device holds at most 16 scenes; going past that is a warning, not
+an error, since the list is fleet-wide.
+
+**Never fire the `SceneChange` trigger by hand** from the trigger server or any other tool —
+it is reserved for this service. Doing it elsewhere makes the gateway believe a scene that
+mur-scene-server does not have, and it silently snaps back within ~30 s. See
+[SYNC_DESIGN.md](SYNC_DESIGN.md).
+
+#### Scheduled scene changes
+
+The web UI at `http://<host>:5003/` also schedules activations — "go to `day` at 08:00
+daily", "go to `show` at 21:30 once". One-shot schedules delete themselves after firing.
+
+```bash
+curl -X POST http://<host>:5003/api/schedules \
+  -H "Content-Type: application/json" \
+  -d '{"scene":"day","time":"08:00","repeat":"daily"}'
+```
+
 ### Saving configuration
 
 Changes are live but not persisted until you explicitly save. On next boot, each Mur loads its saved scenes and activates the default scene.
@@ -286,7 +347,10 @@ Via mur-config-server: the **Download Config** / **Upload Config** buttons let y
 |------|--------------|--------------|------------|
 | Discover devices | — | Scan Network button | `device_scanner.py -n <subnet> -a create` |
 | Check device status | displays at `http://<ip>/` | Dashboard cards | `device_controller.py -c status` |
-| View all scenes | — | Device detail page | `curl GET /api/scenes` |
+| **Switch the whole fleet's scene** | — | Scene Manager button → :5003 | `curl POST :5003/api/scenes/active {"name":"..."}` |
+| **Schedule a scene change** | — | Scene Manager button → :5003 | `curl POST :5003/api/schedules` |
+| **List fleet scene names** | — | Scene Manager button → :5003 | `curl GET :5003/api/scenes` |
+| View all scenes on a device | — | Device detail page | `curl GET /api/scenes` |
 | Create a scene | — | Create Scene input | `curl POST /api/scene {"action":"create","name":"..."}` |
 | Activate a scene | — | Activate button | `curl POST /api/scene {"action":"activate","name":"..."}` |
 | Set default boot scene | — | Set Default button | `curl POST /api/scene {"action":"set_default","name":"..."}` |
@@ -308,4 +372,5 @@ Via mur-config-server: the **Download Config** / **Upload Config** buttons let y
 
 - [device-manager/README.md](device-manager/README.md) — full CLI tool reference including network scanning, filtering, and ID management
 - [mur-config-server/README.md](mur-config-server/README.md) — fleet server setup, systemd auto-start, and web UI reference
+- [mur-scene-server/README.md](mur-scene-server/README.md) — fleet-wide active scene, schedules, and the scene-name rules
 - [HTTP_API.md](HTTP_API.md) — complete HTTP API reference with request/response examples

@@ -162,7 +162,7 @@ def background_scan():
 @app.route('/')
 def index():
     """Main dashboard page."""
-    return render_template('index.html')
+    return render_template('index.html', scene_server_url=_scene_server_url())
 
 @app.route('/device/<device_id>')
 def device_detail_page(device_id):
@@ -1481,6 +1481,17 @@ def _conductor_url():
             or 'http://127.0.0.1:4002').rstrip('/')
 
 
+def _scene_server_url():
+    """mur-scene-server base URL.
+
+    The `or` fallback is load-bearing: NetworkConfig.load_config() returns the
+    on-disk dict verbatim and does NOT merge the defaults, so an install whose
+    network_config.json predates this key would otherwise get None here.
+    """
+    return (network_config.config.get('scene_server_url')
+            or 'http://127.0.0.1:5003').rstrip('/')
+
+
 @app.route('/ensembles')
 def ensembles_page():
     """Ensemble group status, playlist editing, and file sync."""
@@ -1504,6 +1515,30 @@ def conductor_status():
     except requests.RequestException as e:
         logger.warning(f"Cannot reach conductor at {_conductor_url()}: {e}")
         return jsonify({'error': f'Cannot reach conductor: {e}', 'groups': []}), 200
+
+
+@app.route('/api/scene-server/scenes')
+def scene_server_scenes():
+    """Proxy mur-scene-server's scene list.
+
+    This is the fleet-wide list of scene NAMES and which one is active - the
+    scene server owns that; per-track content stays on each device. Used by the
+    device detail page to check a device's scene trigger against the real scene
+    list instead of whatever stale range.values the trigger server advertises.
+
+    Degrades to HTTP 200 with an empty list on any failure, matching the
+    conductor routes: a list that cannot populate must never break the page.
+    """
+    try:
+        response = requests.get(f"{_scene_server_url()}/api/scenes", timeout=5)
+        if response.status_code == 200:
+            return jsonify(response.json())
+        return jsonify({'error': f'Scene server returned HTTP {response.status_code}',
+                        'scenes': [], 'active_scene': None}), 200
+    except requests.RequestException as e:
+        logger.warning(f"Cannot reach scene server at {_scene_server_url()}: {e}")
+        return jsonify({'error': f'Cannot reach scene server: {e}',
+                        'scenes': [], 'active_scene': None}), 200
 
 
 @app.route('/api/conductor/groups/<group_name>/playlist', methods=['POST'])

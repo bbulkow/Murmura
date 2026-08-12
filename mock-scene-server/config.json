@@ -1,5 +1,0 @@
-{
-  "scenes": ["night", "day", "show"],
-  "active_scene": "day",
-  "trigger_server_url": "http://127.0.0.1:5002"
-}

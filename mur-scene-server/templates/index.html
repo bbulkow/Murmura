@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mur Scene Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>&#127917; Mur Scene Manager</h1>
+    <p>Create scenes, set the active scene, and schedule automatic activations.</p>
+    <p class="scope-note">
+      This service owns <strong>which</strong> scene is active across the fleet.
+      What each scene <em>sounds like</em> lives on each MUR &mdash; edit that in the
+      Config Server.
+    </p>
+  </header>
+
+  <!-- Active scene banner -->
+  <div id="active-banner" class="no-scene">
+    <span class="banner-label">Active Scene</span>
+    <span id="banner-scene-name">&mdash; none &mdash;</span>
+
+    <div class="banner-selector">
+      <label for="banner-scene-select">Change to:</label>
+      <select id="banner-scene-select">
+        <option value="">&mdash; none (clear) &mdash;</option>
+      </select>
+      <button class="btn btn-primary" id="banner-set-btn">Set</button>
+    </div>
+  </div>
+
+  <div class="grid">
+
+    <!-- Scenes -->
+    <div class="card full-width">
+      <h2>&#128451;&#65039; Scenes</h2>
+
+      <div class="input-row">
+        <input type="text" id="new-scene-name" placeholder="New scene name&hellip;"
+               maxlength="{{ max_scene_name_len }}"
+               pattern="[A-Za-z0-9_-]{1,{{ max_scene_name_len }}}">
+        <button class="btn btn-success" id="create-scene-btn">+ Create</button>
+      </div>
+      <div class="field-hint">
+        1&ndash;{{ max_scene_name_len }} characters; letters, digits, hyphen and underscore.
+        This is the limit a MUR can store (<code>MAX_SCENE_NAME_LEN</code>).
+      </div>
+
+      <div id="scene-list">
+        <div class="empty-state">Loading&hellip;</div>
+      </div>
+
+      <div class="scene-count" id="scene-count"></div>
+
+      <div class="status-block" id="health-display">Checking service status&hellip;</div>
+      <div class="refresh-time" id="scenes-refresh-time"></div>
+    </div>
+
+    <!-- Schedules -->
+    <div class="card full-width">
+      <h2>&#128336; Scheduled Scene Changes</h2>
+      <p class="section-sub">
+        The scheduler wakes periodically and activates the scene when the clock matches.
+        <em>Daily</em> schedules repeat every day; <em>Once</em> schedules are removed after firing.
+      </p>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Scene</label>
+          <select id="sched-scene-select">
+            <option value="">&mdash; choose &mdash;</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Time (HH:MM)</label>
+          <input type="time" id="sched-time">
+        </div>
+        <div class="form-group">
+          <label>Repeat</label>
+          <select id="sched-repeat">
+            <option value="daily">Daily</option>
+            <option value="once">Once</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>&nbsp;</label>
+          <button class="btn btn-primary" id="add-sched-btn">+ Add</button>
+        </div>
+      </div>
+
+      <div id="sched-list">
+        <div class="empty-state">Loading&hellip;</div>
+      </div>
+      <div class="refresh-time" id="sched-refresh-time"></div>
+    </div>
+
+    <!-- Related services -->
+    <div class="card full-width">
+      <h2>&#128279; Related Services</h2>
+      <p class="section-sub">
+        Links are built from <code>config.json</code>. A <code>localhost</code> host is
+        rewritten to whatever host you are browsing from, so these work from a laptop
+        as well as on the show machine.
+      </p>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;" id="svc-links">
+        {% if config_server_url %}
+        <a class="svc-link" data-url="{{ config_server_url }}" target="_blank" rel="noopener">
+          &#128266; Mur Config Server<small>Edit what each scene plays on each MUR</small>
+        </a>
+        {% endif %}
+        {% if gateway_status_url %}
+        <a class="svc-link" data-url="{{ gateway_status_url }}" target="_blank" rel="noopener">
+          &#128225; Mur Gateway<small>Cached scene &amp; device status</small>
+        </a>
+        {% endif %}
+        {% if conductor_status_url %}
+        <a class="svc-link" data-url="{{ conductor_status_url }}" target="_blank" rel="noopener">
+          &#127932; Mur Conductor<small>Ensembles &amp; playlists</small>
+        </a>
+        {% endif %}
+        {% if trigger_server_ui_url %}
+        <a class="svc-link" data-url="{{ trigger_server_ui_url }}" target="_blank" rel="noopener">
+          &#9889; Trigger Server<small>Registered triggers</small>
+        </a>
+        {% endif %}
+      </div>
+
+      <div class="svc-panel">
+        <div class="svc-panel-header">
+          <span class="svc-panel-title">SceneChange dispatch</span>
+          <span class="svc-badge svc-badge-info" id="push-badge">&hellip;</span>
+        </div>
+        <div class="svc-panel-row" id="dispatch-detail">Loading&hellip;</div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <button class="btn btn-ghost btn-sm" id="refresh-btn">&#128260; Refresh</button>
+        <span class="refresh-time" id="svc-refresh-time"></span>
+      </div>
+    </div>
+
+  </div><!-- /grid -->
+</div><!-- /page -->
+
+<div id="toast-container"></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

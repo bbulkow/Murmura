@@ -1,0 +1,26 @@
+[Unit]
+Description=Mur Scene Server - fleet-wide active scene authority
+After=network-online.target
+Wants=network-online.target
+# Deliberately NO After=/Requires= on the trigger server or mur-gateway.
+# Both sides already tolerate any start order: mur-gateway primes its scene
+# cache with a 30 x 2 s retry, and this service retries its SceneChange push
+# and registration independently. An ordering dependency here would be a false
+# constraint that only makes boot slower and failures harder to reason about.
+
+[Service]
+Type=simple
+User=brian
+Group=brian
+WorkingDirectory=/home/brian/Murmura/mur-scene-server
+Environment="PATH=/home/brian/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="MUR_SCENE_SERVER_PORT=5003"
+ExecStart=/usr/bin/python3 /home/brian/Murmura/mur-scene-server/mur_scene_server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mur-scene-server
+
+[Install]
+WantedBy=multi-user.target

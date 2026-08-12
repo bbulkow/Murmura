@@ -59,7 +59,8 @@ class NetworkConfig:
             'cycle_target_sec': 30,     # Full pass through all devices in N seconds
             'metadata_refetch_every': 10,  # Refetch /api/device every N cycles
             'stale_window_sec': 90,     # Card flips to OFFLINE styling after this (~3 cycles)
-            'conductor_url': 'http://127.0.0.1:4002'  # mur-conductor status/admin API
+            'conductor_url': 'http://127.0.0.1:4002',  # mur-conductor status/admin API
+            'scene_server_url': 'http://127.0.0.1:5003'  # mur-scene-server web UI + API
         }
     
     def save_config(self):

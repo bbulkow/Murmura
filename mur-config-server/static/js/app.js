@@ -16,10 +16,27 @@ let modalRefreshActive = false;  // Track if modal is open
 document.addEventListener('DOMContentLoaded', function() {
     initializeSocket();
     attachEventListeners();
+    fixSceneManagerLink();
     loadLastGateway();
     loadDevices();
     startAutoRefresh();  // Start auto-refresh timer
 });
+
+// scene_server_url comes from network_config.json, which is written for the show
+// host and so normally says 127.0.0.1. Browsing this page from a laptop would
+// otherwise point the Scene Manager link at the laptop itself.
+function fixSceneManagerLink() {
+    const a = document.getElementById('sceneManagerLink');
+    if (!a) return;
+    try {
+        const u = new URL(a.href);
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') {
+            u.hostname = window.location.hostname;
+            a.href = u.toString();
+        }
+        a.title = a.href;
+    } catch (e) { /* leave the server-rendered href alone */ }
+}
 
 // Initialize Socket.IO connection
 function initializeSocket() {

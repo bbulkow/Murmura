@@ -139,12 +139,17 @@ Response to a `get_scene` query. Carries the current active scene name (or
 
 The gateway maintains a short-TTL cache (default 30 s) of the current scene.
 The cache is:
-- **Primed at startup** from the Scene Service via `GET /api/scenes/active`.
+- **Primed at startup** from `mur-scene-server` via `GET /api/scenes/active`
+  (`--scene-service-url`, default `http://localhost:5003`).
 - **Updated immediately** whenever a `SceneChange` trigger event arrives from
   the upstream Trigger Server (push path).
-- **Lazily refreshed** from the Scene Service on a `get_scene` query if the
+- **Lazily refreshed** from `mur-scene-server` on a `get_scene` query if the
   cached value is older than the TTL. Refreshes are serialized so concurrent
   device queries collapse into at most one upstream HTTP call.
+
+`mur-scene-server` is the authority for `value` here: it holds the fleet-wide
+scene *name*, while the per-track content of that scene lives on each device.
+See [`mur-scene-server/README.md`](mur-scene-server/README.md).
 
 Device behavior on receipt:
 - `value` is a known scene on this device → activate it (idempotent — if the

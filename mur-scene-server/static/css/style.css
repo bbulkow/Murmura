@@ -1,0 +1,290 @@
+/* Mur Scene Server UI.
+   Ported from haven/Triggers/scene_service.html (inline <style>, lines 8-317).
+   The .mapping-table / .osc-step rules went with the dropped scene-status card.
+   No external fonts or stylesheets: this file must work with no internet. */
+
+/* -- Reset & base --------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Arial', sans-serif;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+/* -- Layout --------------------------------------------------------- */
+.page { max-width: 900px; margin: 0 auto; }
+
+header {
+  text-align: center;
+  padding: 22px 20px 18px;
+  background: linear-gradient(45deg, #533483, #7b4fa6, #533483);
+  border-radius: 14px;
+  margin-bottom: 22px;
+  box-shadow: 0 8px 32px rgba(83, 52, 131, 0.4);
+}
+header h1 { font-size: 2rem; color: #fff; text-shadow: 1px 1px 4px rgba(0,0,0,.5); }
+header p  { color: #d4b8f0; margin-top: 6px; font-size: 0.95rem; }
+header .scope-note {
+  color: #e8d5ff; margin-top: 10px; font-size: 0.85rem;
+  max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.5;
+}
+
+/* -- Active scene banner -------------------------------------------- */
+#active-banner {
+  border-radius: 12px;
+  margin-bottom: 22px;
+  padding: 18px 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  transition: all .4s ease;
+}
+#active-banner.has-scene { background: rgba(83,52,131,.45); border: 1px solid #7b4fa6; }
+#active-banner.no-scene  { background: rgba(50,50,60,.45); border: 1px solid #444; }
+
+.banner-label {
+  font-size: 0.85rem;
+  color: #b88aff;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  white-space: nowrap;
+}
+#banner-scene-name {
+  font-size: 1.45rem;
+  font-weight: bold;
+  flex: 1;
+  color: #c390ff;
+  min-width: 100px;
+}
+#active-banner.no-scene #banner-scene-name { color: #888; }
+
+.banner-selector { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.banner-selector label { font-size: 0.8rem; color: #b88aff; white-space: nowrap; }
+#banner-scene-select {
+  padding: 7px 10px;
+  border: 1px solid rgba(123,79,166,.5);
+  border-radius: 7px;
+  background: rgba(0,0,0,.4);
+  color: #e0e0e0;
+  font-size: 0.9rem;
+  min-width: 150px;
+}
+
+/* -- Grid ------------------------------------------------------------ */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+
+/* -- Cards ----------------------------------------------------------- */
+.card {
+  background: rgba(255,255,255,0.07);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(123,79,166,0.35);
+  border-radius: 12px;
+  padding: 22px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.25);
+}
+.card h2 {
+  color: #b88aff;
+  font-size: 1.1rem;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(123,79,166,0.3);
+}
+.card.full-width { grid-column: 1 / -1; }
+
+/* -- Buttons --------------------------------------------------------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 8px 18px;
+  border: none; border-radius: 7px;
+  cursor: pointer; font-size: 0.88rem; font-weight: bold;
+  letter-spacing: .5px; transition: all .25s ease;
+  white-space: nowrap;
+}
+.btn:hover  { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.3); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+.btn-primary  { background: linear-gradient(45deg,#533483,#7b4fa6); color:#fff; }
+.btn-success  { background: linear-gradient(45deg,#1a7a4a,#28a745); color:#fff; }
+.btn-danger   { background: linear-gradient(45deg,#c82333,#dc3545); color:#fff; }
+.btn-ghost    { background: transparent; border:1px solid #7b4fa6; color:#b88aff; }
+.btn-sm       { padding: 4px 10px; font-size: 0.8rem; }
+
+/* -- Input row ------------------------------------------------------- */
+.input-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+input[type="text"], input[type="time"], select,
+#banner-scene-select {
+  flex: 1; min-width: 120px;
+  padding: 9px 12px;
+  border: 1px solid rgba(123,79,166,.4);
+  border-radius: 7px;
+  background: rgba(0,0,0,.35);
+  color: #e0e0e0;
+  font-size: 0.9rem;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: #7b4fa6;
+  box-shadow: 0 0 0 3px rgba(123,79,166,.25);
+}
+input::placeholder { color: #777; }
+input:invalid { border-color: rgba(200,60,60,.7); }
+
+.field-hint { font-size: 0.78rem; color: #999; margin-top: 6px; }
+
+/* -- Scene list ------------------------------------------------------ */
+#scene-list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+
+.scene-row {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(123,79,166,.2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  transition: background .2s;
+}
+.scene-row:hover { background: rgba(123,79,166,.12); }
+.scene-row.is-active { border-color: #7b4fa6; background: rgba(83,52,131,.3); }
+.scene-row .name { flex: 1; font-weight: bold; color: #ddd; word-break: break-all; }
+.scene-row.is-active .name { color: #c390ff; }
+
+.active-badge {
+  background: #7b4fa6; color: #fff;
+  font-size: 0.72rem; padding: 2px 8px;
+  border-radius: 20px; font-weight: bold; white-space: nowrap;
+}
+
+/* Scene count vs the per-device MAX_SCENES ceiling */
+.scene-count { margin-top: 12px; font-size: 0.83rem; color: #999; }
+.scene-count.over-limit {
+  background: rgba(180,90,0,.18);
+  border: 1px solid rgba(200,120,0,.35);
+  color: #ffd8a0; border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* -- Service status -------------------------------------------------- */
+.status-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(123,79,166,.25);
+  font-size: 0.83rem;
+  color: #aaa;
+  line-height: 1.7;
+}
+.status-block strong { color: #e0e0e0; }
+
+/* -- Schedule list --------------------------------------------------- */
+#sched-list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.sched-row {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(83,52,131,.25);
+  border-radius: 8px; padding: 10px 14px;
+}
+.sched-row.editing {
+  flex-wrap: wrap;
+  border-color: #7b4fa6;
+  background: rgba(83,52,131,.18);
+}
+.sched-info { flex: 1; }
+.sched-info .sched-scene { font-weight: bold; color: #c390ff; font-size: 1rem; }
+.sched-info .sched-meta { font-size: 0.82rem; color: #aaa; margin-top: 2px; }
+
+.edit-fields { display: flex; align-items: center; gap: 8px; flex: 1; flex-wrap: wrap; }
+.edit-fields select, .edit-fields input[type="time"] {
+  flex: 1; min-width: 110px; padding: 6px 9px; font-size: 0.85rem;
+}
+
+.repeat-badge {
+  font-size: 0.72rem; padding: 2px 8px; border-radius: 20px;
+  font-weight: bold; white-space: nowrap;
+}
+.repeat-badge.daily { background: #0f6b3a; color: #a6ffd2; }
+.repeat-badge.once  { background: #5a3200; color: #ffd8a0; }
+
+/* -- Schedule form --------------------------------------------------- */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px; align-items: end;
+}
+@media (max-width: 600px) { .form-row { grid-template-columns: 1fr 1fr; } }
+
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label {
+  font-size: 0.78rem; color: #b88aff; font-weight: bold;
+  text-transform: uppercase; letter-spacing: .6px;
+}
+
+/* -- Toasts ---------------------------------------------------------- */
+#toast-container {
+  position: fixed; top: 20px; right: 20px;
+  display: flex; flex-direction: column; gap: 8px;
+  z-index: 9999; pointer-events: none;
+}
+.toast {
+  padding: 10px 18px; border-radius: 7px;
+  font-size: 0.88rem; font-weight: bold; color: #fff;
+  box-shadow: 0 4px 14px rgba(0,0,0,.4);
+  opacity: 0; transform: translateX(30px);
+  transition: all .3s ease; pointer-events: auto;
+}
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.success { background: #1a7a4a; }
+.toast.error   { background: #c82333; }
+.toast.info    { background: #2c5fa0; }
+
+/* -- Misc ------------------------------------------------------------ */
+.empty-state { color: #777; font-style: italic; text-align: center; padding: 18px 0; }
+.section-sub { font-size: 0.82rem; color: #999; margin-bottom: 12px; }
+.refresh-time { font-size: 0.75rem; color: #888; text-align: right; margin-top: 10px; }
+
+/* -- Related services card ------------------------------------------- */
+.svc-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  background: rgba(123,79,166,.25);
+  border: 1px solid rgba(123,79,166,.5);
+  border-radius: 8px;
+  color: #c390ff; text-decoration: none;
+  font-size: 0.88rem; font-weight: bold;
+  transition: all .2s;
+}
+.svc-link:hover { background: rgba(123,79,166,.45); color: #fff; transform: translateY(-1px); }
+.svc-link small { display: block; font-weight: normal; font-size: 0.75rem; color: #b0a0c8; }
+
+.svc-panel {
+  background: rgba(0,0,0,.2);
+  border: 1px solid rgba(123,79,166,.2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-top: 10px;
+}
+.svc-panel-header {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.svc-panel-title { font-weight: bold; font-size: 0.95rem; color: #e0e0e0; flex: 1; }
+.svc-panel-row { font-size: 0.85rem; color: #bbb; line-height: 1.9; }
+.svc-panel-row strong { color: #e0e0e0; }
+
+.svc-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 20px; font-weight: bold; white-space: nowrap; }
+.svc-badge-ok    { background: #1a7a4a; color: #a6ffd2; }
+.svc-badge-warn  { background: #5a3200; color: #ffd8a0; }
+.svc-badge-error { background: #7a1a1a; color: #ffaaaa; }
+.svc-badge-info  { background: rgba(40,100,160,.35); color: #a6d4ff; }
+
+.unconfigured-warning {
+  background: rgba(180,90,0,.18);
+  border: 1px solid rgba(200,120,0,.35);
+  color: #ffd8a0; border-radius: 6px;
+  padding: 10px 14px; font-size: 0.88rem;
+}

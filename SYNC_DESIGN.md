@@ -134,7 +134,7 @@ A scene change is the headline use case for cross-device synchronization — whe
 
 The case that makes this rule earn its keep:
 
-1. Operator updates the scene service to `nightShow`, which is a synchronized scene.
+1. Operator updates mur-scene-server to `nightShow`, which is a synchronized scene.
 2. MUR-A polls `get_scene` and receives `nightShow` — *refuses* (logged: `Scene pull skipped 'nightShow' (synchronized; awaiting trigger)`).
 3. MUR-B and MUR-C poll later and receive the same — also refuse.
 4. The operator fires the `SceneChange` trigger with `value=nightShow`.
@@ -161,8 +161,8 @@ In `scenes.json` and on the `GET /api/scenes` response, scenes carry a `"synchro
 The synchronized-scene rule on the device prevents path-3 from activating a `synchronized` scene. But what about transitioning *away* from a synchronized scene to a non-synchronized one?
 
 ```
-T+0    operator changes scene_service: show (sync) → day (not sync)
-T+ε    scene_service auto-fires SceneChange("day")
+T+0    operator changes mur-scene-server: show (sync) → day (not sync)
+T+ε    mur-scene-server auto-fires SceneChange("day")
 T+2ε   mur_gateway receives the event; cached_scene becomes "day"
        (set synchronously, before any await), then trigger fans out
        to subscribers with target_tsf_us = T + 100 ms
@@ -179,18 +179,24 @@ Two invariants close this hazard without any extra gateway machinery:
 What remains is a small asyncio-interleaving window: between the cache update and the per-MUR `await device.send_line(line)` of the trigger, an interleaved `_answer_get_scene` for *that same MUR* can put the scene reply onto the TCP connection ahead of the trigger. That MUR processes the new scene via path 3 and activates it ~`fanout_delay_ms` early (default 100 ms). This is brief, stochastic (only fires if a poll happens to land in the gap), and the MUR converges to the correct scene either way. Treated as TCP-async noise rather than a structural hazard.
 
 If you want to reduce that residual exposure further, the lever is on the gateway side, not the device:
-- **Tighten the gateway's freshness with the scene service** by lowering `scene_cache_ttl` so lazy refresh is more aggressive (matters only if `SceneChange` events are ever lost — push-path is authoritative when working).
+- **Tighten the gateway's freshness with mur-scene-server** by lowering `scene_cache_ttl` so lazy refresh is more aggressive (matters only if `SceneChange` events are ever lost — push-path is authoritative when working).
 - **Don't tighten the device's `get_scene` polling interval** — that *increases* hazard exposure (more polls per unit time = more chances to land in the gap) without speeding recovery from a missed event meaningfully.
 
-### Operational rule — never fire `SceneChange` from outside `scene_service`
+### Operational rule — never fire `SceneChange` from outside `mur-scene-server`
 
-`mur_gateway`'s only source of truth for the active scene is `scene_service`. It learns about scene changes via two channels, both originating there: the push-path `SceneChange` trigger that `scene_service.set_active_scene` auto-fires, and the pull-path HTTP fetch from `{scene_service}/api/scenes/active` (initial prime + lazy refresh on `scene_cache_ttl`). `mur_gateway` exposes no inbound HTTP endpoint that could inject a scene; nothing else writes `cached_scene`.
+`mur_gateway`'s only source of truth for the active scene is `mur-scene-server`. It learns about scene changes via two channels, both originating there: the push-path `SceneChange` trigger that `mur-scene-server`'s `set_active_scene` auto-fires, and the pull-path HTTP fetch from `{mur-scene-server}/api/scenes/active` (initial prime + lazy refresh on `scene_cache_ttl`). `mur_gateway` exposes no inbound HTTP endpoint that could inject a scene; nothing else writes `cached_scene`.
 
-The hazard: `trigger_gateway` is a fan-in for trigger events from any registered source. If something other than `scene_service` POSTs a `SceneChange` event with an arbitrary scene name, `mur_gateway` will believe it — cache updates synchronously, the trigger fans out to subscribed MURs, and MURs activate that scene. Then on the next lazy refresh (within `scene_cache_ttl`, default 30 s), `mur_gateway` re-fetches from `scene_service` and the cache silently snaps back to whatever `scene_service` actually has. Any `get_scene` poll between those two events answers with the bogus value. Net effect: a transient flip-and-flap that can desync the fleet from the real show state, with no audit trail beyond the gateway log line `Scene cache updated from trigger: <bogus>`.
+The hazard: `trigger_gateway` is a fan-in for trigger events from any registered source. If something other than `mur-scene-server` POSTs a `SceneChange` event with an arbitrary scene name, `mur_gateway` will believe it — cache updates synchronously, the trigger fans out to subscribed MURs, and MURs activate that scene. Then on the next lazy refresh (within `scene_cache_ttl`, default 30 s), `mur_gateway` re-fetches from `mur-scene-server` and the cache silently snaps back to whatever `mur-scene-server` actually has. Any `get_scene` poll between those two events answers with the bogus value. Net effect: a transient flip-and-flap that can desync the fleet from the real show state, with no audit trail beyond the gateway log line `Scene cache updated from trigger: <bogus>`.
 
-**Operational rule:** never fire `SceneChange` from anywhere except `scene_service`. The trigger name is reserved for `scene_service.set_active_scene`'s auto-emit. Any other source firing it is pilot error and the system has no way to defend against it.
+**Operational rule:** never fire `SceneChange` from anywhere except `mur-scene-server`. The trigger name is reserved for its `POST /api/scenes/active` auto-emit. Any other source firing it is pilot error and the system has no way to defend against it.
 
-If at some point the fleet needs to support a scene change initiated outside `scene_service`, do it by calling `scene_service.set_active_scene` (which then auto-fires `SceneChange`), not by firing the trigger directly.
+If at some point the fleet needs to support a scene change initiated outside `mur-scene-server`, do it by `POST`ing to `{mur-scene-server}/api/scenes/active` (which then auto-fires `SceneChange`), not by firing the trigger directly.
+
+> **The service lives in this repo:** [`mur-scene-server/`](mur-scene-server/), port 5003 — which is
+> already `mur_gateway`'s `--scene-service-url` default, so no gateway configuration is needed. It
+> was previously an external Haven component with only a mock here, which is why older text called it
+> "the scene service". It also validates scene names against the *device* limits (1-31 chars,
+> `[A-Za-z0-9_-]`, per `main/scene_manager.h`), so any name it accepts is storable on a MUR.
 
 ### `SceneChange` always gets fanout, even with one subscriber
 

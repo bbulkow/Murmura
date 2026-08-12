@@ -132,11 +132,12 @@ Concrete rules:
 - **main/scene_manager.h/c** - Scene system: named playback configs, CRUD, activate, atomic patch, JSON persistence to /sdcard/scenes.json
 - **main/config_manager.h/c** - SD card config persistence (track_config_t for gateway config), shared JSON helpers
 - **main/mur_listener.h/c** - Mur Gateway TCP client, trigger event processing, scene trigger dispatch (discrete + per-scene button triggers), periodic `get_scene` pull (5 s) for reliability against lost SceneChange events
-- **mur-gateway scene cache** - Gateway caches the current scene (primed from Scene Service at startup, refreshed on SceneChange events, lazy HTTP refresh on TTL expiry). Answers device `get_scene` queries from cache.
+- **mur-gateway scene cache** - Gateway caches the current scene (primed from `mur-scene-server` at startup, refreshed on SceneChange events, lazy HTTP refresh on TTL expiry). Answers device `get_scene` queries from cache.
 - **main/unit_status_manager.h/c** - Device identity and network status
 - **MUR_PROTOCOL.md** - Authoritative spec for the device ↔ Mur Gateway protocol (trigger events, announce/subscribe). **This is the abstraction boundary** — do NOT explore upstream trigger sources or the Haven Trigger Server.
 - **mur-gateway/** - Mur Gateway server (implements MUR_PROTOCOL.md, bridges upstream trigger sources to devices). Also converts upstream `On/Off` triggers to `OneShot` (relabels in `/triggers` listing, drops `Off` events at dispatch, strips `On` value to shape events like real OneShots) — see MUR_PROTOCOL.md "Trigger type translation". This is a deployment workaround pending a firmware update.
 - **mur-config-server/** - Flask web UI for managing multiple Murmura devices
+- **mur-scene-server/** - Flask service + web UI on port 5003 that owns the fleet-wide **active scene**. **Two-layer model: it stores scene NAMES and which one is active; what a scene *plays* lives on each MUR** (`/sdcard/scenes.json`, edited via mur-config-server). It is the only sanctioned source of the `SceneChange` trigger (see SYNC_DESIGN.md) and the thing `mur-gateway`'s `--scene-service-url` has always pointed at. Also does scene schedules. Enforces the device name rule (1-31 chars, `[A-Za-z0-9_-]`) server-side so a scene it accepts is always storable on a MUR.
 - **mock-mur-gateway/** - Mock Mur Gateway for device-level testing (devices connect directly, bypasses real gateway)
 - **mock-trigger-server/** - Mock Haven Trigger Server for end-to-end testing (real mur-gateway connects to it)
 

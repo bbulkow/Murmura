@@ -112,14 +112,29 @@ main/                   ESP32 firmware source
   mur_listener.c/h        Mur Gateway TCP client, trigger event processing, scene trigger dispatch
 aithinker-adf/          Board support overlay files and build instructions
 mur-config-server/      Flask web server for fleet management (Python)
+mur-scene-server/       Fleet-wide active scene + schedules, with web UI (Python)
 device-manager/         CLI tools for batch device operations (Python)
 mur-gateway/            Mur Gateway server (bridges trigger sources to devices)
 mur-conductor/          Ensemble conductor -- playlist sequencer and downbeat source
 mur-abs-gateway/        Abstract-trigger gateway variant
 mock-mur-gateway/       Mock Mur Gateway for device testing (replaces real gateway)
 mock-trigger-server/    Mock Haven Trigger Server for end-to-end testing
-mock-scene-server/      Mock scene service for testing scene-change triggers
 ```
+
+### Two servers, two layers of "scene"
+
+These are easy to confuse, and mixing them up is the most common source of
+scene-related bugs:
+
+| | **mur-scene-server** (:5003) | **mur-config-server** (:8765) |
+|---|---|---|
+| Owns | *Which* scene is active, fleet-wide | *What* each scene plays, per device |
+| Data | Scene names, active scene, schedules | Per-track file, volume, mode, triggers |
+| Stored in | `mur-scene-server/mur_scene_server/scenes.json` | each MUR's `/sdcard/scenes.json` |
+
+A scene is just a **name** shared between them. `mur-scene-server` says "the scene
+is now `night`"; every MUR looks up `night` in its own config and plays whatever it
+finds there. A MUR that has no `night` scene falls back to its default.
 
 ## Building and Running a Mur
 

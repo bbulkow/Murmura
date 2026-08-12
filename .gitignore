@@ -42,6 +42,9 @@ build_output.txt
 # mur-config-server working copy
 mur-config-server/mur_config_server/
 
+# mur-scene-server runtime state (scene names, active scene, schedules)
+mur-scene-server/mur_scene_server/
+
 # device-manager runtime data
 device-manager/device_map.json
 

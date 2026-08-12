@@ -161,6 +161,19 @@ The server provides RESTful API endpoints for programmatic access:
 - `POST /api/batch/save-config` - Save config on multiple devices
 - `POST /api/batch/reboot` - Reboot multiple devices
 
+### Scene Manager (proxied to mur-scene-server)
+- `GET /api/scene-server/scenes` - The fleet-wide scene **name** list and which one is
+  active, read from mur-scene-server (`scene_server_url` in `network_config.json`,
+  default `http://127.0.0.1:5003`). Degrades to HTTP 200 with
+  `{error, scenes: [], active_scene: null}` so no page breaks when it is down.
+
+  Used by the device detail page's scene-trigger check, which prefers this live list
+  over the trigger server's advertised `range.values` (that copy goes stale and cannot
+  be refreshed — no Murmura trigger server implements `/api/register-device`).
+
+  **This server owns what a scene *plays*; mur-scene-server owns which scene is
+  *active*.** The dashboard's "Scene Manager" button links out to it.
+
 ### Ensembles (proxied to mur-conductor)
 - `GET /api/conductor/status` - Conductor + gateway + per-group state. Degrades to
   HTTP 200 with `{error, groups: []}` so `/ensembles` still renders.

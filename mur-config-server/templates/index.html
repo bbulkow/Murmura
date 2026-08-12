@@ -99,11 +99,17 @@
             </div>
         </div>
 
-        <!-- Ensembles: one line, the button IS the label. On a card like the
-             other sections - a blue button on the blue page background vanished. -->
+        <!-- Other services: one line, each button IS its label. On a card like the
+             other sections - a blue button on the blue page background vanished.
+             Scene Manager is a separate service (mur-scene-server, port 5003), so
+             it is an absolute link rather than a local route. It owns WHICH scene
+             is active fleet-wide; this server owns what each scene plays. -->
         <div class="controls" style="background: #f8f9fa; padding: 12px 15px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
             <a href="/ensembles" class="btn btn-primary"
                style="text-decoration: none; font-size: 17px; padding: 9px 20px;">Ensembles</a>
+            <a href="{{ scene_server_url or 'http://127.0.0.1:5003' }}" target="_blank" rel="noopener"
+               class="btn btn-info" id="sceneManagerLink"
+               style="text-decoration: none; font-size: 17px; padding: 9px 20px;">Scene Manager</a>
         </div>
 
         <div id="scanProgress" class="progress-bar" style="display: none;">

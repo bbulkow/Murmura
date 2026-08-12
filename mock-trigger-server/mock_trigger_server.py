@@ -11,16 +11,18 @@ Flow:
   2. Mur Gateway registers via POST /api/register.
   3. This server connects back to the gateway on its upstream port (TCP_SOCKET).
   4. You type commands at the prompt OR something else POSTs to
-     /api/trigger-event (e.g. mock-scene-server's SceneChange push).
+     /api/trigger-event (e.g. mur-scene-server's SceneChange push).
 
 All configuration lives in config.json — no CLI flags. Edit and restart.
 
-Sync note: the Discrete `SceneChange` trigger's `range.values` in config.json
-should match mock-scene-server's `scenes` list. This server does NOT pull
-that list from mock-scene-server; the two configs are kept in sync manually.
-The mismatch is harmless at dispatch time (send_event doesn't validate),
-but mur-config-server's UI uses /api/triggers to populate scene dropdowns,
-so a mismatch shows wrong names there.
+Sync note: the Discrete `SceneChange` trigger's `range.values` in config.json is
+a convenience copy of the scene list, not an authority. mur-scene-server owns the
+real list, and it cannot refresh this one — registration would need
+POST /api/register-device, which this server does not implement (nor does
+mur-conductor). Nothing breaks when the two drift: dispatch never validates
+values, and mur-config-server reads the live list from mur-scene-server via
+GET /api/scene-server/scenes. A stale list here only affects the scene-trigger
+mismatch banner on the device detail page, which now flags the drift explicitly.
 """
 
 import json
@@ -161,9 +163,9 @@ def register_service():
 @app.route('/api/trigger-event', methods=['POST'])
 def post_trigger_event():
     """Programmatic trigger injection — mirrors the real Haven Trigger
-    Gateway's /api/trigger-event. mock-scene-server's _push_scene_change
+    Gateway's /api/trigger-event. mur-scene-server's _push_scene_change
     POSTs here so the SceneChange fan-out exercises the full real path
-    (scene_server → trigger_server → mur_gateway → MURs)."""
+    (mur-scene-server → trigger_server → mur_gateway → MURs)."""
     data = request.json or {}
     name = data.get('name')
     if not isinstance(name, str) or not name.strip():

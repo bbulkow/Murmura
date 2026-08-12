@@ -1057,16 +1057,47 @@ async function checkSceneTriggerMismatch(triggerName) {
             return;
         }
 
-        const triggerValues = new Set((triggerDef.range && triggerDef.range.values) || []);
-        if (triggerValues.size === 0) {
+        // The trigger server's advertised range.values is a copy of the scene
+        // list, and it goes stale (no Murmura trigger server implements
+        // /api/register-device, so mur-scene-server cannot refresh it upstream).
+        // Prefer mur-scene-server's live list when we can reach it - that is the
+        // authority for which scenes exist fleet-wide.
+        const advertisedValues = new Set(
+            ((triggerDef.range && triggerDef.range.values) || []).map(String));
+        let triggerStrValues = advertisedValues;
+        let sceneServerScenes = null;
+
+        try {
+            const ssResp = await fetch('/api/scene-server/scenes');
+            if (ssResp.ok) {
+                const ssData = await ssResp.json();
+                if (Array.isArray(ssData.scenes) && ssData.scenes.length > 0) {
+                    sceneServerScenes = new Set(ssData.scenes.map(String));
+                    triggerStrValues = sceneServerScenes;
+                }
+            }
+        } catch (e) {
+            // Scene server unreachable - fall back to the advertised values.
+        }
+
+        if (triggerStrValues.size === 0) {
             warningDiv.style.display = 'none';
             return;
         }
 
-        // Convert trigger values to strings for comparison (they may be ints)
-        const triggerStrValues = new Set(Array.from(triggerValues).map(String));
-
         const warnings = [];
+
+        // Surface config drift rather than letting it fail silently.
+        if (sceneServerScenes && advertisedValues.size > 0) {
+            const onlyLive = [...sceneServerScenes].filter(v => !advertisedValues.has(v));
+            const onlyAdvertised = [...advertisedValues].filter(v => !sceneServerScenes.has(v));
+            if (onlyLive.length || onlyAdvertised.length) {
+                warnings.push(
+                    `Trigger server's ${triggerName} range is stale - ` +
+                    `mur-scene-server has [${[...sceneServerScenes].join(', ')}], ` +
+                    `trigger config has [${[...advertisedValues].join(', ')}]`);
+            }
+        }
 
         // Trigger values with no matching scene (will fall back to default)
         const noScene = Array.from(triggerStrValues).filter(v => !sceneNames.has(v));

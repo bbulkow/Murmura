@@ -1,0 +1,13 @@
+{
+  "trigger_server_url": "http://127.0.0.1:5002",
+  "register_with_trigger_server": "auto",
+  "scheduler_interval_s": 30,
+
+  "seed_scenes": ["night", "day", "show"],
+  "seed_active_scene": "day",
+
+  "config_server_url": "http://127.0.0.1:8765",
+  "gateway_status_url": "http://127.0.0.1:4001/status",
+  "conductor_status_url": "http://127.0.0.1:4002/status",
+  "trigger_server_ui_url": "http://127.0.0.1:5002/api/triggers"
+}
